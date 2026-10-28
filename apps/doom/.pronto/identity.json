@@ -1,0 +1,122 @@
+{
+  "0x8122334455667788": {
+    "name": "match",
+    "fields": {
+      "1": {
+        "name": "id",
+        "type": "string",
+        "retired": false
+      },
+      "2": {
+        "name": "map",
+        "type": "string",
+        "retired": false
+      },
+      "3": {
+        "name": "status",
+        "type": "string",
+        "retired": false
+      },
+      "4": {
+        "name": "frag_limit",
+        "type": "int32",
+        "retired": false
+      },
+      "5": {
+        "name": "frags_us",
+        "type": "int32",
+        "retired": false
+      },
+      "6": {
+        "name": "frags_them",
+        "type": "int32",
+        "retired": false
+      },
+      "7": {
+        "name": "winner",
+        "type": "string",
+        "retired": false
+      }
+    }
+  },
+  "0x8233445566778899": {
+    "name": "player",
+    "fields": {
+      "1": {
+        "name": "id",
+        "type": "string",
+        "retired": false
+      },
+      "2": {
+        "name": "handle",
+        "type": "string",
+        "retired": false
+      },
+      "3": {
+        "name": "health",
+        "type": "int32",
+        "retired": false
+      },
+      "4": {
+        "name": "armor",
+        "type": "int32",
+        "retired": false
+      },
+      "5": {
+        "name": "ammo",
+        "type": "int32",
+        "retired": false
+      },
+      "6": {
+        "name": "weapon",
+        "type": "string",
+        "retired": false
+      },
+      "7": {
+        "name": "in_pain",
+        "type": "string",
+        "retired": false
+      },
+      "8": {
+        "name": "is_god",
+        "type": "string",
+        "retired": false
+      },
+      "9": {
+        "name": "health_tier",
+        "type": "string",
+        "retired": false
+      }
+    }
+  },
+  "0x83445566778899aa": {
+    "name": "frag",
+    "fields": {
+      "1": {
+        "name": "id",
+        "type": "string",
+        "retired": false
+      },
+      "2": {
+        "name": "killer",
+        "type": "string",
+        "retired": false
+      },
+      "3": {
+        "name": "victim",
+        "type": "string",
+        "retired": false
+      },
+      "4": {
+        "name": "weapon",
+        "type": "string",
+        "retired": false
+      },
+      "5": {
+        "name": "tick",
+        "type": "int32",
+        "retired": false
+      }
+    }
+  }
+}

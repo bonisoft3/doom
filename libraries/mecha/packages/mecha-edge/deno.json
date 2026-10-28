@@ -1,0 +1,17 @@
+{
+  "nodeModulesDir": "auto",
+  "imports": {
+    "@electric-sql/pglite": "npm:@electric-sql/pglite@0.5.8",
+    "@simplewebauthn/server": "npm:@simplewebauthn/server@10.0.1",
+    "croner": "npm:croner@10.0.1",
+    "@mecha/postgrest-js": "../postgrest-js/src/index.ts",
+    "../postgrest-js/src/rest-handler.js": "../postgrest-js/src/rest-handler.ts",
+    "../postgrest-js/src/rest-read.js": "../postgrest-js/src/rest-read.ts",
+    "../postgrest-js/src/validate.js": "../postgrest-js/src/validate.ts"
+  },
+  "compilerOptions": {
+    "types": [
+      "npm:@cloudflare/workers-types@5.20261015.1"
+    ]
+  }
+}

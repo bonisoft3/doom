@@ -1,0 +1,155 @@
+/* Doom Arena — Lobby Screen Stylesheet */
+
+.screen[data-screen="lobby"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 100dvh;
+  inline-size: 100%;
+  max-inline-size: 100vw;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  background: radial-gradient(circle at center, var(--surface) 0%, var(--neutral) 100%);
+  color: var(--primary);
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  padding: var(--sp-md);
+}
+
+.lobby-card {
+  inline-size: min(100%, 460px);
+  background: var(--surface);
+  border: var(--border-size-2) solid var(--border);
+  border-radius: var(--r-md);
+  padding: clamp(var(--size-4), 4vw, var(--size-7));
+  box-shadow: var(--shadow-4);
+  box-sizing: border-box;
+}
+
+.lobby-title {
+  margin: 0;
+  font-size: 1.5rem;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  text-shadow: 0 0 12px var(--accent);
+}
+
+.lobby-desc {
+  margin-block-start: var(--size-1);
+  margin-block-end: var(--sp-lg);
+  font-size: 0.8125rem;
+  color: var(--secondary);
+}
+
+.lobby-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-field label {
+  font-size: var(--type-label);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+}
+
+.form-field input[type="text"],
+.form-field select {
+  background: var(--neutral);
+  border: var(--border-size-1) solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0 12px;
+  block-size: 36px;
+  box-sizing: border-box;
+  color: var(--primary);
+  font-family: inherit;
+  font-size: var(--type-caption);
+}
+
+.form-field input[type="text"]:focus,
+.form-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-2);
+}
+
+.color-options {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--sp-sm);
+}
+
+.color-opt {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 0 10px;
+  min-block-size: 36px;
+  block-size: 36px;
+  box-sizing: border-box;
+  background: var(--neutral);
+  border: var(--border-size-1) solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--type-label);
+  cursor: pointer;
+}
+
+.color-opt input[type="radio"] {
+  min-inline-size: 24px;
+  min-block-size: 24px;
+  inline-size: 24px;
+  block-size: 24px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+
+.color-opt:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--surface-muted);
+}
+
+.lobby-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-block-start: var(--sp-sm);
+}
+
+.act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 36px;
+  block-size: 36px;
+  box-sizing: border-box;
+  padding: 0 var(--sp-md);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: var(--border-size-1) solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+  color: #FDF6E7;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.act.hot {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--neutral);
+  box-shadow: var(--shadow-2);
+}
+
+.act.hot:hover {
+  background: color-mix(in oklch, var(--accent) 90%, #FFF);
+}

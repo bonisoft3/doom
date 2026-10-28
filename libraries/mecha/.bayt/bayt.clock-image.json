@@ -1,0 +1,163 @@
+{
+  "_generated_from": "bayt.cue (do not edit)",
+  "dockerfile": {
+    "preamble": [],
+    "preambleCopyContexts": [],
+    "from": {
+      "name": "redpandadata/connect:4.114.0@sha256:481e8df48ed733f080623ae67f0dccc82d29ae509dfb3f957347a9e900e74910"
+    },
+    "copy": [
+      {
+        "from": null,
+        "srcs": [
+          "services/clock/clock.yaml"
+        ],
+        "dst": "/clock.yaml",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      }
+    ],
+    "cmd": [
+      "run",
+      "/clock.yaml"
+    ],
+    "add": [],
+    "mounts": [],
+    "secrets": {},
+    "extra_hosts": [],
+    "epilogue": [],
+    "healthcheck": null,
+    "expose": [],
+    "entrypoint": null,
+    "incremental": false
+  },
+  "name": "clock-image",
+  "project": "libraries_mecha",
+  "dir": "libraries/mecha",
+  "activate": "",
+  "srcs": {
+    "globs": [
+      "services/clock/clock.yaml"
+    ],
+    "exclude": []
+  },
+  "outs": {
+    "globs": [],
+    "exclude": []
+  },
+  "state": {
+    "globs": []
+  },
+  "env": {},
+  "synthetics": {
+    "bayt": {
+      "name": "clock-image_bayt",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          ".bayt/compose.clock-image.yaml",
+          ".bayt/Dockerfile.clock-image",
+          ".bayt/bayt.clock-image.json",
+          ".bayt/Taskfile.yml",
+          ".bayt/Taskfile.bayt.yml",
+          ".bayt/process-compose.yaml"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "public",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "libraries/mecha/.bayt/compose.clock-image.yaml"
+      ]
+    },
+    "outs": {
+      "name": "clock-image_outs",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "public",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "libraries/mecha/.bayt/compose.clock-image.yaml"
+      ]
+    },
+    "srcs": {
+      "name": "clock-image_srcs",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          "services/clock/clock.yaml"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "public",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "libraries/mecha/.bayt/compose.clock-image.yaml"
+      ]
+    }
+  },
+  "visibility": "public",
+  "emitsSrcs": true,
+  "deps": [],
+  "sameProjectDeps": [],
+  "transitiveDeps": [],
+  "transitiveCrossDeps": [],
+  "upClosure": [
+    "libraries/mecha/.bayt/compose.clock-image.yaml"
+  ],
+  "chainedDeps": [],
+  "cmds": [],
+  "cache": {
+    "full": false,
+    "similar": false
+  }
+}

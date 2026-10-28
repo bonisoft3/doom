@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="pronto-ir-version" content="0.1.0">
+  <meta name="pronto-source" content="brief.md">
+  <meta name="pronto-brief-sha256" content="7309a9ab3229e7447ead881911ec7024d9729654091f79bc4f599f251c7b966e">
+  <meta name="pronto-generated" content="2026-09-30T18:50:00Z">
+  <meta name="pronto-compiler" content="gemini-2.5-pro">
+  <title>Doom Arena — Architecture & Intermediate Representation</title>
+  <style>
+    body { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: #0D0F11; color: #D8E2EC; padding: 24px; line-height: 1.5; }
+    h1, h2, h3 { color: #FF9900; }
+    .box { border: 1px solid #3B434C; background: #181B1F; border-radius: 6px; padding: 16px; margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #3B434C; padding: 8px 12px; text-align: left; }
+    th { background: #22272E; color: #FF9900; }
+    .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; background: #2C3238; }
+    .storyboard { display: flex; flex-wrap: wrap; gap: 1rem; }
+    figure { border: 1px solid #3B434C; padding: 8px; margin: 0; background: #111316; border-radius: 6px; }
+    figcaption { font-size: 0.8rem; opacity: 0.75; max-width: 250px; }
+    p[data-kind="test"] { border-left: 3px solid color-mix(in srgb, currentColor 30%, transparent); padding-left: 0.8rem; }
+    section[data-kind="review"] { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 6px; padding: 0.2rem 1rem; margin: 1rem 0; }
+    .verdict { font-weight: 700; }
+  </style>
+<link rel="stylesheet" href="ir/card.css">
+</head>
+<body>
+  <h1>Doom Arena — IR (Architecture & Contracts)</h1>
+  <p>Status: Pinned architecture for real-time 3D deathmatch on Pronto.</p>
+
+  <div class="box" id="architecture">
+    <h2>1. Topology & Planes</h2>
+    <ul>
+      <li><b>Kinetic Fast Plane (35Hz)</b>: Flecs ECS in WASM + GGRS client prediction. Unreliable UDP/WebTransport or in-tab Worker MessageChannel.</li>
+      <li><b>Relational State Plane (Durable)</b>: Mecha + ElectricSQL + PGlite. Reactive IVM queries for leaderboards, matches, frags, and accounts.</li>
+      <li><b>Dual Terminal (Presentation)</b>: Babylon.js (Canvas 3D) + Omnishell (DOM HUD & Status Bar).</li>
+    </ul>
+  </div>
+
+  <div class="box" id="entities">
+    <h2>2. Entity Contracts</h2>
+
+    <section id="Match" data-kind="entity" data-durability="device" data-type-id="0x8122334455667788">
+      <h3>Match</h3>
+<!-- pronto:card --><div class="card dur-tab">
+<header class="ehead">
+<span class="chips"><span class="chip" data-tip="where the row lives, the one word the author chooses: tab · device · offline · live · server" tabindex="0"><b>durability</b> tab</span><span class="chip" data-tip="who may read and write the row; becomes the roles and the row-level policies" tabindex="0"><b>access</b> —</span><span class="chip" data-tip="the entity's type id, which a schema diff keys on across renames; each field keeps a gap-free ordinal, and a retired field stays as a tombstone" tabindex="0"><b>id</b> 0x8122334455667788</span><span class="chip derived" data-tip="1 of 5 — a register this tab or device alone writes" tabindex="0"><b>level</b> ephemeral</span><span class="chip derived" data-tip="what a write here can claim when delivered twice — the level's word, and at level 4 the sink's: idempotent or reconciled is exactly-once, unknown at-most-once, repeat at-least-once; a hatch is unspecified" tabindex="0"><b>delivery</b> exactly-once</span></span>
+<span class="counts">7 fields · 0 referrers</span>
+</header>
+<div class="names"><span class="lbl">fields</span><span class="namelist"><span class="fname">id<i class="m">pk</i></span><span class="fname">map</span><span class="fname">status</span><span class="fname">frag_limit</span><span class="fname">frags_us</span><span class="fname">frags_them</span><span class="fname">winner</span></span>
+<details class="more"><summary>all fields, with their metadata</summary>
+<table class="fields"><tr><td class="o">1</td><td class="k">id</td><td class="t">string</td><td class="gl"><span class="g pk" data-tip="primary key" tabindex="0">pk</span></td><td class="x" title="this.size() &lt;= 64">this.size() &lt;= 64</td></tr><tr><td class="o">2</td><td class="k">map</td><td class="t">string</td><td class="gl"></td><td class="x" title="this in ['e1m1', 'e1m2']">this in ['e1m1', 'e1m2']</td></tr><tr><td class="o">3</td><td class="k">status</td><td class="t">string</td><td class="gl"></td><td class="x" title="this in ['warmup', 'active', 'over']">this in ['warmup', 'active', 'over']</td></tr><tr><td class="o">4</td><td class="k">frag_limit</td><td class="t">int32</td><td class="gl"></td><td class="x" title="this &gt;= 1 &amp;&amp; this &lt;= 100">this &gt;= 1 &amp;&amp; this &lt;= 100</td></tr><tr><td class="o">5</td><td class="k">frags_us</td><td class="t">int32</td><td class="gl"></td><td class="x" title="this &gt;= 0">this &gt;= 0</td></tr><tr><td class="o">6</td><td class="k">frags_them</td><td class="t">int32</td><td class="gl"></td><td class="x" title="this &gt;= 0">this &gt;= 0</td></tr><tr><td class="o">7</td><td class="k">winner</td><td class="t">string</td><td class="gl"><span class="g" data-tip="nullable" tabindex="0">○</span></td><td class="x" title="this.size() &lt;= 32">this.size() &lt;= 32</td></tr></table>
+<p class="legend">the first column is the field's ordinal, which a diff keys on · <span class="g pk">pk</span> primary key · <span class="g fk">→</span> references · <span class="g">◇</span> unique · <span class="g">≡</span> indexed · <span class="g">○</span> nullable · a rule or default in the last column</p>
+</details>
+<details class="more authored"><summary>the authored table</summary></details>
+<details class="more json"><summary>the entity, as JSON</summary><div class="jt"><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;Match&quot;</span></div><div class="jl"><span class="jk">ir</span>: <span class="jv">&quot;Match&quot;</span></div><div class="jl"><span class="jk">table</span>: <span class="jv">&quot;match&quot;</span></div><div class="jl"><span class="jk">id</span>: <span class="jv">&quot;0x8122334455667788&quot;</span></div><details class="jn"><summary><span class="jk">fields</span> <span class="jv">[7]</span></summary><details class="jn"><summary><span class="jk">0</span> <span class="jv">id</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;id&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">1</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this.size() &lt;= 64&quot;</span></div></details><details class="jn"><summary><span class="jk">1</span> <span class="jv">map</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;map&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">2</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this in ['e1m1', 'e1m2']&quot;</span></div></details><details class="jn"><summary><span class="jk">2</span> <span class="jv">status</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;status&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">3</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this in ['warmup', 'active', 'over']&quot;</span></div></details><details class="jn"><summary><span class="jk">3</span> <span class="jv">frag_limit</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;frag_limit&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">4</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;int32&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this &gt;= 1 &amp;&amp; this &lt;= 100&quot;</span></div></details><details class="jn"><summary><span class="jk">4</span> <span class="jv">frags_us</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;frags_us&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">5</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;int32&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this &gt;= 0&quot;</span></div></details><details class="jn"><summary><span class="jk">5</span> <span class="jv">frags_them</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;frags_them&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">6</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;int32&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this &gt;= 0&quot;</span></div></details><details class="jn"><summary><span class="jk">6</span> <span class="jv">winner</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;winner&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">7</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this.size() &lt;= 32&quot;</span></div></details></details><details class="jn"><summary><span class="jk">seed</span> <span class="jv">[1]</span></summary><details class="jn"><summary><span class="jk">0</span> <span class="jv">{7}</span></summary><div class="jl"><span class="jk">id</span>: <span class="jv">&quot;match-01&quot;</span></div><div class="jl"><span class="jk">map</span>: <span class="jv">&quot;e1m1&quot;</span></div><div class="jl"><span class="jk">status</span>: <span class="jv">&quot;warmup&quot;</span></div><div class="jl"><span class="jk">frag_limit</span>: <span class="jv">10</span></div><div class="jl"><span class="jk">frags_us</span>: <span class="jv">0</span></div><div class="jl"><span class="jk">frags_them</span>: <span class="jv">0</span></div><div class="jl"><span class="jk">winner</span>: <span class="jv">&quot;&quot;</span></div></details></details><div class="jl"><span class="jk">durability</span>: <span class="jv">&quot;tab&quot;</span></div><div class="jl"><span class="jk">level</span>: <span class="jv">&quot;ephemeral&quot;</span></div><div class="jl"><span class="jk">server</span>: <span class="jv">false</span></div><details class="jn"><summary><span class="jk">writers</span> <span class="jv">[2]</span></summary><details class="jn"><summary><span class="jk">0</span> <span class="jv">{3}</span></summary><div class="jl"><span class="jk">by</span>: <span class="jv">&quot;arena&quot;</span></div><div class="jl"><span class="jk">kind</span>: <span class="jv">&quot;screen&quot;</span></div><details class="jn"><summary><span class="jk">ops</span> <span class="jv">[1]</span></summary><div class="jl"><span class="jk">0</span>: <span class="jv">&quot;reduce&quot;</span></div></details></details><details class="jn"><summary><span class="jk">1</span> <span class="jv">{3}</span></summary><div class="jl"><span class="jk">by</span>: <span class="jv">&quot;lobby&quot;</span></div><div class="jl"><span class="jk">kind</span>: <span class="jv">&quot;screen&quot;</span></div><details class="jn"><summary><span class="jk">ops</span> <span class="jv">[1]</span></summary><div class="jl"><span class="jk">0</span>: <span class="jv">&quot;reduce&quot;</span></div></details></details></details><details class="jn"><summary><span class="jk">cel</span> <span class="jv">{3}</span></summary><details class="jn"><summary><span class="jk">checks</span> <span class="jv">{0}</span></summary></details><details class="jn"><summary><span class="jk">enums</span> <span class="jv">{2}</span></summary><details class="jn"><summary><span class="jk">map</span> <span class="jv">[2]</span></summary><div class="jl"><span class="jk">0</span>: <span class="jv">&quot;e1m1&quot;</span></div><div class="jl"><span class="jk">1</span>: <span class="jv">&quot;e1m2&quot;</span></div></details><details class="jn"><summary><span class="jk">status</span> <span class="jv">[3]</span></summary><div class="jl"><span class="jk">0</span>: <span class="jv">&quot;warmup&quot;</span></div><div class="jl"><span class="jk">1</span>: <span class="jv">&quot;active&quot;</span></div><div class="jl"><span class="jk">2</span>: <span class="jv">&quot;over&quot;</span></div></details></details><details class="jn"><summary><span class="jk">bounds</span> <span class="jv">{5}</span></summary><details class="jn"><summary><span class="jk">id</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">sizeMax</span>: <span class="jv">64</span></div></details><details class="jn"><summary><span class="jk">frag_limit</span> <span class="jv">{2}</span></summary><div class="jl"><span class="jk">intMin</span>: <span class="jv">1</span></div><div class="jl"><span class="jk">intMax</span>: <span class="jv">100</span></div></details><details class="jn"><summary><span class="jk">frags_us</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">intMin</span>: <span class="jv">0</span></div></details><details class="jn"><summary><span class="jk">frags_them</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">intMin</span>: <span class="jv">0</span></div></details><details class="jn"><summary><span class="jk">winner</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">sizeMax</span>: <span class="jv">32</span></div></details></details></details><details class="jn"><summary><span class="jk">uniques</span> <span class="jv">[0]</span></summary></details><details class="jn"><summary><span class="jk">validations</span> <span class="jv">{0}</span></summary></details></div></details></div>
+<div class="strips">
+<div class="strip"><span class="lbl">referenced by</span><span class="rels"><span class="why">—</span></span></div>
+<div class="strip"><span class="lbl">refers to</span><span class="rels"><span class="why">—</span></span></div>
+<div class="strip"><span class="lbl">validations</span><span class="why">none</span></div>
+</div>
+<div class="dline"><span class="lbl derived">derived</span><span class="chips"><span class="chip derived" data-tip="who writes rows here, each as kind:name and its ops — a screen's forms and what its markup writes past them, the terminal's charts, pipelines, computations, machines, a unit's memo" tabindex="0"><b>writers</b> screen:arena reduce, screen:lobby reduce</span><span class="chip derived" data-tip="how the terminal reads a server entity's table: eager syncs it whole, lazy loads what a view asks; a browser tier has no mode" tabindex="0"><b>read</b> —</span><span class="chip derived" data-tip="the database roles that may touch the table, from durability and access" tabindex="0"><b>roles</b> anon</span><span class="chip derived" data-tip="whether ir.html carries an element for it — review by consequence: a row that reaches another device or the server does" tabindex="0"><b>ir</b> optional</span></span>
+<details class="more"><summary>the platform’s columns</summary><p class="why"><code>created_by</code>, <code>updated_by</code> → app_user, stamped by the platform on every write; not the author’s.</p></details></div>
+
+</div><!-- /pronto:card -->
+      <p>Arena session status: map name, frag limit, status (warmup/active/over), and winner handle.</p>
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Constraint</th></tr></thead>
+        <tbody>
+          <tr data-ordinal="1"><td>id</td><td>string</td><td>this.size() &lt;= 64</td></tr>
+          <tr data-ordinal="2"><td>map</td><td>string</td><td>this in ['e1m1', 'e1m2']</td></tr>
+          <tr data-ordinal="3"><td>status</td><td>string</td><td>this in ['warmup', 'active', 'over']</td></tr>
+          <tr data-ordinal="4"><td>frag_limit</td><td>int32</td><td>this &gt;= 1 &amp;&amp; this &lt;= 100</td></tr>
+          <tr data-ordinal="5"><td>frags_us</td><td>int32</td><td>this &gt;= 0</td></tr>
+          <tr data-ordinal="6"><td>frags_them</td><td>int32</td><td>this &gt;= 0</td></tr>
+          <tr data-ordinal="7"><td>winner</td><td>string</td><td>this.size() &lt;= 32</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="Player" data-kind="entity" data-durability="tab" data-type-id="0x8233445566778899">
+      <h3>Player</h3>
+<!-- pronto:card --><div class="card dur-tab">
+<header class="ehead">
+<span class="chips"><span class="chip" data-tip="where the row lives, the one word the author chooses: tab · device · offline · live · server" tabindex="0"><b>durability</b> tab</span><span class="chip" data-tip="who may read and write the row; becomes the roles and the row-level policies" tabindex="0"><b>access</b> —</span><span class="chip" data-tip="the entity's type id, which a schema diff keys on across renames; each field keeps a gap-free ordinal, and a retired field stays as a tombstone" tabindex="0"><b>id</b> 0x8233445566778899</span><span class="chip derived" data-tip="1 of 5 — a register this tab or device alone writes" tabindex="0"><b>level</b> ephemeral</span><span class="chip derived" data-tip="what a write here can claim when delivered twice — the level's word, and at level 4 the sink's: idempotent or reconciled is exactly-once, unknown at-most-once, repeat at-least-once; a hatch is unspecified" tabindex="0"><b>delivery</b> exactly-once</span></span>
+<span class="counts">9 fields · 0 referrers</span>
+</header>
+<div class="names"><span class="lbl">fields</span><span class="namelist"><span class="fname">id<i class="m">pk</i></span><span class="fname">handle</span><span class="fname">health</span><span class="fname">armor</span><span class="fname">ammo</span><span class="fname">weapon</span><span class="fname">in_pain</span><span class="fname">is_god</span><span class="fname">health_tier</span></span>
+<details class="more"><summary>all fields, with their metadata</summary>
+<table class="fields"><tr><td class="o">1</td><td class="k">id</td><td class="t">string</td><td class="gl"><span class="g pk" data-tip="primary key" tabindex="0">pk</span></td><td class="x" title="this.size() &lt;= 64">this.size() &lt;= 64</td></tr><tr><td class="o">2</td><td class="k">handle</td><td class="t">string</td><td class="gl"></td><td class="x" title="this.size() &lt;= 16">this.size() &lt;= 16</td></tr><tr><td class="o">3</td><td class="k">health</td><td class="t">int32</td><td class="gl"></td><td class="x" title="this &gt;= 0 &amp;&amp; this &lt;= 200">this &gt;= 0 &amp;&amp; this &lt;= 200</td></tr><tr><td class="o">4</td><td class="k">armor</td><td class="t">int32</td><td class="gl"></td><td class="x" title="this &gt;= 0 &amp;&amp; this &lt;= 200">this &gt;= 0 &amp;&amp; this &lt;= 200</td></tr><tr><td class="o">5</td><td class="k">ammo</td><td class="t">int32</td><td class="gl"></td><td class="x" title="this &gt;= 0 &amp;&amp; this &lt;= 999">this &gt;= 0 &amp;&amp; this &lt;= 999</td></tr><tr><td class="o">6</td><td class="k">weapon</td><td class="t">string</td><td class="gl"></td><td class="x" title="this in ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket']">this in ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket']</td></tr><tr><td class="o">7</td><td class="k">in_pain</td><td class="t">string</td><td class="gl"></td><td class="x" title="this in ['true', 'false']">this in ['true', 'false']</td></tr><tr><td class="o">8</td><td class="k">is_god</td><td class="t">string</td><td class="gl"></td><td class="x" title="this in ['true', 'false']">this in ['true', 'false']</td></tr><tr><td class="o">9</td><td class="k">health_tier</td><td class="t">string</td><td class="gl"></td><td class="x" title="this in ['healthy', 'scratched', 'bloody', 'critical', 'dead']">this in ['healthy', 'scratched', 'bloody', 'critical', 'dead']</td></tr></table>
+<p class="legend">the first column is the field's ordinal, which a diff keys on · <span class="g pk">pk</span> primary key · <span class="g fk">→</span> references · <span class="g">◇</span> unique · <span class="g">≡</span> indexed · <span class="g">○</span> nullable · a rule or default in the last column</p>
+</details>
+<details class="more authored"><summary>the authored table</summary></details>
+<details class="more json"><summary>the entity, as JSON</summary><div class="jt"><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;Player&quot;</span></div><div class="jl"><span class="jk">ir</span>: <span class="jv">&quot;Player&quot;</span></div><div class="jl"><span class="jk">table</span>: <span class="jv">&quot;player&quot;</span></div><div class="jl"><span class="jk">id</span>: <span class="jv">&quot;0x8233445566778899&quot;</span></div><details class="jn"><summary><span class="jk">fields</span> <span class="jv">[9]</span></summary><details class="jn"><summary><span class="jk">0</span> <span class="jv">id</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;id&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">1</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this.size() &lt;= 64&quot;</span></div></details><details class="jn"><summary><span class="jk">1</span> <span class="jv">handle</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;handle&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">2</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this.size() &lt;= 16&quot;</span></div></details><details class="jn"><summary><span class="jk">2</span> <span class="jv">health</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;health&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">3</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;int32&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this &gt;= 0 &amp;&amp; this &lt;= 200&quot;</span></div></details><details class="jn"><summary><span class="jk">3</span> <span class="jv">armor</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;armor&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">4</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;int32&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this &gt;= 0 &amp;&amp; this &lt;= 200&quot;</span></div></details><details class="jn"><summary><span class="jk">4</span> <span class="jv">ammo</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;ammo&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">5</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;int32&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this &gt;= 0 &amp;&amp; this &lt;= 999&quot;</span></div></details><details class="jn"><summary><span class="jk">5</span> <span class="jv">weapon</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;weapon&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">6</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this in ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket']&quot;</span></div></details><details class="jn"><summary><span class="jk">6</span> <span class="jv">in_pain</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;in_pain&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">7</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this in ['true', 'false']&quot;</span></div></details><details class="jn"><summary><span class="jk">7</span> <span class="jv">is_god</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;is_god&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">8</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this in ['true', 'false']&quot;</span></div></details><details class="jn"><summary><span class="jk">8</span> <span class="jv">health_tier</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;health_tier&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">9</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this in ['healthy', 'scratched', 'bloody', 'critical', 'dead']&quot;</span></div></details></details><details class="jn"><summary><span class="jk">seed</span> <span class="jv">[1]</span></summary><details class="jn"><summary><span class="jk">0</span> <span class="jv">{9}</span></summary><div class="jl"><span class="jk">id</span>: <span class="jv">&quot;player-local&quot;</span></div><div class="jl"><span class="jk">handle</span>: <span class="jv">&quot;Doomguy&quot;</span></div><div class="jl"><span class="jk">health</span>: <span class="jv">100</span></div><div class="jl"><span class="jk">armor</span>: <span class="jv">50</span></div><div class="jl"><span class="jk">ammo</span>: <span class="jv">50</span></div><div class="jl"><span class="jk">weapon</span>: <span class="jv">&quot;shotgun&quot;</span></div><div class="jl"><span class="jk">in_pain</span>: <span class="jv">&quot;false&quot;</span></div><div class="jl"><span class="jk">is_god</span>: <span class="jv">&quot;false&quot;</span></div><div class="jl"><span class="jk">health_tier</span>: <span class="jv">&quot;healthy&quot;</span></div></details></details><div class="jl"><span class="jk">durability</span>: <span class="jv">&quot;tab&quot;</span></div><div class="jl"><span class="jk">level</span>: <span class="jv">&quot;ephemeral&quot;</span></div><div class="jl"><span class="jk">server</span>: <span class="jv">false</span></div><details class="jn"><summary><span class="jk">writers</span> <span class="jv">[0]</span></summary></details><details class="jn"><summary><span class="jk">cel</span> <span class="jv">{3}</span></summary><details class="jn"><summary><span class="jk">checks</span> <span class="jv">{0}</span></summary></details><details class="jn"><summary><span class="jk">enums</span> <span class="jv">{4}</span></summary><details class="jn"><summary><span class="jk">weapon</span> <span class="jv">[5]</span></summary><div class="jl"><span class="jk">0</span>: <span class="jv">&quot;fist&quot;</span></div><div class="jl"><span class="jk">1</span>: <span class="jv">&quot;pistol&quot;</span></div><div class="jl"><span class="jk">2</span>: <span class="jv">&quot;shotgun&quot;</span></div><div class="jl"><span class="jk">3</span>: <span class="jv">&quot;chaingun&quot;</span></div><div class="jl"><span class="jk">4</span>: <span class="jv">&quot;rocket&quot;</span></div></details><details class="jn"><summary><span class="jk">in_pain</span> <span class="jv">[2]</span></summary><div class="jl"><span class="jk">0</span>: <span class="jv">&quot;true&quot;</span></div><div class="jl"><span class="jk">1</span>: <span class="jv">&quot;false&quot;</span></div></details><details class="jn"><summary><span class="jk">is_god</span> <span class="jv">[2]</span></summary><div class="jl"><span class="jk">0</span>: <span class="jv">&quot;true&quot;</span></div><div class="jl"><span class="jk">1</span>: <span class="jv">&quot;false&quot;</span></div></details><details class="jn"><summary><span class="jk">health_tier</span> <span class="jv">[5]</span></summary><div class="jl"><span class="jk">0</span>: <span class="jv">&quot;healthy&quot;</span></div><div class="jl"><span class="jk">1</span>: <span class="jv">&quot;scratched&quot;</span></div><div class="jl"><span class="jk">2</span>: <span class="jv">&quot;bloody&quot;</span></div><div class="jl"><span class="jk">3</span>: <span class="jv">&quot;critical&quot;</span></div><div class="jl"><span class="jk">4</span>: <span class="jv">&quot;dead&quot;</span></div></details></details><details class="jn"><summary><span class="jk">bounds</span> <span class="jv">{5}</span></summary><details class="jn"><summary><span class="jk">id</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">sizeMax</span>: <span class="jv">64</span></div></details><details class="jn"><summary><span class="jk">handle</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">sizeMax</span>: <span class="jv">16</span></div></details><details class="jn"><summary><span class="jk">health</span> <span class="jv">{2}</span></summary><div class="jl"><span class="jk">intMin</span>: <span class="jv">0</span></div><div class="jl"><span class="jk">intMax</span>: <span class="jv">200</span></div></details><details class="jn"><summary><span class="jk">armor</span> <span class="jv">{2}</span></summary><div class="jl"><span class="jk">intMin</span>: <span class="jv">0</span></div><div class="jl"><span class="jk">intMax</span>: <span class="jv">200</span></div></details><details class="jn"><summary><span class="jk">ammo</span> <span class="jv">{2}</span></summary><div class="jl"><span class="jk">intMin</span>: <span class="jv">0</span></div><div class="jl"><span class="jk">intMax</span>: <span class="jv">999</span></div></details></details></details><details class="jn"><summary><span class="jk">uniques</span> <span class="jv">[0]</span></summary></details><details class="jn"><summary><span class="jk">validations</span> <span class="jv">{0}</span></summary></details></div></details></div>
+<div class="strips">
+<div class="strip"><span class="lbl">referenced by</span><span class="rels"><span class="why">—</span></span></div>
+<div class="strip"><span class="lbl">refers to</span><span class="rels"><span class="why">—</span></span></div>
+<div class="strip"><span class="lbl">validations</span><span class="why">none</span></div>
+</div>
+<div class="dline"><span class="lbl derived">derived</span><span class="chips"><span class="chip derived" data-tip="who writes rows here, each as kind:name and its ops — a screen's forms and what its markup writes past them, the terminal's charts, pipelines, computations, machines, a unit's memo" tabindex="0"><b>writers</b> —</span><span class="chip derived" data-tip="how the terminal reads a server entity's table: eager syncs it whole, lazy loads what a view asks; a browser tier has no mode" tabindex="0"><b>read</b> —</span><span class="chip derived" data-tip="the database roles that may touch the table, from durability and access" tabindex="0"><b>roles</b> anon</span><span class="chip derived" data-tip="whether ir.html carries an element for it — review by consequence: a row that reaches another device or the server does" tabindex="0"><b>ir</b> optional</span></span>
+<details class="more"><summary>the platform’s columns</summary><p class="why"><code>created_by</code>, <code>updated_by</code> → app_user, stamped by the platform on every write; not the author’s.</p></details></div>
+
+</div><!-- /pronto:card -->
+      <p>Marine state: handle, health, armor, ammo, active weapon, frags, pain and god mode flags.</p>
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Constraint</th></tr></thead>
+        <tbody>
+          <tr data-ordinal="1"><td>id</td><td>string</td><td>this.size() &lt;= 64</td></tr>
+          <tr data-ordinal="2"><td>handle</td><td>string</td><td>this.size() &lt;= 16</td></tr>
+          <tr data-ordinal="3"><td>health</td><td>int32</td><td>this &gt;= 0 &amp;&amp; this &lt;= 200</td></tr>
+          <tr data-ordinal="4"><td>armor</td><td>int32</td><td>this &gt;= 0 &amp;&amp; this &lt;= 200</td></tr>
+          <tr data-ordinal="5"><td>ammo</td><td>int32</td><td>this &gt;= 0 &amp;&amp; this &lt;= 999</td></tr>
+          <tr data-ordinal="6"><td>weapon</td><td>string</td><td>this in ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket']</td></tr>
+          <tr data-ordinal="7"><td>in_pain</td><td>string</td><td>this in ['true', 'false']</td></tr>
+          <tr data-ordinal="8"><td>is_god</td><td>string</td><td>this in ['true', 'false']</td></tr>
+          <tr data-ordinal="9"><td>health_tier</td><td>string</td><td>this in ['healthy', 'scratched', 'bloody', 'critical', 'dead']</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="Frag" data-kind="entity" data-durability="tab" data-type-id="0x83445566778899aa">
+      <h3>Frag</h3>
+<!-- pronto:card --><div class="card dur-tab">
+<header class="ehead">
+<span class="chips"><span class="chip" data-tip="where the row lives, the one word the author chooses: tab · device · offline · live · server" tabindex="0"><b>durability</b> tab</span><span class="chip" data-tip="who may read and write the row; becomes the roles and the row-level policies" tabindex="0"><b>access</b> —</span><span class="chip" data-tip="the entity's type id, which a schema diff keys on across renames; each field keeps a gap-free ordinal, and a retired field stays as a tombstone" tabindex="0"><b>id</b> 0x83445566778899aa</span><span class="chip derived" data-tip="1 of 5 — a register this tab or device alone writes" tabindex="0"><b>level</b> ephemeral</span><span class="chip derived" data-tip="what a write here can claim when delivered twice — the level's word, and at level 4 the sink's: idempotent or reconciled is exactly-once, unknown at-most-once, repeat at-least-once; a hatch is unspecified" tabindex="0"><b>delivery</b> exactly-once</span></span>
+<span class="counts">5 fields · 0 referrers</span>
+</header>
+<div class="names"><span class="lbl">fields</span><span class="namelist"><span class="fname">id<i class="m">pk</i></span><span class="fname">killer</span><span class="fname">victim</span><span class="fname">weapon</span><span class="fname">tick</span></span>
+<details class="more"><summary>all fields, with their metadata</summary>
+<table class="fields"><tr><td class="o">1</td><td class="k">id</td><td class="t">string</td><td class="gl"><span class="g pk" data-tip="primary key" tabindex="0">pk</span></td><td class="x" title="this.size() &lt;= 64">this.size() &lt;= 64</td></tr><tr><td class="o">2</td><td class="k">killer</td><td class="t">string</td><td class="gl"></td><td class="x" title="this.size() &lt;= 16">this.size() &lt;= 16</td></tr><tr><td class="o">3</td><td class="k">victim</td><td class="t">string</td><td class="gl"></td><td class="x" title="this.size() &lt;= 16">this.size() &lt;= 16</td></tr><tr><td class="o">4</td><td class="k">weapon</td><td class="t">string</td><td class="gl"></td><td class="x" title="this.size() &lt;= 16">this.size() &lt;= 16</td></tr><tr><td class="o">5</td><td class="k">tick</td><td class="t">int32</td><td class="gl"></td><td class="x" title="this &gt;= 0">this &gt;= 0</td></tr></table>
+<p class="legend">the first column is the field's ordinal, which a diff keys on · <span class="g pk">pk</span> primary key · <span class="g fk">→</span> references · <span class="g">◇</span> unique · <span class="g">≡</span> indexed · <span class="g">○</span> nullable · a rule or default in the last column</p>
+</details>
+<details class="more authored"><summary>the authored table</summary></details>
+<details class="more json"><summary>the entity, as JSON</summary><div class="jt"><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;Frag&quot;</span></div><div class="jl"><span class="jk">ir</span>: <span class="jv">&quot;Frag&quot;</span></div><div class="jl"><span class="jk">table</span>: <span class="jv">&quot;frag&quot;</span></div><div class="jl"><span class="jk">id</span>: <span class="jv">&quot;0x83445566778899aa&quot;</span></div><details class="jn"><summary><span class="jk">fields</span> <span class="jv">[5]</span></summary><details class="jn"><summary><span class="jk">0</span> <span class="jv">id</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;id&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">1</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this.size() &lt;= 64&quot;</span></div></details><details class="jn"><summary><span class="jk">1</span> <span class="jv">killer</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;killer&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">2</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this.size() &lt;= 16&quot;</span></div></details><details class="jn"><summary><span class="jk">2</span> <span class="jv">victim</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;victim&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">3</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this.size() &lt;= 16&quot;</span></div></details><details class="jn"><summary><span class="jk">3</span> <span class="jv">weapon</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;weapon&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">4</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;string&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this.size() &lt;= 16&quot;</span></div></details><details class="jn"><summary><span class="jk">4</span> <span class="jv">tick</span></summary><div class="jl"><span class="jk">name</span>: <span class="jv">&quot;tick&quot;</span></div><div class="jl"><span class="jk">ordinal</span>: <span class="jv">5</span></div><div class="jl"><span class="jk">retired</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">type</span>: <span class="jv">&quot;int32&quot;</span></div><div class="jl"><span class="jk">pk</span>: <span class="jv">false</span></div><div class="jl"><span class="jk">required</span>: <span class="jv">true</span></div><div class="jl"><span class="jk">cel</span>: <span class="jv">&quot;this &gt;= 0&quot;</span></div></details></details><details class="jn"><summary><span class="jk">seed</span> <span class="jv">[0]</span></summary></details><div class="jl"><span class="jk">durability</span>: <span class="jv">&quot;tab&quot;</span></div><div class="jl"><span class="jk">level</span>: <span class="jv">&quot;ephemeral&quot;</span></div><div class="jl"><span class="jk">server</span>: <span class="jv">false</span></div><details class="jn"><summary><span class="jk">writers</span> <span class="jv">[0]</span></summary></details><details class="jn"><summary><span class="jk">cel</span> <span class="jv">{3}</span></summary><details class="jn"><summary><span class="jk">checks</span> <span class="jv">{0}</span></summary></details><details class="jn"><summary><span class="jk">enums</span> <span class="jv">{0}</span></summary></details><details class="jn"><summary><span class="jk">bounds</span> <span class="jv">{5}</span></summary><details class="jn"><summary><span class="jk">id</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">sizeMax</span>: <span class="jv">64</span></div></details><details class="jn"><summary><span class="jk">killer</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">sizeMax</span>: <span class="jv">16</span></div></details><details class="jn"><summary><span class="jk">victim</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">sizeMax</span>: <span class="jv">16</span></div></details><details class="jn"><summary><span class="jk">weapon</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">sizeMax</span>: <span class="jv">16</span></div></details><details class="jn"><summary><span class="jk">tick</span> <span class="jv">{1}</span></summary><div class="jl"><span class="jk">intMin</span>: <span class="jv">0</span></div></details></details></details><details class="jn"><summary><span class="jk">uniques</span> <span class="jv">[0]</span></summary></details><details class="jn"><summary><span class="jk">validations</span> <span class="jv">{0}</span></summary></details></div></details></div>
+<div class="strips">
+<div class="strip"><span class="lbl">referenced by</span><span class="rels"><span class="why">—</span></span></div>
+<div class="strip"><span class="lbl">refers to</span><span class="rels"><span class="why">—</span></span></div>
+<div class="strip"><span class="lbl">validations</span><span class="why">none</span></div>
+</div>
+<div class="dline"><span class="lbl derived">derived</span><span class="chips"><span class="chip derived" data-tip="who writes rows here, each as kind:name and its ops — a screen's forms and what its markup writes past them, the terminal's charts, pipelines, computations, machines, a unit's memo" tabindex="0"><b>writers</b> —</span><span class="chip derived" data-tip="how the terminal reads a server entity's table: eager syncs it whole, lazy loads what a view asks; a browser tier has no mode" tabindex="0"><b>read</b> —</span><span class="chip derived" data-tip="the database roles that may touch the table, from durability and access" tabindex="0"><b>roles</b> anon</span><span class="chip derived" data-tip="whether ir.html carries an element for it — review by consequence: a row that reaches another device or the server does" tabindex="0"><b>ir</b> optional</span></span>
+<details class="more"><summary>the platform’s columns</summary><p class="why"><code>created_by</code>, <code>updated_by</code> → app_user, stamped by the platform on every write; not the author’s.</p></details></div>
+
+</div><!-- /pronto:card -->
+      <p>Kill record: killer, victim, weapon, tick timestamp.</p>
+      <table>
+        <thead><tr><th>Field</th><th>Type</th><th>Constraint</th></tr></thead>
+        <tbody>
+          <tr data-ordinal="1"><td>id</td><td>string</td><td>this.size() &lt;= 64</td></tr>
+          <tr data-ordinal="2"><td>killer</td><td>string</td><td>this.size() &lt;= 16</td></tr>
+          <tr data-ordinal="3"><td>victim</td><td>string</td><td>this.size() &lt;= 16</td></tr>
+          <tr data-ordinal="4"><td>weapon</td><td>string</td><td>this.size() &lt;= 16</td></tr>
+          <tr data-ordinal="5"><td>tick</td><td>int32</td><td>this &gt;= 0</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <div class="box" id="screens">
+    <h2>3. Screens & Storyboards</h2>
+
+    <!-- pronto:app-neighbourhood --><details class="pronto-neighbourhood app-neighbourhood"><summary>App entity neighbourhood · 3 entities</summary><div class="neighbourhood-canvas" role="region" tabindex="0" aria-label="App entity diagram"><img src="ir/neighbourhood-app.svg" width="206" height="307" alt="App entity diagram"></div><p><b>entities:</b> <a href="#Frag">Frag</a>, <a href="#Match">Match</a>, <a href="#Player">Player</a></p></details><!-- /pronto:app-neighbourhood -->
+<section id="arena" data-kind="screen" data-route="/">
+      <h3>Arena (/)</h3>
+<!-- pronto:neighbourhood --><figure class="pronto-neighbourhood" aria-label="Arena entity neighbourhood"><div class="neighbourhood-canvas" role="region" tabindex="0" aria-label="Arena entity diagram"><img src="ir/neighbourhood-arena.svg" width="206" height="307" alt="Arena entity diagram"></div><figcaption><b>entities:</b> <a href="#Frag">Frag</a>, <a href="#Match">Match</a>, <a href="#Player">Player</a></figcaption></figure><!-- /pronto:neighbourhood -->
+      <div class="storyboard">
+        <figure id="arena-warmup" data-kind="state" data-of="arena" data-state="warmup">
+          <svg viewBox="0 0 320 200" width="240"><rect width="320" height="200" fill="#181B1F"/><text x="160" y="100" fill="#FF9900" text-anchor="middle">WARMUP</text></svg>
+          <figcaption>Warmup: waiting for players, status bar initialized.</figcaption>
+        </figure>
+        <figure id="arena-active" data-kind="state" data-of="arena" data-state="active">
+          <svg viewBox="0 0 320 200" width="240"><rect width="320" height="200" fill="#181B1F"/><text x="160" y="100" fill="#33FF33" text-anchor="middle">ACTIVE COMBAT</text></svg>
+          <figcaption>Active deathmatch combat with 3D canvas and live HUD.</figcaption>
+        </figure>
+        <figure id="arena-over" data-kind="state" data-of="arena" data-state="over">
+          <svg viewBox="0 0 320 200" width="240"><rect width="320" height="200" fill="#181B1F"/><text x="160" y="100" fill="#FF3333" text-anchor="middle">MATCH OVER</text></svg>
+          <figcaption>Match over: frag limit reached, winner declared.</figcaption>
+        </figure>
+      </div>
+
+      <script type="application/json" id="arena-paths" data-kind="paths" data-of="arena">
+      {
+        "instant_arena": {"states": ["warmup", "active"], "accepts": ["accept-instant-arena", "accept-status-hud", "accept-doomguy-face"]},
+        "combat": {"states": ["active"], "accepts": ["accept-frag-feed", "accept-weapon-switch"]},
+        "match_finish": {"states": ["active", "over"], "accepts": ["accept-match-over"]},
+        "offline": {"states": ["active"], "accepts": ["accept-offline"]}
+      }
+      </script>
+    </section>
+
+    <section id="lobby" data-kind="screen" data-route="/lobby">
+      <h3>Lobby (/lobby)</h3>
+<!-- pronto:neighbourhood --><figure class="pronto-neighbourhood" aria-label="Lobby entity neighbourhood"><div class="neighbourhood-canvas" role="region" tabindex="0" aria-label="Lobby entity diagram"><img src="ir/neighbourhood-lobby.svg" width="206" height="123" alt="Lobby entity diagram"></div><figcaption><b>entities:</b> <a href="#Match">Match</a></figcaption></figure><!-- /pronto:neighbourhood -->
+      <div class="storyboard">
+        <figure id="lobby-ready" data-kind="state" data-of="lobby" data-state="ready">
+          <svg viewBox="0 0 320 200" width="240"><rect width="320" height="200" fill="#181B1F"/><text x="160" y="100" fill="#FF9900" text-anchor="middle">LOBBY</text></svg>
+          <figcaption>Lobby ready: handle selection, armor tint, frag limit picker.</figcaption>
+        </figure>
+      </div>
+
+      <script type="application/json" id="lobby-paths" data-kind="paths" data-of="lobby">
+      {
+        "enter_arena": {"states": ["ready", "arena:warmup"], "accepts": ["accept-instant-arena"]}
+      }
+      </script>
+    </section>
+  </div>
+
+  <div class="box" id="flows">
+    <h2>4. Flows</h2>
+    <section id="start-match" data-kind="flow" data-of="arena">
+      <h3>start-match</h3>
+      <p>Initiates a new arena match session, transitioning status from warmup to active.</p>
+    </section>
+    <section id="record-frag" data-kind="flow" data-of="arena">
+      <h3>record-frag</h3>
+      <p>Records a registered kill event and increments frag counts for killer.</p>
+    </section>
+    <section id="update-player" data-kind="flow" data-of="arena">
+      <h3>update-player</h3>
+      <p>Updates local marine health, armor, ammo, and active weapon state.</p>
+    </section>
+  </div>
+
+  <div class="box" id="handlers">
+    <h2>5. Handlers</h2>
+    <section id="referee" data-kind="handler" data-of="arena">
+      <h3>referee</h3>
+      <p>Match referee evaluating combat damage, frag milestones, and match termination in SES sandbox.</p>
+    </section>
+    <section id="match_control" data-kind="handler" data-of="arena">
+      <h3>match_control</h3>
+      <p>Iniciar starts a match in warmup and Outra Partida resets one; the engine follows the match row.</p>
+    </section>
+    <section id="enter_arena" data-kind="handler" data-of="lobby">
+      <h3>enter_arena</h3>
+      <p>Processes lobby form submission and configures player marine parameters in SES sandbox.</p>
+    </section>
+  </div>
+
+  <div class="box" id="tests">
+    <h2>6. Invariants & Acceptance Tests</h2>
+    <p id="test-instant-arena" data-kind="test" data-of="arena" data-accepts="accept-instant-arena">Opening the arena lands immediately in the 3D deathmatch with a ready status bar and initial marine stats.</p>
+    <p id="test-status-hud" data-kind="test" data-of="arena" data-accepts="accept-status-hud">Ammo, Health, Armor, and Arms display the initial player stats correctly.</p>
+    <p id="test-doomguy-face" data-kind="test" data-of="arena" data-accepts="accept-doomguy-face">Doomguy face shows healthy grin initially, switches to grimace when health drops, and dead state at 0.</p>
+    <p id="test-frag-feed" data-kind="test" data-of="arena" data-accepts="accept-frag-feed">Registering a kill creates a frag feed entry with killer, weapon icon, and victim.</p>
+    <p id="test-weapon-switch" data-kind="test" data-of="arena" data-accepts="accept-weapon-switch">Selecting another weapon slot switches active weapon and updates ammo counters.</p>
+    <p id="test-match-over" data-kind="test" data-of="arena" data-accepts="accept-match-over">Reaching the frag limit transitions match phase to over and reveals the rematch button.</p>
+    <p id="test-offline" data-kind="test" data-of="arena" data-accepts="accept-offline">The game boots and operates cleanly offline without network connectivity.</p>
+  </div>
+
+  <div class="box" id="decisions">
+    <h2>7. Architectural Decisions</h2>
+    <ul>
+      <li id="decision-01" data-kind="decision">Levels and geometry are expressed in standard Khronos glTF 2.0 (<code>e1m1.gltf</code>) with <code>KHR_physics_rigid_bodies</code> rather than bespoke formats.</li>
+      <li id="decision-02" data-kind="decision">The 3D canvas is mounted behind the Babylon.js domain boundary (<code>@babylonjs/core</code> + <code>@babylonjs/loaders</code>) following monorepo dependency hygiene.</li>
+      <li id="decision-03" data-kind="decision">Health, armor, ammo, and the iconic Doomguy face are rendered in real DOM with Omnishell templates and CSS, eliminating canvas text overhead.</li>
+      <li id="decision-04" data-kind="decision">The 35Hz simulation operates with deterministic integer fixed-point math and zero ambient authority.</li>
+      <li id="decision-escape-hatches" data-kind="decision">Escape hatches: none. All state and interactions are modeled strictly through deterministic ECS machines, glTF 2.0 schemas, and pure Jessie sandbox compartments.</li>
+    </ul>
+  </div>
+
+  <div class="box" id="reviews">
+    <h2>8. Reviews</h2>
+    <section data-kind="review" id="review-backend">
+      <h3>backend</h3>
+      <p class="verdict">Verdict: signed.</p>
+      <p>Clean dual-plane division. Volatile kinetic ECS ticks separated from durable device/tab tables. Zero escape hatches.</p>
+    </section>
+    <section data-kind="review" id="review-frontend">
+      <h3>frontend</h3>
+      <p class="verdict">Verdict: signed.</p>
+      <p>Babylon.js canvas view decoupled from Omnishell declarative DOM HUD.</p>
+    </section>
+    <section data-kind="review" id="review-designer">
+      <h3>designer</h3>
+      <p class="verdict">Verdict: signed.</p>
+      <p>UAC terminal aesthetics, amber digital displays, CRT scanlines, and authentic status bar typography.</p>
+    </section>
+    <section data-kind="review" id="review-ux">
+      <h3>ux</h3>
+      <p class="verdict">Verdict: signed.</p>
+      <p>Immediate 0ms local action loop, responsive weapon switching, visual damage feedback.</p>
+    </section>
+    <section data-kind="review" id="review-qa">
+      <h3>qa</h3>
+      <p class="verdict">Verdict: signed.</p>
+      <p>Complete LinkeDOM coverage for HUD and deterministic fixed-step simulation coverage.</p>
+    </section>
+  </div>
+
+  <div class="box" id="units">
+    <h2>9. Units</h2>
+    <section id="upscaler" data-kind="unit">
+      <h3>upscaler — off-thread xBRZ texture upscaler</h3>
+      <p>Dedicated Web Worker running xBRZ pixel art scaling pinned by sha256 to upscale low-res WAD textures into crisp high-DPI assets without main thread stall.</p>
+    </section>
+  </div>
+</body>
+</html>

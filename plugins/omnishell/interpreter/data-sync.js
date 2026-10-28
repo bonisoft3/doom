@@ -1,0 +1,2413 @@
+// Cluster store adapter: the shell as virtual terminal against the real
+// virtual cluster, riding mecha's published data plane (vendor/mecha-client):
+// live/offline rows use Electric-synced collections and durable transactions;
+// server rows use authenticated requests whose HTTP result settles the command.
+//
+// Server-durability queries go directly to PostgREST without remote
+// subscriptions. Live reads use maintained views where possible; server-
+// computed live reads observe authorized dependency changes without retaining
+// snapshots. Own mutation settlement requests another read after its HTTP
+// completes, so a refresh cannot remain stuck on the pre-write result.
+
+import {
+  BasicIndex,
+  BTreeIndex,
+  carriers,
+  createCollection,
+  createLiveQueryCollection,
+  createMechaClient,
+  eq,
+  isNull,
+  localOnlyCollectionOptions,
+  localStorageCollectionOptions,
+  not,
+  or,
+} from "./vendor/mecha-client.js";
+import { canCoalesceSchemaEq, coalesceReads, columnOrder, compareBy, embedDeps, embedTables, parseFilter, parseFilterSpec, parseLimit, parseSelect, ProgramError, progressiveReadsComment, routeOf, stripProgressiveReads, takeProgressiveReads } from "./fragment.js";
+export { progressiveReadsComment, stripProgressiveReads, takeProgressiveReads };
+import { evaluateRole } from "./jessie.js";
+import { judge } from "./validate.js";
+import { assetURL } from "./preloads.js";
+
+export { columnOrder, compareBy, embedDeps, embedTables, parseFilter, parseFilterSpec, parseLimit, parseSelect, routeOf };
+
+const HEADERS = { "Content-Type": "application/json" };
+
+/**
+ * Runs `fn` in a task of its own, after the current one and everything it
+ * queues: a fold's writes — a drop, then a put, each awaited — all land before
+ * the region wakes, and a shape commit's several batches wake it once.
+ *
+ * A message, not a zero-delay timer. The browser clamps a repeated timer to
+ * four milliseconds, and a region wakes once per write — so every write past
+ * the first few pays the clamp, most of what clearing a thousand rows costs.
+ * A posted message is a task with no such floor.
+ */
+const later = (fn) => {
+  // A channel per wake, closed as it fires: an open port is a resource a
+  // runtime keeps alive, and a wake owns nothing once it has run.
+  const channel = new MessageChannel();
+  channel.port1.onmessage = () => {
+    channel.port1.close();
+    channel.port2.close();
+    fn();
+  };
+  channel.port2.postMessage(null);
+  return () => {
+    channel.port1.close();
+    channel.port2.close();
+  };
+};
+
+function token() {
+  const session = sessionStorage.getItem("pronto-token");
+  return session ? JSON.parse(session).token : null;
+}
+
+function userId() {
+  const session = sessionStorage.getItem("pronto-token");
+  return session ? (JSON.parse(session).user?.id ?? null) : null;
+}
+
+/** Whether the reader is a guest: no session yet, or a guest's. */
+function guest() {
+  const session = sessionStorage.getItem("pronto-token");
+  return session === null || JSON.parse(session).user?.guest === true;
+}
+
+// The request-only reads a server-rendered document was drawn from, carried in
+// it: the server terminal records each /crud GET it made as a guest, and the
+// shell taking the document over answers the same address from it while the
+// page stands at that address and has written no remote table, so its first
+// paint and initial reduces ask the door again only for what it never had. A
+// request-only read has no live sync to resume: its body is its whole state.
+//
+// The document is current while it carries them. The server terminal draws a
+// document with request-only reads for each request, and one without is
+// dropped when a read that drew it moves (server/render.ts); the service
+// worker keeps its copy of a document without them (offline-first-sw.js), so a
+// document it paints asks the network as before. What is carried is what a
+// fresh guest reads: only a store whose page minted its guest (createStore's
+// `mintedGuest`) answers from them, while that guest is the reader. A guest
+// from before may own rows; a reader signed in may read more.
+
+/** The element's id. offline-first-sw.js, a classic worker, spells it too. */
+export const SERVED_READS = "pronto-reads";
+
+/** The script element carrying `reads`, each body under the path and query it
+ * answered. JSON in a script ends at the first `</`, and U+2028/2029 end a
+ * line in older parsers: each is escaped, which JSON reads back unchanged. */
+export function servedReadsScript(reads) {
+  const json = JSON.stringify(Object.fromEntries(reads))
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+  return `<script type="application/json" id="${SERVED_READS}">${json}</script>`;
+}
+
+/** `html` carrying `reads` at the end of its body, where the shell takes them,
+ * in the element `script` draws. */
+export function carryReads(html, reads, script = servedReadsScript) {
+  if (reads.size === 0) return html;
+  const at = html.lastIndexOf("</body>");
+  if (at < 0) throw new Error("a document without a body cannot carry its reads");
+  return html.slice(0, at) + script(reads) + html.slice(at);
+}
+
+/** The reads `html` carries, read from its text in the shape servedReadsScript
+ * writes: a prefetch has a document's text and no document, and parsing one
+ * is a sink Trusted Types refuses. */
+export function servedReadsOf(html) {
+  const open = `<script type="application/json" id="${SERVED_READS}">`;
+  const at = html.lastIndexOf(open);
+  if (at < 0) return new Map();
+  const end = html.indexOf("</script>", at + open.length);
+  if (end < 0) throw new Error(`a document's ${SERVED_READS} has no end`);
+  return new Map(Object.entries(JSON.parse(html.slice(at + open.length, end))));
+}
+
+/** The reads `doc` carries, taken out of it: each answers once. */
+export function takeServedReads(doc) {
+  const el = doc?.getElementById?.(SERVED_READS);
+  if (!el) return new Map();
+  el.remove();
+  return new Map(Object.entries(JSON.parse(el.textContent)));
+}
+
+/** The address a read is recorded and answered under: its path and query. */
+export function readKey(url, base) {
+  const u = new URL(url, base || "https://read.invalid");
+  return u.pathname + u.search;
+}
+
+// What the document was served with, taken out of it by the first request
+// after it arrived, and the address it was served at. A remote write, or the
+// shell moving to another address, may move a read they answer, so either
+// drops them; writes to browser-owned tables (`cfg.local`) do not.
+let served = new Map();
+let servedAt = null;
+const prefetchedPages = new Map();
+let servedToReader = false;
+let pendingSession = null;
+
+function peekServedBody(url) {
+  if (!servedToReader || !guest()) return undefined;
+  const here = globalThis.location?.href;
+  const taken = takeServedReads(globalThis.document);
+  if (taken.size > 0) [served, servedAt] = [taken, here];
+  if (here !== servedAt) served.clear();
+  const rKey = readKey(url, here);
+  return served.get(rKey) ?? (here ? prefetchedPages.get(here)?.get(rKey) : undefined);
+}
+
+function takeServedBody(url) {
+  const body = peekServedBody(url);
+  if (body !== undefined) queueMicrotask(() => dropServedRead(url));
+  return body;
+}
+
+function hasServedRead(url) {
+  return peekServedBody(url) !== undefined;
+}
+
+function dropServedRead(url) {
+  const here = globalThis.location?.href;
+  const rKey = readKey(url, here);
+  served.delete(rKey);
+  if (here) prefetchedPages.get(here)?.delete(rKey);
+}
+
+function clearAllServed() {
+  served.clear();
+  servedAt = null;
+  prefetchedPages.clear();
+}
+
+/** How often a write a serialization conflict aborted is sent, and the first
+ * pause between sends, doubling. The gateway reports the conflict as a 500
+ * naming 40001 and leaves running the transaction again to the writer; one
+ * that never clears is refused, so the outbox does not send it forever. */
+const CONFLICT_SENDS = 5;
+const CONFLICT_FIRST_MS = 25;
+const reloading = new Set();
+
+async function send(url, init) {
+  if (init?.signal?.aborted) {
+    throw init.signal.reason ?? new DOMException("aborted", "AbortError");
+  }
+  let res;
+  let conflicted = false;
+  for (let sent = 1; ; sent++) {
+    res = await fetch(url, init);
+    conflicted = res.status === 500 && (await res.clone().text()).includes('"code":"40001"');
+    if (!conflicted || sent >= CONFLICT_SENDS) break;
+    await new Promise((resolve) => setTimeout(resolve, CONFLICT_FIRST_MS * 2 ** (sent - 1)));
+  }
+  // PostgREST answers a row security refusal (42501) with 401 too, and that
+  // is the write's refusal, not the session's end. Electric's /v1/shape
+  // answers an expired shape token with 401 so the stream re-mints at /auth/shape.
+  if (
+    res.status === 401 &&
+    !String(url).includes("/electric/") &&
+    !(await res.clone().text()).includes('"code":"42501"')
+  ) {
+    // Expired/invalid token: re-gate through the login screen. The reload
+    // tears the page down, so this promise never settles while the store is
+    // open. The server terminal's reload is its end (server/render.ts inhabit).
+    sessionStorage.removeItem("pronto-token");
+    location.reload();
+    return new Promise((resolve) => {
+      reloading.add(() =>
+        resolve({
+          res: new Response(JSON.stringify({ token: "closed", where: "true", expires_in: 900 }), { status: 200 }),
+          conflicted: false,
+        })
+      );
+    });
+  }
+  return { res, conflicted };
+}
+
+export async function http(url, init) {
+  if ((init?.method ?? "GET") === "GET") {
+    const body = takeServedBody(url);
+    if (body !== undefined) {
+      return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+  }
+  if (pendingSession && !token()) await pendingSession();
+  const headers = { ...init?.headers };
+  const t = token();
+  if (t) headers.Authorization = `Bearer ${t}`;
+  const { res, conflicted } = await send(url, { ...init, headers });
+  if (!res.ok) {
+    const method = init?.method ?? "GET";
+    const detail = await res.text();
+    const err = new Error(`${res.status} ${method} ${url}${detail === "" ? "" : `: ${detail}`}`);
+    if (method !== "GET" && (conflicted || (res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 429))) {
+      err.name = "NonRetriableError";
+    }
+    throw err;
+  }
+  return res;
+}
+
+/**
+ * Whether a batch of collection changes is this region's input changing.
+ *
+ * `preds` comes from parseFilter: null means untranslatable, [] means the
+ * region reads the whole table. Both sides of an update count — a row leaving
+ * the filter changes the region just as much as one entering it — and anything
+ * unrecognisable counts, so being unsure costs a re-read rather than a miss.
+ */
+export function touches(preds, changes) {
+  if (preds === null || !Array.isArray(changes)) return true;
+  return changes.some((c) =>
+    [c.value, c.previousValue].some((row) => row != null && preds.every((p) => p(row))),
+  );
+}
+
+/**
+ * Whether a read fragment.js's routeOf sends to a view can become one, given
+ * its parsed select and the table's visibility rule: the program's half of
+ * the question, where routeOf, which pronto's derive reads too, is the
+ * markup's. It is kept pure and exported because the interesting failure is
+ * silent: a read wrongly called maintainable builds a view whose rows are
+ * missing what the region binds, and the region renders blank rather than
+ * erroring.
+ */
+export function isMaintainable(embeds, access, accessOf = () => undefined) {
+  // An embed becomes a left join, and a left join has nowhere to put a
+  // per-row visibility test: the snapshot path binds the whole embed null for
+  // a row this reader cannot see, and a join would leak its columns instead.
+  // So only an embedded table everyone may read can be joined here.
+  if (embeds.some((e) => isRestricted(accessOf(e.table)))) return false;
+  if (access === undefined) return true;
+  // Only a table everyone may read: not even `private` can admit an unconfirmed
+  // optimistic row — see subscribe-smoke.js, "only visibility the query can
+  // restate is maintainable".
+  return access.scope === "public";
+}
+
+/** A table not everyone may read. undefined means no policy at all, so anyone may. */
+const isRestricted = (a) => a !== undefined && a.scope !== "public";
+
+// Every mecha table's txid is the platform's int8, delivered as its int64
+// carrier string. It is set after the schema's own fields below, so a table
+// that declares a column of that name is still compared as the platform's.
+const TXID = { name: "txid", type: "int64" };
+/** A filter literal its column cannot hold: equal to no row of it. */
+const NOHOLD = Symbol("a literal its column cannot hold");
+// The filter clauses a maintained view states (snapshotDemands).
+const STATED = /^(eq|neq)\.|^is\.null$|^not\.is\.null$/;
+// A page being left takes its requests with it: what fails then failed
+// because the document is going, and is not said. It is still asked again —
+// the timer goes with a page that unloads, and one the back-forward cache
+// gives back rebuilds the view it held.
+let leaving = false;
+globalThis.addEventListener("pagehide", () => { leaving = true; });
+globalThis.addEventListener("pageshow", () => { leaving = false; });
+/** The pause before a view whose subset failed in transit is rebuilt, and the
+ * most it doubles to. Electric's own fetch already waits out a 5xx and a
+ * dropped connection; what reaches a view is a 4xx a retry answers, so the
+ * first retry is prompt. A view rebuilt this many times without settling
+ * fails the reads waiting on it, about six seconds on: a failure that keeps
+ * coming back is an outage the screen says, not one the console alone does. */
+const RETRY_FIRST_MS = 100;
+const RETRY_LAST_MS = 5000;
+const RETRY_ATTEMPTS = 6;
+
+// Mutations resolve on confirmation OR on durable queueing: the client's
+// promise settles only when the write's txid is seen in the shape stream,
+// which can lag arbitrarily (offline outbox, a starved long-poll pool) —
+// and the screen must not wedge in form-submit meanwhile; the pending
+// badge is the feedback. A refusal (4xx → NonRetriableError) normally
+// rejects well inside the window; one that loses the race still rolls the
+// optimistic row back and re-renders, only its message is lost.
+const ACCEPT_MS = 2500;
+export function settle(promise, acceptMs = ACCEPT_MS, onRefused) {
+  return new Promise((resolve, reject) => {
+    let accepted = false;
+    const timer = setTimeout(() => {
+      accepted = true;
+      resolve();
+    }, acceptMs);
+    promise.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (err) => {
+        clearTimeout(timer);
+        if (!accepted) {
+          reject(err);
+          return;
+        }
+        // A refusal landing after the acceptance window can no longer reject
+        // the (already-resolved) submit; the optimistic rollback re-renders
+        // the truth, and onRefused carries the words back to the form.
+        console.error("late store refusal (optimistic state rolled back):", err);
+        onRefused?.(err);
+      },
+    );
+  });
+}
+
+/**
+ * The natural key an upsert resolves against: the declared composite uniques
+ * where the table has any, else the row's own pk — a single-row toggle must
+ * not restate its primary key as a unique. An owner column counts as covered
+ * (it materialises server-side from the session). null when nothing covers
+ * the values, which the caller turns into a program error.
+ */
+export function upsertKey(uniques, pk, owner, values) {
+  const candidates = uniques ?? [[pk]];
+  return candidates.find((cols) => cols.every((c) => values[c] !== undefined || c === owner)) ?? null;
+}
+
+/**
+ * How many OTHER readers a fold sink counts, before this reader's own intent.
+ *
+ * Pure on purpose: the caller looks the reader's source row and private pair
+ * out of the local collections and hands them in, so the rule this file exists
+ * to state can be tested without a client, a network or a store.
+ */
+const stateOf = (p, r) => (r[p.retracted] == null ? 1 : 0);
+
+// Every input is a synced, persisted collection, so this answers at boot and
+// stays answerable offline — there is no branch that waits on the network.
+export function othersFor(p, sinkRow, mine, pair, compareTxid) {
+  const total = sinkRow[p.projects];
+  const acked = mine !== undefined && mine.$synced !== false && mine.txid != null;
+  // The public total's read is at or after this exact acknowledged version,
+  // so it counted the reader as the row now reads. No pair needed, and this
+  // is the one question a watermark answers exactly: two server txids about
+  // versions that exist. It is also what keeps a first favourite from
+  // spiking — the total starts including the reader before their pair
+  // arrives, and without this the reader adds themselves twice.
+  if (acked && sinkRow[p.watermark] != null && compareTxid(sinkRow[p.watermark], mine.txid) >= 0) {
+    return total - stateOf(p, mine);
+  }
+  // The read predates the reader's latest change, so the freshest total
+  // cannot be paired with anything the reader knows. The pair's own read is
+  // internally consistent whatever has happened since: older, never wrong,
+  // and never a frozen pixel.
+  if (pair !== undefined) return pair[p.pair.total] - pair[p.pair.counted];
+  // No pair was ever written, so no read has ever counted this reader.
+  return total;
+}
+
+export function createStore(base = "", cfg = {}, { request = http, schedule: enqueue = later } = {}) {
+  servedToReader = cfg.mintedGuest === true;
+  pendingSession = cfg.ensureSession ?? null;
+  prefetchedPages.clear();
+  // cfg.local names the browser-owned tables (shell.yaml `local:`), which are
+  // collections like any other here — read by a region, mutated by a form —
+  // but built from a local factory rather than an Electric shape, so they are
+  // listed apart from the tables the terminal subscribes.
+  const local = cfg.local ?? {};
+  const tables = [...(cfg.tables ?? []), ...Object.keys(local)];
+  // The carrier table the shell was served with (shell.yaml `carriers`); it
+  // decides what canonical is, and the client converts into it. Bound on the
+  // first question that needs it, because a store whose config declares no
+  // schema — the fixture adapter, a smoke — asks none.
+  let bound;
+  const carrier = () => (bound ??= carriers(cfg.carriers));
+  let orders;
+  const ordersInEngine = () => (orders ??= carrier().engineOrders());
+  const compareTxid = (a, b) => carrier().compareCarrier(TXID, a, b);
+  const orderOf = (table) => columnOrder(carrier().compareCarrier, cfg.schema?.[table]?.fields);
+  // shell.yaml `read:` names the tables pronto derived as lazy: their shapes
+  // open from now and each view loads its rows as a subset. Every other
+  // table is read whole.
+  const lazy = (table) => cfg.read?.[table] === "lazy";
+  const client = createMechaClient({
+    carriers: cfg.carriers,
+    // cfg.keys names the pk of every table whose pk is not "id" (pipeline
+    // sinks like note_progress key on their subject). Without it the synced
+    // collection keys every row on a missing column and the whole table
+    // collapses onto one key.
+    //
+    // cfg.access rides along so the client knows which tables a grant can
+    // reach; a note shared to this subject is not in its scopes, and arrives
+    // one shape per row instead.
+    tables: tables.map((t) => ({
+      id: t,
+      table: t,
+      key: cfg.keys?.[t],
+      fields: cfg.schema?.[t]?.fields,
+      durability: local[t],
+      access: cfg.access?.[t],
+      // mecha's client names the two modes in Electric's words.
+      sync: lazy(t) ? "on-demand" : "eager",
+    })),
+    electricUrl: `${base || globalThis.location?.origin || ""}/electric`,
+    crudUrl: `${base}/crud`,
+    authUrl: `${base}/auth`,
+    fetcher: (url, init) => send(url, init).then(({ res }) => res),
+    token,
+    subject: userId,
+  });
+
+  // Debug seam: the running client is inspectable from the console.
+  globalThis.__mechaClient = client;
+
+  // cfg.access is the emitted RLS mirror (shell.yaml `access`): collection
+  // reads re-apply row visibility, and a region re-renders when a table that
+  // decides it changes (accessDeps below). PostgREST reads (embeds, fts) are
+  // RLS-scoped server-side.
+  const access = cfg.access ?? {};
+  const keyOf = (t) => cfg.keys?.[t] ?? "id";
+  const requestOnly = (table) => cfg.schema?.[table]?.durability === "server";
+
+  // Partial collections are never an authoritative whole outside a query.
+  // Queries explicitly lease completeness where their local evaluation needs
+  // it; validation, visibility and fold reads still require an eager table.
+  const whole = (table, site) => {
+    if (lazy(table)) {
+      throw new ProgramError(`${site} reads ${table} whole, and ${table} reads lazily: its collection holds only the rows its views loaded`);
+    }
+  };
+  // A collection read as the table, once it holds the first snapshot: an
+  // unsynced collection is empty, not authoritative.
+  async function wholeCollection(table, site) {
+    whole(table, site);
+    const c = client.collections[table];
+    if (c === undefined) throw new Error(`${site} reads ${table}, which has no collection`);
+    if (!c.isReady()) await c.toArrayWhenReady();
+    return c;
+  }
+
+  function completeDemand(table) {
+    const entry = maintainedView(table, { filter: `${keyOf(table)}=not.is.null` }, true);
+    if (entry === null) throw new ProgramError(`cannot demand all rows of ${table}`);
+    return entry;
+  }
+
+  // A snapshot read of a lazy table needs every row its filter could
+  // admit, not the table: the clauses a view states (eq, neq, null tests)
+  // bound that superset, and the predicates it cannot state (a boolean, a
+  // cursor, a pattern, a cap a view cannot keep) run locally over it. Its
+  // embeds come in with it, by the join's own lazy load. A read stating no
+  // clause the engine can bind, or a join it cannot keep, is bounded only by
+  // its tables.
+  function snapshotDemands(table, opts) {
+    const tables = snapshotTables(table, opts).filter(lazy);
+    const stated = (opts.filter ?? "").split("&").filter(part => {
+      const at = part.indexOf("=");
+      return !["limit", "offset"].includes(part.slice(0, at)) && STATED.test(part.slice(at + 1));
+    }).join("&");
+    const bound = tables.includes(table) && stated !== ""
+      ? maintainedView(table, { filter: stated, select: opts.select }, true)
+      : null;
+    return bound === null ? tables.map(completeDemand) : [bound];
+  }
+
+  // Adapter references alone do not prevent TanStack's five-second GC after
+  // a screen's last subscriber leaves. Reads and writes need a real listener
+  // across the wait too, reattached if a failed subset rebuilds the view.
+  function lease(entry) {
+    entry.acquire();
+    const stop = entry.attach(view => watch(view, () => {}));
+    return () => { stop(); entry.release(); };
+  }
+
+  // Registering a dependency does not prove a to-one relationship. Reverse
+  // embeds and relationships without an emitted FK remain server-computed.
+  const localEmbeds = (table, embeds) => embeds !== null && embeds.every(e =>
+    client.collections[e.table] !== undefined &&
+    cfg.schema?.[table]?.fields?.some(f => f.name === `${e.alias}_id` && f.ref === e.table));
+
+  function snapshotTables(table, opts) {
+    const spec = parseFilterSpec(opts.filter);
+    const embeds = parseSelect(opts.select);
+    if (routeOf(spec, embeds, parseLimit(opts.filter)) === "server" || client.collections[table] === undefined) return [];
+    if (!localEmbeds(table, embeds)) return [];
+    return [...new Set([table, ...embeds.map(e => e.table)])];
+  }
+
+  // Opaque reducers can request a whole-table mutation without making every
+  // collection eager at startup. Its demand stays subscribed so later writes
+  // keep the complete optimistic view, including rows no screen displays.
+  const mutatilazys = new Map();
+  async function mutationCollection(table, site) {
+    if (!lazy(table)) return wholeCollection(table, site);
+    const c = client.collections[table];
+    if (c === undefined) throw new Error(`${site} reads ${table}, which has no collection`);
+    let entry = mutatilazys.get(table);
+    if (entry === undefined) {
+      entry = completeDemand(table);
+      lease(entry);
+      mutatilazys.set(table, entry);
+    }
+    await settled(entry);
+    return c;
+  }
+
+  // Validations by table (shell.yaml); each table's modules load on its first
+  // write, through the same compartment a handler runs in.
+  const validations = cfg.validations ?? {};
+  const predicates = new Map();
+  function predicatesFor(table) {
+    let p = predicates.get(table);
+    if (p === undefined) {
+      // Dropped on rejection: a fetch that failed once would otherwise refuse
+      // the table for the rest of the session.
+      p = Promise.all(Object.entries(validations[table] ?? {}).map(async ([name, v]) => {
+        if (!Array.isArray(v.on) || v.on.length === 0 || v.on.some(op => !["insert", "update", "delete"].includes(op))) {
+          throw new Error(`validation ${table}.${name}: missing or invalid lifecycle events`);
+        }
+        for (const op of v.on) {
+          const order = v.order?.[op];
+          if (!Array.isArray(order) || order.length !== 2 || order.some(n => !Number.isInteger(n) || n < 0)) {
+            throw new Error(`validation ${table}.${name}: missing lifecycle order for ${op}`);
+          }
+        }
+        const res = await fetch(assetURL(new URL(v.src, cfg.appBase)));
+        if (!res.ok) throw new Error(`validation ${table}.${name}: ${v.src} ${res.status}`);
+        const source = await res.text();
+        const granted = cfg.endowments?.[v.src] ?? [];
+        return { name, on: v.on, order: v.order, edges: v.edges ?? [], test: await evaluateRole(source, "validation", granted) };
+      })).catch((e) => {
+        predicates.delete(table);
+        throw e;
+      });
+      predicates.set(table, p);
+    }
+    return p;
+  }
+
+  // The store seat: every validation of the table judges the row the write
+  // would produce (validate.js), over the reader's own copy of the rows its
+  // edges name.
+  // `current` is the standing row, when the caller already holds it: finding it
+  // again is a scan of the table per row.
+  // `edgeIndex` is one write's shared bucketing of each edge's visible rows by
+  // the column it joins on, so a batch costs one pass over an edge table rather
+  // than one per row. It is keyed by table AND join column: two validations of
+  // one entity may walk to one table on different columns.
+  async function validate(table, type, row, current, edgeIndex) {
+    const list = (await predicatesFor(table)).filter(v => v.on.includes(type))
+      .sort((a, b) => a.order[type][0] - b.order[type][0] || a.order[type][1] - b.order[type][1]);
+    if (list.length === 0) return;
+    const key = keyOf(table);
+    const collection = requestOnly(table) ? undefined : await wholeCollection(table, `validation of ${table}`);
+    const held = type === "insert" ? undefined : current ?? (requestOnly(table)
+      ? (await readServer(table, null, { filter: `${key}=eq.${encodeURIComponent(row[key])}` }))[0]
+      : collection.toArray.find((r) => String(r[key]) === String(row[key])));
+    // An update states the fields that change, so judging it without the row
+    // it changes would judge a fragment as if it were the whole row.
+    if (type === "update" && held === undefined) {
+      throw new Error(`validation ${table}: update of a row the store does not hold: ${String(row[key])}`);
+    }
+    if (type === "delete" && held === undefined) return;
+    const rowsFor = async (edge, produced, name) => {
+      const want = String(produced[edge.from]);
+      if (requestOnly(table) || requestOnly(edge.table)) {
+        return readServer(edge.table, null, { filter: `${edge.key}=eq.${encodeURIComponent(want)}` });
+      }
+      await ensurePrepared(edge.table);
+      const c = await wholeCollection(edge.table, `validation ${table}.${name}`);
+      const at = `${edge.table} ${edge.key}`;
+      let index = edgeIndex.get(at);
+      if (index === undefined) {
+        index = new Map();
+        for (const r of c.toArray) {
+          if (!visible(edge.table, r)) continue;
+          const k = String(r[edge.key]);
+          const bucket = index.get(k);
+          if (bucket === undefined) index.set(k, [r]);
+          else bucket.push(r);
+        }
+        edgeIndex.set(at, index);
+      }
+      return index.get(want) ?? [];
+    };
+    await judge(list, { table, type, row: type === "delete" ? held : row, held, rowsFor, owner: access[table]?.owner, me: userId });
+  }
+
+  // A local collection is made ready for use once per boot, before the first
+  // read or write touches it: its bootstrap rows are written, its optional
+  // columns are filled, then its declared uniques are reconciled over
+  // everything the collection holds — seeded rows included, so a seed that
+  // collides with a natural key is caught by the same pass that catches any
+  // other collision rather than being trusted because the program wrote it.
+  //
+  // Server tables never arrive here: Postgres owns their uniques, and their
+  // bootstrap rows are 900_seed.sql.
+  const preparedAt = new Map();
+  const restoredTabs = new Map();
+  const ensurePrepared = (table) => {
+    if (local[table] === undefined) {
+      return pendingSession && !token() ? pendingSession().then(() => {}) : Promise.resolve();
+    }
+    let p = preparedAt.get(table);
+    if (p === undefined) {
+      p = prepare(table);
+      preparedAt.set(table, p);
+    }
+    return p;
+  };
+  async function prepare(table) {
+    await seed(table);
+    await fill(table);
+    await reconcile(table);
+  }
+
+  // Every row of a local collection carries each column shell.yaml lists as
+  // optional ({table: [{name, type}]}): a device collection outlives the
+  // program that wrote it, so a stored row can predate a column, and binding a
+  // column a row lacks throws. An unset text column is "" and any other type is
+  // null, since "" is no value an int, a bool or a timestamp can hold; a
+  // binding renders both as empty. fill() patches the stored rows; blank() the
+  // rows created later.
+  const unset = (type) => (type === "text" ? "" : null);
+  async function fill(table) {
+    const cols = cfg.optional?.[table];
+    if (cols === undefined) return;
+    const c = client.collections[table];
+    if (c === undefined) throw new Error(`optional columns on unknown table: ${table}`);
+    if (!c.isReady()) await c.toArrayWhenReady();
+    const key = keyOf(table);
+    const edits = [];
+    for (const r of c.toArray) {
+      const missing = cols.filter((col) => !(col.name in r));
+      if (missing.length === 0) continue;
+      edits.push({ key: r[key], changes: Object.fromEntries(missing.map((col) => [col.name, unset(col.type)])) });
+    }
+    if (edits.length > 0) await client.update(table, edits);
+  }
+  const blank = (table, row) => {
+    const cols = cfg.optional?.[table];
+    if (cols === undefined) return row;
+    const filled = { ...row };
+    for (const col of cols) if (!(col.name in filled)) filled[col.name] = unset(col.type);
+    return filled;
+  };
+
+  // Written straight through the client, not through create(): a seed is the
+  // program stating the collection's initial world, not a reader's gesture, so
+  // there is no refusal to settle and no key to mint — the program names each
+  // row's own. Called only where the store is built, which is what makes the
+  // empty collection the whole ledger #Entity.seed relies on.
+  async function seed(table) {
+    const rows = restoredTabs.has(table) ? restoredTabs.get(table) : cfg.seed?.[table];
+    if (rows === undefined) return;
+    const c = client.collections[table];
+    if (c === undefined) throw new Error(`seed on unknown table: ${table}`);
+    if (!c.isReady()) await c.toArrayWhenReady();
+    const key = keyOf(table);
+    for (const row of rows) {
+      if (row[key] === undefined) throw new Error(`seed ${table}: a row carries no ${key}`);
+    }
+    await client.insert(table, rows);
+  }
+
+  // Browser-owned rows outlive the invariants declared over them: a device
+  // collection may hold rows written before a unique existed, and a slot
+  // meeting them would die on data no one can repair from the screen. So a
+  // local collection's declared uniques — cfg.uniques and the partial ones
+  // shell.yaml carries as cfg.partialUniques {table: [{cols, where}]} — are
+  // reconciled: within each unique's domain the newest row per key wins
+  // (created_at when the rows carry it, else load order) and the rest are
+  // dropped with one warning. Dropped, not repaired: the terminal cannot mint
+  // domain values to move a loser out of the where-domain. The slot
+  // cardinality error guards what appears after boot.
+  async function reconcile(table) {
+    const c = client.collections[table];
+    if (c === undefined) return;
+    if (!c.isReady()) await c.toArrayWhenReady();
+    const declared = [
+      ...(cfg.uniques?.[table] ?? []).map((cols) => ({ cols })),
+      ...(cfg.partialUniques?.[table] ?? []),
+    ];
+    for (const u of declared) {
+      // A where outside the translatable subset never ships: derive vets it.
+      const preds = u.where === undefined ? [] : (parseFilter(u.where, orderOf(table)) ?? []);
+      const groups = new Map();
+      for (const r of c.toArray) {
+        if (!preds.every((p) => p(r))) continue;
+        const g = u.cols.map((col) => String(r[col] ?? "")).join("\u0000");
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(r);
+      }
+      let dropped = 0;
+      for (const rows of groups.values()) {
+        if (rows.length < 2) continue;
+        const newestLast = [...rows].sort((a, b) =>
+          String(a.created_at ?? "") < String(b.created_at ?? "") ? -1 : String(a.created_at ?? "") > String(b.created_at ?? "") ? 1 : 0
+        );
+        for (const loser of newestLast.slice(0, -1)) {
+          await client.remove(table, [loser[keyOf(table)]]);
+          dropped++;
+        }
+      }
+      if (dropped > 0) {
+        console.warn(
+          `mecha: ${table}: ${dropped} surviving row(s) violated unique (${u.cols.join(", ")})` +
+            (u.where === undefined ? "" : ` where ${u.where}`) + "; kept the newest, dropped the rest",
+        );
+      }
+    }
+  }
+  const posed = new Map();
+  const posedServerBase = new Map();
+  function visible(table, row) {
+    if (posed.get(table)?.has(String(row?.[keyOf(table)]))) return true;
+    const a = access[table];
+    if (!a) return true;
+    // Optimistic rows are this session's own writes; their DB-defaulted
+    // owner column has not materialized yet.
+    if (row.$synced === false) return true;
+    if (a.scope === "public") return true;
+    if (a.scope === "internal") return false;
+    const uid = userId();
+    if (a.scope === "private") {
+      if (row[a.owner] === uid) return true;
+      if (a.shared) {
+        whole(a.shared.via, `${table}'s visibility`);
+        const via = client.collections[a.shared.via];
+        const pk = row[keyOf(table)];
+        return (
+          via !== undefined &&
+          via.toArray.some((s) => s[a.shared.on] === pk && s[a.shared.user] === uid)
+        );
+      }
+      return false;
+    }
+    // folder: visible exactly when the parent row is (a vanished parent
+    // hides the child, matching the policy's EXISTS).
+    if (a.scope === "folder") {
+      whole(a.parent, `${table}'s visibility`);
+      const parent = client.collections[a.parent];
+      const p = parent?.get(row[a.on]);
+      return p !== undefined && visible(a.parent, p);
+    }
+    return true;
+  }
+
+  // Tables whose changes can flip a row's visibility (the share table of a
+  // private scope, the parent chain of a folder scope): regions must re-render
+  // when they change — an unshare must revoke the row from the open wall.
+  function accessDeps(table, out = new Set()) {
+    const a = access[table];
+    if (!a) return out;
+    if (a.scope === "private" && a.shared) out.add(a.shared.via);
+    if (a.scope === "folder" && !out.has(a.parent)) {
+      out.add(a.parent);
+      accessDeps(a.parent, out);
+    }
+    return out;
+  }
+
+  // A typed column is compared with one literal of its type, in the
+  // canonical spelling its rows carry, which is also what a subset sends
+  // Electric to cast: `1.50` against a decimal column is the row holding
+  // `1.5`, and an uppercase uuid the row holding it in lowercase. Only a
+  // column the schema does not type, or types by a physical label, hedges
+  // between the text and the number a value could be, and the hedge is an
+  // `or`, which a subset carries only by the client's parenthesizing
+  // (mecha-client.ts parenthesizeOr).
+  //
+  // A literal the column cannot hold is NOHOLD. Rows are canonical, so it
+  // equals no row: the empty string a null placeholder interpolates to,
+  // compared with a uuid, is the case every nullable foreign key's probe
+  // meets. The column's own field is what it is read against, precision and
+  // scale included, because a decimal out of the column's profile is one no
+  // row of it holds either.
+  const literal = (table, col, value) => {
+    const field = col === TXID.name ? TXID : cfg.schema?.[table]?.fields?.find(f => f.name === col);
+    // A column declared by a physical label holds the transport's own
+    // spelling (normalizeRow leaves it), so it is compared as an untyped one.
+    if (field === undefined || cfg.carriers?.aliases?.[field.type] !== undefined) return undefined;
+    const json = carrier().canonicalType(field.type);
+    const num = Number(value);
+    const typed = json === "int32" || json === "double"
+      ? (value !== "" && !Number.isNaN(num) ? num : value)
+      : json === "bool" ? (value === "true" ? true : value === "false" ? false : value) : value;
+    try {
+      return carrier().normalizeValue(field, typed, "canonical");
+    } catch (err) {
+      if (err instanceof TypeError) return NOHOLD;
+      throw err;
+    }
+  };
+  // A server-computed read's filter as far as the client states it exactly.
+  // Postgres decides the result, and its casts and comparisons are not the
+  // client's: a pattern or a range, a column the schema does not type, or a
+  // literal the client's carrier refuses but Postgres may cast, leaves which
+  // rows the read can hold unknown (null). A row the change does not carry a
+  // filtered column of is unknown too, and passes.
+  function serverPredicates(table, filter) {
+    const spec = parseFilterSpec(filter);
+    if (spec === null) return null;
+    const preds = [];
+    for (const { col, op, value } of spec) {
+      if (op === "offset") continue;
+      const field = col === TXID.name ? TXID : cfg.schema?.[table]?.fields?.find(f => f.name === col);
+      if (field === undefined || cfg.carriers?.aliases?.[field.type] !== undefined) return null;
+      if (cfg.carriers?.types?.[field.type]?.json === "value") return null;
+      let test;
+      if (op === "null") test = (v) => v == null;
+      else if (op === "notnull") test = (v) => v != null;
+      else if (op === "true") test = (v) => v === true;
+      else if (op === "false") test = (v) => v === false;
+      else if (op === "eq" || op === "neq") {
+        const typed = literal(table, col, value);
+        if (typed === undefined || typed === NOHOLD) return null;
+        test = op === "eq" ? (v) => v === typed : (v) => v != null && v !== typed;
+      } else return null;
+      preds.push((row) => !(col in row) || test(row[col]));
+    }
+    return preds;
+  }
+  function queryPredicates(table, filter) {
+    const predicates = parseFilter(filter, orderOf(table));
+    if (predicates === null) return null;
+    return parseFilterSpec(filter).map(({ col, op, value }, i) => {
+      if (op !== "eq" && op !== "neq") return predicates[i];
+      const type = col === TXID.name ? TXID.type : cfg.schema?.[table]?.fields?.find(f => f.name === col)?.type;
+      if (cfg.carriers?.types?.[type]?.json === "value") return predicates[i];
+      const typed = literal(table, col, value);
+      if (typed === undefined) return predicates[i];
+      if (typed === NOHOLD) return op === "eq" ? () => false : row => row[col] != null;
+      return op === "eq"
+        ? row => row[col] === typed
+        : row => row[col] != null && row[col] !== typed;
+    });
+  }
+
+  // A region's read as a view the engine maintains, rather than a snapshot it
+  // re-derives on every wake. The differential-dataflow engine ships inside
+  // the client bundle; this is the door into it.
+  //
+  // Not every read qualifies; routeOf and isMaintainable hold the
+  // disqualifiers.
+  const views = new Map();
+  const indexed = new WeakMap();
+  // createIndex refuses to choose a type, and the two questions want different
+  // ones: equality for a join's key, ordered for an orderBy the engine should
+  // be able to stop scanning early.
+  const ensureIndex = (table, column, indexType) => {
+    const collection = client.collections[table];
+    let columns = indexed.get(collection);
+    if (columns === undefined) indexed.set(collection, columns = new Map());
+    let types = columns.get(column);
+    if (types === undefined) columns.set(column, types = new Map());
+    const id = types.get(indexType);
+    const existing = id === undefined ? undefined : collection.indexes.get(id);
+    if (existing instanceof indexType) return;
+    const index = collection.createIndex((r) => r[column], { indexType });
+    types.set(indexType, index.id);
+  };
+  // Debug seam, like the client above: which reads entered the graph, and
+  // which fell to the snapshot path, is the first question when a region
+  // re-renders more than it should.
+  globalThis.__prontoViews = views;
+  function maintainedView(table, opts = {}, create = false) {
+    const order = opts.order;
+    // Views are keyed by the read they stand for, so the many nested regions
+    // that share one — every row's comment probe on a screen — enter the graph
+    // once between them.
+    const key = `${table}|${order ?? ""}|${opts.filter ?? ""}|${opts.select ?? ""}`;
+    const held = views.get(key);
+    if (held !== undefined) return held;
+    // A subscription or a temporary read lease owns every opened view.
+    if (!create) return null;
+    const collection = client.collections[table];
+    if (collection === undefined) return null;
+    const spec = parseFilterSpec(opts.filter);
+    const embeds = parseSelect(opts.select);
+    const limit = parseLimit(opts.filter);
+    // A whole read gets no view either: the collection already is that set,
+    // kept current by the stream a view would be fed from, and a view over it
+    // would keep its order by moving array elements, a bulk write the length
+    // of the table per row (subscribe-smoke.js, "a whole-table read is served
+    // by the collection").
+    if (routeOf(spec, embeds, limit) !== "view" || !isMaintainable(embeds, access[table], (t) => access[t])) return null;
+    // A column the engine would order differently from the carrier — or not at
+    // all — is left to the snapshot path, which sorts by carrier and refuses
+    // what has no order. An untyped column keeps the engine's own comparison.
+    const fieldOf = (col) => col === TXID.name ? TXID : cfg.schema?.[table]?.fields?.find((f) => f.name === col);
+    const typeOf = (col) => fieldOf(col)?.type;
+    const ordered = (col) => typeOf(col) === undefined || ordersInEngine().has(typeOf(col));
+    if (limit !== undefined && (order ?? "").split(",").filter(Boolean).length === 0) return null;
+    if (!(order ?? "").split(",").filter(Boolean).every((k) => ordered(k.split(".")[0]))) return null;
+    if (!localEmbeds(table, embeds)) return null;
+    const profile = (t, col) => {
+      const field = col === TXID.name ? TXID : cfg.schema?.[t]?.fields?.find(f => f.name === col);
+      return field === undefined ? undefined : cfg.carriers?.types?.[carrier().canonicalType(field.type)];
+    };
+    const comparable = (t, col) => profile(t, col)?.subset !== false;
+    // These restrictions belong to this query, not every use of its table.
+    // Null tests bind no typed value, including the PK test for completeness.
+    if (lazy(table) && spec.some(s => ["eq", "neq"].includes(s.op) && !comparable(table, s.col))) return null;
+    if (lazy(table) && limit !== undefined && (order ?? "").split(",").some(k => {
+      const p = profile(table, k.split(".")[0]);
+      return p?.subset === false || (p?.order === "text" && p.pattern === undefined);
+    })) return null;
+    if (embeds.some(e => lazy(e.table) && !comparable(e.table, keyOf(e.table)))) return null;
+    const clause = (row, { col, op, value }) => {
+      const num = Number(value);
+      const isNum = value !== "" && !Number.isNaN(num) && String(num) === value;
+      const typed = op === "eq" || op === "neq" ? literal(table, col, value) : undefined;
+      // Said as a key that is null rather than as the literal, which a subset
+      // would send Electric to cast and Electric would refuse.
+      if (typed === NOHOLD) {
+        return op === "eq" ? isNull(row[keyOf(table)]) : not(isNull(row[col]));
+      }
+      const test = typed !== undefined
+        ? eq(row[col], typed)
+        : isNum
+          ? or(eq(row[col], value), eq(row[col], num))
+          : eq(row[col], value);
+      return op === "eq"
+        ? test
+        : op === "neq"
+          ? not(test)
+          : op === "null"
+            ? isNull(row[col])
+            : not(isNull(row[col]));
+    };
+    // Started as it is built, not on its first listener: a write holding a
+    // row's view waits on it with no listener at all.
+    const started = () => {
+      // Joins and capped ordering load whole collections without indexes.
+      // Check on rebuild too, before compilation: creating an index inside
+      // the query builder leaves its view unready.
+      for (const e of embeds) ensureIndex(e.table, keyOf(e.table), BasicIndex);
+      if (limit !== undefined) {
+        for (const k of (order ?? "").split(",").filter(Boolean)) {
+          ensureIndex(table, k.split(".")[0], BTreeIndex);
+        }
+      }
+      const view = createLiveQueryCollection({
+        query: (q) => {
+          let built = q.from({ row: collection });
+          for (const s of spec) built = built.where(({ row }) => clause(row, s));
+
+          for (const k of (order ?? "").split(",").filter(Boolean)) {
+            const [col, dir] = k.split(".");
+            built = built.orderBy(({ row }) => row[col], dir === "desc" ? "desc" : "asc");
+          }
+          if (limit !== undefined) built = built.limit(limit);
+          if (embeds.length === 0) return built;
+          // A flat FK embed is a left join on `<alias>_id`, and left is what
+          // makes an unmatched row bind blank instead of vanishing — the same
+          // thing the snapshot path means by a null embed.
+          for (const e of embeds) {
+            built = built.join(
+              { [e.alias]: client.collections[e.table] },
+              (refs) => eq(refs.row[`${e.alias}_id`], refs[e.alias][keyOf(e.table)]),
+              "left",
+            );
+          }
+          // The row the region binds: every base column, plus each embed under
+          // the name it is addressed by.
+          return built.select((refs) => {
+            const out = { ...refs.row };
+            for (const e of embeds) {
+              out[e.alias] = Object.fromEntries(e.cols.map((col) => [col, refs[e.alias][col]]));
+            }
+            return out;
+          });
+        },
+      });
+      view.startSyncImmediate();
+      return view;
+    };
+    const sources = [[table, collection], ...embeds.map((e) => [e.table, client.collections[e.table]])];
+    const entry = {
+      view: started(),
+      // Held by each subscription standing on the view, each read waiting on
+      // it and each write holding its row: a view released while a read waits
+      // would never settle, and the region awaiting that read would hold its
+      // refresh, and every parent's, for good.
+      refs: 0,
+      // The subset failure charged to this view, as {table, error, refused}: a
+      // load of one of its sources failed while it was loading, so it may hold
+      // a partial set. TanStack does not say which subscription a load was
+      // for, so a failure landing while two views of one table load is charged
+      // to both; a rebuild re-asks for what each needs. A refusal stays; any
+      // other failure is cleared by the rebuild `retry` schedules.
+      failure: undefined,
+      // The pending rebuild after a failure in transit, and the rebuilds since
+      // the view last settled, which double the pause before the next.
+      retrying: undefined,
+      attempts: 0,
+      // Who stands on the view: each is attached again to the view a rebuild
+      // replaces it with.
+      attached: new Set(),
+      // settled() checks waiting on it, rechecked when it is rebuilt.
+      waiters: new Set(),
+      attach(fn) {
+        const a = { fn, stop: fn(entry.view) };
+        entry.attached.add(a);
+        return () => {
+          a.stop();
+          entry.attached.delete(a);
+        };
+      },
+      acquire() {
+        entry.refs += 1;
+        return entry;
+      },
+      release() {
+        entry.refs -= 1;
+        if (entry.refs > 0) return;
+        views.delete(key);
+        clearTimeout(entry.retrying);
+        for (const off of offs) off();
+        entry.view.cleanup();
+      },
+      // A view whose subset failed holds what it held when it failed, and
+      // nothing asks for the rest again; a view built afresh does.
+      rebuild() {
+        const old = entry.view;
+        for (const a of entry.attached) a.stop();
+        entry.failure = undefined;
+        entry.view = started();
+        for (const a of entry.attached) a.stop = a.fn(entry.view);
+        old.cleanup();
+        for (const check of [...entry.waiters]) check();
+      },
+      // A failure in transit is said, and the view rebuilt after a pause,
+      // while every read waiting on it goes on waiting: the read's own
+      // backoff is the screen's, a network-error and seconds per miss, where
+      // a load asked again costs one request. Once the rebuilds run out the
+      // failure is the reads', and the next read starts them over.
+      retry(failure) {
+        if (entry.retrying !== undefined) return;
+        if (exhausted(entry)) {
+          for (const check of [...entry.waiters]) check();
+          return;
+        }
+        const pause = Math.min(RETRY_FIRST_MS * 2 ** entry.attempts, RETRY_LAST_MS);
+        if (!leaving) console.error(`a subset of ${failure.table} failed; asking again in ${pause}ms:`, failure.error);
+        entry.retrying = setTimeout(() => {
+          entry.retrying = undefined;
+          entry.attempts += 1;
+          entry.rebuild();
+        }, pause);
+      },
+      // Whether the view holds every row it stands for: ready, loading no
+      // subset, and charged with no failure. A view that does has spent its
+      // rebuilds.
+      complete() {
+        if (entry.failure !== undefined || !entry.view.isReady() || entry.view.isLoadingSubset) return false;
+        entry.attempts = 0;
+        return true;
+      },
+    };
+    const offs = sources.filter(([t]) => lazy(t)).map(([t, c]) =>
+      c.utils.onSubsetFailure((error) => {
+        if (!entry.view.isLoadingSubset || entry.failure !== undefined) return;
+        entry.failure = { table: t, error, refused: refusal(error) };
+        if (!entry.failure.refused) entry.retry(entry.failure);
+      })
+    );
+    views.set(key, entry);
+    return entry;
+  }
+
+  /**
+   * A maintained view's rows, once they are all there: the view is ready and
+   * loading no subset, the lazy side of a join included. Built on the
+   * collection's public readiness and its `loadingSubset:change` event alone.
+   *
+   * Not toArrayWhenReady: it answers as soon as the view holds any row, and an
+   * lazy view holds rows while its subset is still arriving — the first
+   * read would render a partial list as if it were the whole one.
+   *
+   * A view that failed rejects, and so does one whose subset was refused: the
+   * program asking for a predicate that cannot be stated, which no retry
+   * repairs, is a ProgramError naming the table. A subset that failed in
+   * transit is asked again (`retry`), and the read waits on the rebuilt view
+   * until the rebuilds run out.
+   */
+  function settled(entry) {
+    if (exhausted(entry)) {
+      entry.attempts = 0;
+      entry.rebuild();
+    }
+    return new Promise((resolve, reject) => {
+      const { view } = entry;
+      const offs = [];
+      const done = (settle, value) => {
+        entry.waiters.delete(check);
+        for (const off of offs.splice(0)) off();
+        settle(value);
+      };
+      function check() {
+        if (entry.view !== view) return done(resolve, settled(entry));
+        const failure = entry.failure;
+        if (failure?.refused) {
+          return done(reject, new ProgramError(`the stack refused a subset of ${failure.table}: ${failure.error.message}`));
+        }
+        if (exhausted(entry)) {
+          return done(reject, new Error(`a subset of ${failure.table} failed ${RETRY_ATTEMPTS + 1} times in a row: ${failure.error?.message ?? failure.error}`, { cause: failure.error }));
+        }
+        if (failure !== undefined) return;
+        if (view.status === "error") return done(reject, new Error(`a view of ${view.id} failed`));
+        if (view.status === "cleaned-up") return done(reject, new Error(`a view of ${view.id} was cleaned up while a read waited on it`));
+        if (entry.complete()) done(resolve);
+      }
+      entry.waiters.add(check);
+      offs.push(view.on("loadingSubset:change", check), view.on("status:change", check));
+      view.onFirstReady(check);
+      check();
+    });
+  }
+  /** A failure in transit the view's rebuilds ran out on: the reads' now. */
+  const exhausted = (entry) => entry.failure !== undefined && !entry.failure.refused && entry.attempts >= RETRY_ATTEMPTS;
+  /** A refusal of the subset itself, which every retry would meet again: a
+   * 400 whose `errors.subset` names the parameter, as Electric, the stack's
+   * gate and the page's cluster answer one. Anything else may be answered on
+   * a retry: a token to re-mint, a token minted for a where the stream has
+   * moved off, a 409 loop the client gave up on, a transport that dropped. */
+  const refusal = (error) => error?.status === 400 && error.json?.errors?.subset !== undefined;
+
+  const crud = (table) => `${base}/crud/${table}`;
+  const search = (order, opts = {}) => {
+    const parts = [`select=${opts.select ?? "*"}`];
+    if (order) parts.push(`order=${order}`);
+    if (opts.filter) parts.push(opts.filter);
+    return parts.join("&");
+  };
+
+  // Pipeline sinks lag their source by the whole CDC loop, so a count read
+  // straight from the sink is a second old. A fold sink names the column it
+  // projects, the watermark its read covered and the private pair it writes,
+  // so the reader's own contribution can be applied now. The projection counts
+  // (each contribution is 1 unless retracted); it does not run the fold's
+  // module. Both sides come from the local collections — never a server read,
+  // since relational operators are not maintainable in a region filter and a
+  // gate on PostgREST would dip against a value from Electric.
+  const foldSinks = new Map(
+    (cfg.pipelines ?? []).filter((p) => p.fold).map((p) => [p.to, p]),
+  );
+  // A derived count, as the reader should see it:
+  //
+  //     shown = others + intent
+  //
+  // What each term is, and why the pipeline states per reader whether its read
+  // counted them, is plugins/pronto/docs/access.md#a-count-the-reader-is-inside-of.
+  async function project(table, rows) {
+    const p = foldSinks.get(table);
+    if (p === undefined || rows.length === 0 || p.pair === undefined) return rows;
+    const source = client.collections[p.from];
+    if (source === undefined) return rows;
+    whole(p.from, `the fold projection of ${table}`);
+    whole(p.pair.table, `the fold projection of ${table}`);
+    const pairs = client.collections[p.pair.table];
+    return rows.map((sinkRow) => {
+      const k = sinkRow[p.key];
+      // One row per natural key: the unique index says the reader holds at
+      // most one, and the newest wins.
+      let mine;
+      for (const r of source.toArray) {
+        if (r[p.key] !== k || !visible(p.from, r)) continue;
+        // An unconfirmed row carries no txid and is the newest there is.
+        if (mine === undefined || (mine.txid != null && (r.txid == null || compareTxid(mine.txid, r.txid) < 0))) mine = r;
+      }
+      const pair = pairs?.toArray.find(
+        (r) => visible(p.pair.table, r) && String(r[p.key]) === String(k),
+      );
+      const intent = mine === undefined ? 0 : stateOf(p, mine);
+      // The projected column is the one the fold DECLARES; the interpreter is
+      // generic and must never name an app's column.
+      return { ...sinkRow, [p.projects]: othersFor(p, sinkRow, mine, pair, compareTxid) + intent };
+    });
+  }
+
+  const query = async (table, order, opts = {}) =>
+    project(table, await read(table, order, opts));
+
+  // Server reads as the tab last read them, by reader and address: a later
+  // read of the same address answers from here at once, as a view answers
+  // from its collection, so a screen drawn again draws whole on its first
+  // frame, and one request per address refreshes it behind. Rows that moved
+  // wake the read's readers, so a read a change woke shows what it held for
+  // that request and then what moved. A write this tab settles drops every
+  // read that depends on the table instead: its writer asks the door.
+  //
+  // A tab's alone: the server terminal renders every document from one store,
+  // where a kept answer would grow with every address rendered and answer a
+  // later render without the request its document has to record and carry
+  // (render.ts sets keepReads: false). Each map keeps the KEPT_READS answers
+  // used last.
+  const keepsReads = cfg.keepReads !== false;
+  const KEPT_READS = 256;
+  const answered = new Map();
+  // A view's last answer, by reader and query, for the same reason: a view
+  // closes a few seconds after its last reader (mecha-client's
+  // SHAPE_IDLE_MS), and a screen drawn again after that waited, empty, for
+  // its subset to load again. While it loads, the read answers what the view
+  // last held; the view's own subscription wakes the readers when it is whole.
+  const recalled = new Map();
+  // A guest session minted while adopting a served document is the same reader
+  // before and after its token settles: keying on token() alone would orphan
+  // every read answered from #pronto-reads before POST /auth/guest returned.
+  let initialGuestToken = null;
+  const readerKey = () => {
+    const t = token();
+    if (servedToReader && guest()) {
+      if (t && initialGuestToken === null) initialGuestToken = t;
+      if (!t || t === initialGuestToken) return "guest";
+    }
+    return t ?? "";
+  };
+  const recallKey = (table, order, opts) => `${readerKey()} ${table} ${JSON.stringify([order ?? null, opts.filter ?? null, opts.select ?? null])}`;
+  function keep(memo, key, entry) {
+    memo.delete(key);
+    memo.set(key, entry);
+    if (memo.size > KEPT_READS) memo.delete(memo.keys().next().value);
+  }
+  function kept(memo, key) {
+    const entry = memo.get(key);
+    if (entry !== undefined) keep(memo, key, entry);
+    return entry;
+  }
+  // The rows are the read's own fresh array; a hit answers a copy of them.
+  // While a view loads, what the tab has for it: its own last answer, or the
+  // carried read of the same address a prefetched document seeded, which the
+  // server drew from the same rows. Each answer is its own copy. A load
+  // names only the rows it brings, so a row gone since the stand-in was drawn
+  // is named by nothing: its readers are woken whole when the load ends
+  // (subscribe), until a read answers what the view holds.
+  const stoodIn = new Set();
+  function standIn(key, table, order, opts) {
+    if (opts.current) return undefined;
+    const last = kept(recalled, key);
+    const carried = last !== undefined || !keepsReads ? undefined : kept(answered, memoKey(`${crud(table)}?${search(order, opts)}`));
+    if (last === undefined && carried === undefined) return undefined;
+    stoodIn.add(key);
+    return last !== undefined ? [...last.rows] : JSON.parse(carried.body);
+  }
+  function recall(key, table, opts, rows) {
+    stoodIn.delete(key);
+    if (keepsReads) keep(recalled, key, { rows, tables: readDeps(table, opts) });
+    return rows;
+  }
+  const readDeps = (table, opts) => new Set([table, ...embedDeps(opts.select, table, cfg.schema), ...accessDeps(table), ...foldSourceOf(table)]);
+  // One spelling per address, the one a carried read is recorded under
+  // (readKey): search() writes a query as the program stated it, a recorded
+  // one is URL-serialized, and a non-ASCII value spells the two differently.
+  const memoKey = (url) => `${readerKey()} ${readKey(url, "https://read.invalid")}`;
+  // A read whose order the program leaves to Postgres comes back in heap
+  // order, so the same rows in another order are no change: waking its
+  // readers for one would refresh it again, and again.
+  const cleanRow = (row) => Object.fromEntries(Object.entries(row).filter(([k]) => !k.startsWith("$")).sort(([a], [b]) => a.localeCompare(b)));
+  const canon = (body) => JSON.parse(body).map((row) => JSON.stringify(cleanRow(row))).sort().join("\n");
+  const sameOrdered = (a, b) => JSON.stringify(JSON.parse(a).map(cleanRow)) === JSON.stringify(JSON.parse(b).map(cleanRow));
+  const unchanged = (url, a, b) => a === b || (/[?&]order=/.test(url) ? sameOrdered(a, b) : canon(a) === canon(b));
+  // Bumped by each write this tab settles, so a read in flight across one
+  // keeps nothing of what it brings back.
+  const generation = new Map();
+  function forget(table) {
+    generation.set(table, (generation.get(table) ?? 0) + 1);
+    for (const memo of [answered, recalled]) for (const [key, entry] of memo) if (entry.tables.has(table)) memo.delete(key);
+  }
+  const generations = (tables) => [...tables].map((t) => generation.get(t) ?? 0).join(",");
+  const requestRows = async (url) => (await request(url)).json();
+  const coalescedRows = coalesceReads(requestRows, canCoalesceSchemaEq(cfg.schema, cfg.carriers));
+  async function fetchServer(url) {
+    const rows = await (!keepsReads || hasServedRead(url) ? requestRows(url) : coalescedRows(url));
+    return { rows, body: JSON.stringify(rows) };
+  }
+  function dropHeldServed(url) {
+    const held = answered.get(memoKey(url));
+    if (held?.served) {
+      held.served = false;
+      held.servedAt = null;
+    }
+    dropServedRead(url);
+  }
+  function clearRemoteServed() {
+    clearAllServed();
+    for (const entry of answered.values()) {
+      if (entry.served) {
+        entry.served = false;
+        entry.servedAt = null;
+      }
+    }
+  }
+  function refresh(key, url, held) {
+    if (held.refreshing) return;
+    dropHeldServed(url);
+    held.refreshing = fetchServer(url).then(({ body }) => {
+      if (answered.get(key) !== held || unchanged(url, body, held.body)) return;
+      held.body = body;
+      for (const t of held.tables) for (const fn of settleListeners.get(t) ?? []) fn();
+    }, () => {
+      // Resolved, not dropped: the rows on show stay as they were read, and
+      // the next read asks the door and meets the failure itself.
+      if (answered.get(key) === held) answered.delete(key);
+    }).finally(() => { held.refreshing = null; });
+  }
+
+  let activeSeed = null;
+  const seedWaiters = new Map();
+  function notifySeeded(key) {
+    const list = seedWaiters.get(key);
+    if (list !== undefined) {
+      seedWaiters.delete(key);
+      for (const { resolve } of list) resolve();
+    }
+  }
+  function notifyAllSeedWaiters(error) {
+    const waiters = [...seedWaiters.values()].flat();
+    seedWaiters.clear();
+    for (const { resolve, reject } of waiters) {
+      if (error !== undefined) reject(error);
+      else resolve();
+    }
+    return waiters.length > 0;
+  }
+  function waitSeed(promise) {
+    if (!promise) return;
+    const p = Promise.resolve(promise).then(
+      () => {
+        if (activeSeed === p) {
+          activeSeed = null;
+          notifyAllSeedWaiters();
+        }
+      },
+      (error) => {
+        if (activeSeed === p) {
+          activeSeed = null;
+          if (!notifyAllSeedWaiters(error)) throw error;
+        } else {
+          throw error;
+        }
+      },
+    );
+    activeSeed = p;
+  }
+  function awaitSeedForUrl(url) {
+    if (activeSeed === null) return Promise.resolve();
+    const key = memoKey(url);
+    if (hasServedRead(url) || (keepsReads && answered.has(key))) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const list = seedWaiters.get(key) ?? [];
+      list.push({ resolve, reject });
+      seedWaiters.set(key, list);
+    });
+  }
+
+  /** The reads a prefetched document carries (takeServedReads), each kept as
+   * the tab's answer to its address, so the screen they drew draws whole on
+   * the click that opens it. They are what a fresh guest reads, so only a
+   * store whose page minted its guest takes them, while that guest reads;
+   * an address the tab already answers keeps its own. */
+  function seedReads(reads, opts) {
+    if (!keepsReads || !servedToReader || !guest()) return;
+    const at = opts?.at;
+    let pageReads;
+    if (at !== undefined && reads.size > 0) {
+      pageReads = prefetchedPages.get(at);
+      if (pageReads === undefined) {
+        pageReads = new Map();
+        prefetchedPages.set(at, pageReads);
+        if (prefetchedPages.size > 16) prefetchedPages.delete(prefetchedPages.keys().next().value);
+      }
+    }
+    for (const [address, body] of reads) {
+      const url = new URL(address, "https://read.invalid");
+      const [, route, table] = url.pathname.split("/");
+      if (route !== "crud" || table === undefined) throw new Error(`a carried read is no /crud read: ${address}`);
+      const key = memoKey(`${base}${address}`);
+      const select = url.searchParams.get("select") ?? undefined;
+      const tables = readDeps(table, { select });
+      // A document is a fresh guest's, rendered when it was: rows this tab
+      // has written may have moved since, and their writer reads the door.
+      // The rows a read returns, its table's and its embeds'; what decides
+      // who may read them is the guest's own, written by the very mint that
+      // makes this store one a document may seed.
+      const returned = [table, ...embedDeps(select, table, cfg.schema)];
+      if (returned.some((t) => (generation.get(t) ?? 0) > 0)) continue;
+      if (pageReads !== undefined) {
+        pageReads.set(readKey(address, at), body);
+        if (globalThis.location?.href === at) answered.delete(key);
+      } else if (!answered.has(key)) {
+        keep(answered, key, { body, tables, refreshing: null, served: false, servedAt: null });
+      }
+      notifySeeded(key);
+    }
+  }
+
+  const isServedAtPage = (at) =>
+    Boolean(at && servedToReader && guest() && at === globalThis.location?.href && (at === servedAt || prefetchedPages.has(at)));
+
+  async function readServer(table, order, opts) {
+    if (posed.has(table) && (requestOnly(table) || client.collections[table] === undefined)) {
+      const preds = parseFilter(opts.filter, orderOf(table));
+      if (preds === null) {
+        throw new Error(`unsupported filter on posed table ${table}: ${opts.filter}`);
+      }
+      const merged = new Map([
+        ...(posedServerBase.get(table) ?? []),
+        ...posed.get(table),
+      ]);
+      const rows = [...merged.values()].filter((r) => preds.every((p) => p(r)));
+      if (order) rows.sort(compareBy(order, orderOf(table)));
+      const spec = parseFilterSpec(opts.filter) ?? [];
+      const offset = Number(spec.find((s) => s.op === "offset")?.value ?? 0);
+      const limit = parseLimit(opts.filter);
+      return rows.slice(offset, limit === undefined ? undefined : offset + limit).map((r) => ({ ...r }));
+    }
+    // A missing optional FK binds an empty UUID. Local views already know
+    // that equality cannot match; sending it to Postgres would be a cast error.
+    const clauses = parseFilterSpec(opts.filter);
+    if (clauses?.some(({ col, op, value }) => op === "eq" && literal(table, col, value) === NOHOLD)) return [];
+    const url = `${crud(table)}?${search(order, opts)}`;
+    const key = memoKey(url);
+    if (!hasServedRead(url) && !(keepsReads && answered.has(key))) {
+      await awaitSeedForUrl(url);
+    }
+    const fromServed = hasServedRead(url);
+    const held = keepsReads ? kept(answered, key) : undefined;
+    if (!keepsReads || opts.current) {
+      if (held?.served && isServedAtPage(held.servedAt) && !fromServed) {
+        held.served = false;
+        held.servedAt = null;
+        return JSON.parse(held.body);
+      }
+      return (await fetchServer(url)).rows;
+    }
+    // Each answer is its own copy: a reader may sort or edit what it is given.
+    if (held !== undefined && (!fromServed || isServedAtPage(held.servedAt))) {
+      if (requestOnly(table) || !held.served || !isServedAtPage(held.servedAt)) {
+        refresh(key, url, held);
+      }
+      return JSON.parse(held.body);
+    }
+    const at = fromServed ? globalThis.location?.href ?? null : null;
+    const tables = readDeps(table, opts);
+    const before = generations(tables);
+    const { rows, body } = await fetchServer(url);
+    if (generations(tables) === before) keep(answered, key, { body, tables, refreshing: null, served: fromServed, servedAt: at });
+    return rows;
+  }
+
+  async function read(table, order, opts = {}) {
+    order ??= opts.order;
+    const url = `${crud(table)}?${search(order, opts)}`;
+    const rKey = recallKey(table, order, opts);
+    const isLocalReady = () => {
+      if (maintainedView(table, { ...opts, order }, false)?.complete()) return true;
+      const tables = snapshotTables(table, opts);
+      return tables.length > 0 && tables.every((t) => !lazy(t) && client.collections[t]?.isReady?.());
+    };
+    if (!requestOnly(table) && local[table] === undefined && !recalled.has(rKey) &&
+        !hasServedRead(url) && !(keepsReads && answered.has(memoKey(url))) &&
+        !isLocalReady()) {
+      await awaitSeedForUrl(url);
+    }
+    const heldAnswer = keepsReads ? kept(answered, memoKey(url)) : undefined;
+    const servedForPage = hasServedRead(url) || Boolean(heldAnswer?.served && isServedAtPage(heldAnswer.servedAt));
+    if (requestOnly(table) || (servedForPage && !recalled.has(rKey))) {
+      return readServer(table, order, opts);
+    }
+    await Promise.all([table, ...embedDeps(opts.select, table, cfg.schema), ...accessDeps(table)].map(ensurePrepared));
+    // A read the engine already maintains needs no re-derivation: the view is
+    // the filter and the order, kept current by the deltas that woke us.
+    const held = maintainedView(table, { ...opts, order }, lazy(table));
+    const key = rKey;
+    if (held !== null) {
+      const release = lease(held);
+      try {
+        if (!held.complete()) {
+          const shown = standIn(key, table, order, opts);
+          if (shown !== undefined) return shown;
+          await settled(held);
+        }
+        return recall(key, table, opts, held.view.toArray);
+      } finally {
+        release();
+      }
+    }
+    if (routeOf(parseFilterSpec(opts.filter), parseSelect(opts.select), parseLimit(opts.filter)) === "server") {
+      return readServer(table, order, opts);
+    }
+    const preds = queryPredicates(table, opts.filter);
+    const embeds = preds !== null ? parseSelect(opts.select) : null;
+    const c =
+      localEmbeds(table, embeds)
+        ? client.collections[table]
+        : undefined;
+    if (c !== undefined) {
+      const releases = [];
+      try {
+        const demands = snapshotDemands(table, opts);
+        for (const entry of demands) releases.push(lease(entry));
+        if (demands.some(entry => !entry.complete())) {
+          const shown = standIn(key, table, order, opts);
+          if (shown !== undefined) return shown;
+        }
+        await Promise.all([
+          ...snapshotTables(table, opts).filter(t => !lazy(t)).map(t => wholeCollection(t, `a read of ${table}`)),
+          ...demands.map(entry => settled(entry)),
+        ]);
+        const all = c.toArray;
+        // The snapshot is a fresh array, so it is sorted in place, and copied
+        // only where a predicate, a cap or an embed makes a different one.
+        const rows = access[table] === undefined && preds.length === 0
+          ? all
+          : all.filter((r) => visible(table, r) && preds.every((p) => p(r)));
+        if (order) rows.sort(compareBy(order, orderOf(table)));
+        const limit = parseLimit(opts.filter);
+        const capped = limit === undefined ? rows : rows.slice(0, limit);
+        if (embeds.length === 0) return recall(key, table, opts, capped);
+        return recall(key, table, opts, capped.map((row) => {
+          const out = { ...row };
+          for (const { alias, table: rel, cols } of embeds) {
+            // A collection is keyed by the same column keyOf names, so the
+            // joined row is one lookup; a scan of the related table per row
+            // is the product of the two tables per read.
+            const target = client.collections[rel].get(row[`${alias}_id`]);
+            // null embed mirrors PostgREST under RLS: a joined row this
+            // reader cannot see binds blank, never leaks.
+            out[alias] =
+              target !== undefined && visible(rel, target)
+                ? Object.fromEntries(cols.map((col) => [col, target[col]]))
+                : null;
+          }
+          return out;
+        }));
+      } finally {
+        for (const release of releases) release();
+      }
+    }
+    // Server-computed read: fts, embed-path filter, or untranslatable
+    // select/filter.
+    return readServer(table, order, opts);
+  }
+
+  // Server-computed regions have one blind spot the collections cannot
+  // cover: a re-fetch triggered by this session's own optimistic write races
+  // the write's HTTP, and once the write confirms the collection state shows
+  // no further diff (the optimistic overlay already matched), so no change
+  // event follows — the region would keep the raced, pre-write result until
+  // navigation. Settlement of an own mutation is therefore its own signal.
+  const settleListeners = new Map();
+  function notifySettled(table, keys) {
+    forget(table);
+    for (const fn of settleListeners.get(table) ?? []) fn(keys);
+  }
+  function onSettled(promise, table, keys) {
+    promise.then(
+      () => notifySettled(table, keys),
+      // A refusal rolls the optimistic state back, which re-renders through
+      // the collections on its own.
+      () => {},
+    );
+    return promise;
+  }
+
+  // A fold sink's shown value depends on the source rows the sink has not
+  // folded in yet, so its region has to wake on the source too — the sink row
+  // itself does not move when this session favourites something.
+  const foldSourceOf = (table) => {
+    const p = foldSinks.get(table);
+    // The reader's private pair is an input to the shown value exactly as the
+    // source rows are: when it lands, `others` changes.
+    return p === undefined ? [] : [p.from, p.pair?.table].filter(Boolean);
+  };
+
+  /**
+   * A collection's changes, every one of them. Left to its default, a
+   * subscription hears only about keys it has been told of: a row already in
+   * the collection when the subscription opens is not, so its later delete is
+   * never delivered, and a region reading a seeded or resumed table keeps
+   * drawing a row the store no longer holds. `includeInitialState: false`,
+   * stated rather than left unset, is the engine's "every key is seen": no
+   * filtering, no snapshot walked, no key set kept per subscription.
+   */
+  function watch(collection, fn) {
+    return stopper(collection.subscribeChanges(fn, { includeInitialState: false }));
+  }
+  /** An engine subscription handle, either shape, as a plain stop. */
+  const stopper = (sub) => (typeof sub === "function" ? sub : () => sub.unsubscribe());
+
+  const notifications = new Set();
+  /** Pending subscription wakes only; shape streams and machine clocks are
+   * independent of a document finishing its present reads. */
+  function flushNotifications() {
+    const queued = [...notifications];
+    for (const wake of queued) wake();
+    return queued.length;
+  }
+
+  /**
+   * One wake per burst, carrying what the burst named.
+   *
+   * Changes are accumulated across the window, because a shape commit arrives
+   * as several batches and the region is woken once for all of them. The
+   * wake carries the rows they named; a cause with no rows — a change set the
+   * read cannot attribute, a settle on another table — widens it to
+   * everything, which asks the region to reconsider every row rather than
+   * pretend nothing moved. A wake that named nothing is not delivered, and
+   * neither is one that comes due after the subscription stopped: a region
+   * torn down in the same task would otherwise be refreshed as if it stood,
+   * re-hydrating nested regions nothing will ever stop.
+   */
+  function coalesce(fn, holding = () => false) {
+    let scheduled = false;
+    let stopped = false;
+    let batch = [];
+    let unattributed = false;
+    let cancel;
+    const wake = () => {
+      cancel?.();
+      notifications.delete(wake);
+      scheduled = false;
+      if (stopped || (batch.length === 0 && !unattributed)) return;
+      if (holding()) return;
+      const changes = unattributed ? undefined : batch;
+      batch = [];
+      unattributed = false;
+      fn(changes);
+    };
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      notifications.add(wake);
+      cancel = enqueue(wake);
+    };
+    return {
+      /** These rows moved. */
+      named: (changes) => {
+        for (const c of changes) batch.push(c);
+        schedule();
+      },
+      /** Something moved, and which rows is not known. */
+      widened: () => {
+        unattributed = true;
+        schedule();
+      },
+      /** A write of this table settled, naming the keys it wrote. */
+      settled: (keys) => {
+        if (keys === undefined) unattributed = true;
+        else for (const id of keys) batch.push({ value: { id } });
+        schedule();
+      },
+      /** What held the wake has let go of it. */
+      released: () => schedule(),
+      /** Drops buffered changes when an initial subset matches what #pronto-reads already painted. */
+      discard: () => {
+        batch = [];
+        unattributed = false;
+        cancel?.();
+        notifications.delete(wake);
+        scheduled = false;
+      },
+      stop: () => {
+        stopped = true;
+        cancel?.();
+        notifications.delete(wake);
+      },
+    };
+  }
+
+  function subscribe(table, fn, opts = {}) {
+    const readDeps = [...new Set(opts.reads ?? [])].filter((t) => t !== table);
+    const syncedReadDeps = readDeps.filter((t) => !requestOnly(t));
+    if (requestOnly(table)) {
+      // A completed local command requests a fresh read. It does not open a
+      // remote subscription or react to another session's writes.
+      const wakes = coalesce(fn);
+      const deps = [...new Set([table, ...embedDeps(opts.select, table, cfg.schema), ...readDeps])];
+      for (const t of deps) settleListeners.set(t, (settleListeners.get(t) ?? new Set()).add(wakes.widened));
+      return () => {
+        wakes.stop();
+        for (const t of deps) settleListeners.get(t).delete(wakes.widened);
+      };
+    }
+    const afterSession = (start) => {
+      if (!pendingSession || token()) return start();
+      let stopped = false;
+      let stop = () => {};
+      pendingSession().then(() => {
+        // A settled session whose token is gone — a 401 forgot it, and the
+        // page is reloading — would be waited on again at once, and again,
+        // on the microtask queue, until the page ran out of heap.
+        if (!token()) throw new Error(`subscribe ${table}: the session settled without a token`);
+        if (!stopped) stop = start();
+      });
+      return () => {
+        stopped = true;
+        stop();
+      };
+    };
+    const watchDep = (t, onWake) =>
+      local[t] === undefined
+        ? afterSession(() => watch(client.collections[t], onWake))
+        : watch(client.collections[t], onWake);
+    if (pendingSession && !token()) {
+      const others = [
+        ...embedDeps(opts.select, table, cfg.schema),
+        ...accessDeps(table),
+        ...foldSourceOf(table),
+      ];
+      if ([table, ...others].some((t) => local[t] === undefined)) {
+        return afterSession(() => subscribe(table, fn, opts));
+      }
+    }
+    // A maintained view's own changes ARE this region's input changing —
+    // computed by the engine against the actual query rather than guessed
+    // from a predicate over one table's raw change set. Nothing else needs
+    // watching: a row leaving the filter, a row entering it, and a row moving
+    // in the order all arrive here and nowhere else.
+    const view = maintainedView(table, opts, true)?.acquire() ?? null;
+    const demands = view === null ? snapshotDemands(table, opts) : [];
+    const releaseDemands = demands.map(lease);
+    // While the view loads a subset — its own rows, or the lazy side of a join
+    // fetching a row a change named — what it holds is partial: a row whose
+    // embedded row has not arrived binds the embed blank. Its wakes wait for
+    // the load to end, and go out together then.
+    const loading = view === null ? demands : [view];
+    const wakes = coalesce(fn, () => loading.some(entry => entry.view.isLoadingSubset));
+    const loaded = () => (stoodIn.has(recallKey(table, opts.order, opts)) ? wakes.widened() : wakes.released());
+    const unloads = demands.map(entry => entry.attach(v => v.on("loadingSubset:change", event => {
+      if (!event.isLoadingSubset) loaded();
+    })));
+    if (view !== null) {
+      // Through watch, for the same reason a raw collection is: a region
+      // joining a view another already holds subscribes after the view has
+      // its rows, and would otherwise never hear one of them go.
+      // The view a rebuild replaces is the one listened to from then on.
+      const url = `${crud(table)}?${search(opts.order, opts)}`;
+      let initialSubset = true;
+      const settleServed = (v) => {
+        if (!initialSubset) return false;
+        initialSubset = false;
+        const held = answered.get(memoKey(url));
+        if (held?.served) {
+          dropHeldServed(url);
+          const rows = v.toArray;
+          recall(recallKey(table, opts.order, opts), table, opts, rows);
+          if (unchanged(url, JSON.stringify(rows), held.body)) {
+            wakes.discard();
+            return true;
+          }
+          clearRemoteServed();
+          return false;
+        }
+        return false;
+      };
+      const stop = view.attach((v) => {
+        const unwatch = watch(v, (changes) => {
+          if (Array.isArray(changes)) wakes.named(changes);
+          else wakes.widened();
+          if (!v.isLoadingSubset) {
+            if (!settleServed(v)) clearRemoteServed();
+          }
+        });
+        const unload = v.on("loadingSubset:change", (event) => {
+          if (event.isLoadingSubset) return;
+          if (settleServed(v)) return;
+          loaded();
+        });
+        if (!v.isLoadingSubset && view.complete()) {
+          const hadServed = Boolean(answered.get(memoKey(url))?.served);
+          if (!settleServed(v) && hadServed) {
+            wakes.widened();
+          }
+        }
+        return () => {
+          unwatch();
+          unload();
+        };
+      });
+      // The engine maintains the view over the sink alone; the projection is
+      // applied after it, so the source's changes have to arrive separately.
+      const sourceTables = [...new Set([...foldSourceOf(table), ...syncedReadDeps])];
+      const sourceStops = sourceTables
+        .filter((t) => client.collections[t] !== undefined)
+        .map((t) => watchDep(t, () => {
+          clearRemoteServed();
+          wakes.widened();
+        }));
+      const settle = (keys) => {
+        dropHeldServed(url);
+        wakes.settled(keys);
+      };
+      settleListeners.set(table, (settleListeners.get(table) ?? new Set()).add(settle));
+      for (const t of readDeps) {
+        settleListeners.set(t, (settleListeners.get(t) ?? new Set()).add(wakes.widened));
+      }
+      return () => {
+        wakes.stop();
+        stop();
+        for (const s of sourceStops) s();
+        settleListeners.get(table).delete(settle);
+        for (const t of readDeps) settleListeners.get(t)?.delete(wakes.widened);
+        view.release();
+      };
+    }
+    const others = new Set([
+      ...embedDeps(opts.select, table, cfg.schema),
+      ...accessDeps(table),
+      ...foldSourceOf(table),
+      ...syncedReadDeps,
+    ]);
+    const deps = [...new Set([table, ...others])];
+    const settleDeps = [...new Set([...deps, ...readDeps])];
+    // The read's own table is judged by its filter only when the table is
+    // nothing else to it: a self-embed or a folder whose parent is the same
+    // table moves the result through rows outside the filter.
+    const filtered = (t) => t === table && !others.has(table);
+    // PostgREST can return rows no collection ever held. In particular,
+    // deleting one must invalidate the result without loading its snapshot.
+    // A change to the read's own table wakes it only when a row the change
+    // names could pass its filter, as for a read decided here: the server
+    // computes the result, but which rows it can hold is the filter's.
+    // Another dependency's change, or one naming no rows, wakes it whole.
+    if (snapshotTables(table, opts).length === 0) {
+      const preds = serverPredicates(table, opts.filter);
+      const own = (changes) => {
+        if (touches(preds, changes)) wakes.widened();
+      };
+      let uncaught = deps.filter((t) => local[t] === undefined).length;
+      // Which tables a served read not yet asked for depends on is not known
+      // here, so a change that would wake any server read drops them all.
+      const moved = (wake) => (changes) => (clearRemoteServed(), wake(changes));
+      const stops = deps.map((t) => {
+        const wake = filtered(t) ? own : wakes.widened;
+        if (local[t] !== undefined) return watch(client.collections[t], moved(wake));
+        let caughtUp = false;
+        return afterSession(() => client.subscribeInvalidation(t, (changes) => {
+          if (!caughtUp && changes === undefined) {
+            caughtUp = true;
+            if (--uncaught === 0) wake(changes);
+            return;
+          }
+          moved(wake)(changes);
+        }));
+      });
+      for (const t of settleDeps) {
+        settleListeners.set(t, (settleListeners.get(t) ?? new Set()).add(wakes.widened));
+      }
+      return () => {
+        wakes.stop();
+        for (const stop of stops) stop();
+        for (const t of settleDeps) settleListeners.get(t).delete(wakes.widened);
+      };
+    }
+    // The region's own filter as predicates. A change to a row this region
+    // could never show is not this region's input changing, so it must not
+    // cost a re-read: without this every comment written anywhere re-queries
+    // every comment region on the page.
+    const preds = queryPredicates(table, opts.filter);
+    // Whether a change to this table names exactly the rows whose rendering it
+    // can move. That holds when nothing is joined, so a row the change did not
+    // name is rendered from a value nothing touched; a join can move a row a
+    // write never named, so it re-derives every row instead of patching the
+    // named ones.
+    const embeds = parseSelect(opts.select);
+    const attributable = preds !== null && Array.isArray(embeds) && embeds.length === 0;
+    // Anything the read cannot reason about — another dependency's table, an
+    // untranslatable filter — is unconditionally the region's input changing.
+    // Being unsure costs a re-read, never a miss.
+    const url = `${crud(table)}?${search(opts.order, opts)}`;
+    const wakeMatching = (changes) => {
+      if (!touches(preds, changes)) return;
+      clearRemoteServed();
+      if (attributable && Array.isArray(changes)) wakes.named(changes);
+      else wakes.widened();
+    };
+    const wakeAll = () => {
+      clearRemoteServed();
+      wakes.widened();
+    };
+    const settle = (keys) => {
+      dropHeldServed(url);
+      if (attributable) wakes.settled(keys);
+      else wakes.widened();
+    };
+    const stops = deps
+      .filter((t) => client.collections[t] !== undefined)
+      .map((t) => watchDep(t, filtered(t) && preds !== null ? wakeMatching : wakeAll));
+    for (const t of settleDeps) {
+      settleListeners.set(t, (settleListeners.get(t) ?? new Set()).add(t === table ? settle : wakeAll));
+    }
+    return () => {
+      wakes.stop();
+      for (const stop of stops) stop();
+      for (const off of unloads) off();
+      for (const release of releaseDemands) release();
+      for (const t of settleDeps) settleListeners.get(t).delete(t === table ? settle : wakeAll);
+    };
+  }
+
+  // A server entity has no replicated snapshot or offline intent. Its command
+  // completes when CRUD accepts it; a refusal must never be reported as queued.
+  async function serverCommand(table, method, values, filter) {
+    const fields = cfg.schema[table].fields ?? [];
+    const clean = row => {
+      const command = Object.fromEntries(Object.entries(row)
+        .filter(([key]) => !key.startsWith("$") && key !== "txid" && key !== "scope_id" && (method !== "PATCH" || key !== keyOf(table))));
+      return fields.length === 0 ? command : carrier().normalizeRow(fields, command);
+    };
+    const body = values === undefined ? undefined : JSON.stringify(Array.isArray(values)
+      ? values.map(clean) : clean(values));
+    const res = await request(`${crud(table)}${filter === undefined ? "" : `?${filter}`}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+        ...(method === "POST" ? { "Idempotency-Key": crypto.randomUUID() } : {}),
+      },
+      body,
+    });
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new ProgramError(`${method} ${table}: CRUD returned no row array`);
+    const identity = key => String(literal(table, keyOf(table), String(key)) ?? key);
+    const keys = rows.map(row => {
+      if (row?.[keyOf(table)] === undefined) throw new ProgramError(`${method} ${table}: CRUD returned a row without its key`);
+      return identity(row[keyOf(table)]);
+    });
+    if (keys.length > 0) notifySettled(table, keys);
+    const submitted = method === "POST" ? (Array.isArray(values) ? values : [values]) : [];
+    const expected = method === "POST" ? submitted.length : 1;
+    const wanted = method === "POST"
+      ? submitted.map(row => row[keyOf(table)]).filter(key => key !== undefined).map(identity)
+      : [identity(new URLSearchParams(filter).get(keyOf(table)).slice(3))];
+    const accepted = new Set(keys);
+    if (rows.length !== expected || wanted.some(key => !accepted.has(key))) {
+      const changed = rows.length === 0 ? "no rows" : `${rows.length} of ${expected} rows`;
+      const err = new Error(`${method} ${table} changed ${changed}: the server refused the command`);
+      err.name = "NonRetriableError";
+      throw err;
+    }
+  }
+
+  /* Every mutation below takes a batch, because the collection does its work
+   * per CALL and not per row: it maintains the live queries each region reads
+   * a table through, and that is what a write costs. A caller with a hundred
+   * rows that writes them one at a time pays for the whole table a hundred
+   * times, which is how building one becomes quadratic in its own size. There
+   * is no singular form here, so there is none to reach for. */
+
+  /** Rows stated by their own keys — inserted where absent, patched where
+   * present. The caller derived each key from what its row identifies, so the
+   * same row written twice is the same row, and fields a row does not name are
+   * left alone: it states a row, it does not replace one. */
+  // Each edit is {key, row}: the key beside the row it identifies, the way
+  // patch and drop already take theirs. The row need not repeat it, and the key
+  // wins where it does — a caller states identity in one place.
+  async function write(table, edits, onRefused) {
+    if (edits.length === 0) return;
+    await ensurePrepared(table);
+    const key = keyOf(table);
+    const rows = edits.map((e) => {
+      if (e?.key === undefined) throw new Error(`write ${table}: an edit names no ${key}`);
+      return { ...e.row, [key]: e.key };
+    });
+    if (requestOnly(table)) {
+      const commands = [];
+      const edgeIndex = new Map();
+      for (const row of rows) {
+        const filter = `${key}=eq.${encodeURIComponent(row[key])}`;
+        const have = (await readServer(table, null, { filter }))[0];
+        await validate(table, have === undefined ? "insert" : "update", row, have, edgeIndex);
+        commands.push({ row, method: have === undefined ? "POST" : "PATCH", filter: have === undefined ? undefined : filter });
+      }
+      for (const command of commands) await serverCommand(table, command.method, command.row, command.filter);
+      return;
+    }
+    const collection = await mutationCollection(table, "a write by key");
+    // Asked once for the batch. Asked per row it is a scan of the table per
+    // row, which is the quadratic term this whole shape exists to remove — and
+    // the standing row itself, so the judge below does not scan for it either.
+    // Stringified for the lookup and kept in its own type for the write: a key
+    // the collection holds as a number is still that number when patched.
+    const byKey = new Map(collection.toArray.map((r) => [String(r[key]), r]));
+    const edgeIndex = new Map();
+    for (const row of rows) {
+      const have = byKey.get(String(row[key]));
+      if (have === undefined) await validate(table, "insert", blank(table, row), undefined, edgeIndex);
+      else await validate(table, "update", row, have, edgeIndex);
+    }
+    // Judging awaits, so the collection may have moved under the snapshot the
+    // verdicts were read from; the partition the client calls carry is the one
+    // that stands now, or an insert would be aimed at a row that has arrived.
+    const now = new Map(collection.toArray.map((r) => [String(r[key]), r]));
+    const fresh = [];
+    const standing = [];
+    for (const row of rows) {
+      const have = now.get(String(row[key]));
+      if (have === undefined) fresh.push(blank(table, row));
+      else standing.push({ key: have[key], changes: row });
+    }
+    // Standing rows change before fresh ones arrive, so a batch that demotes one
+    // row and promotes another never holds both in a unique's domain, not even
+    // for the one change event between the two calls.
+    if (standing.length > 0) {
+      await settle(
+        onSettled(client.update(table, standing), table, standing.map((e) => String(e.key))),
+        ACCEPT_MS,
+        onRefused,
+      );
+    }
+    if (fresh.length > 0) {
+      await settle(
+        onSettled(client.insert(table, fresh), table, fresh.map((r) => String(r[key]))),
+        ACCEPT_MS,
+        onRefused,
+      );
+    }
+  }
+
+  /** Rows asserted to be new. A form's create says so, and saying so is what
+   * makes a duplicate a refusal the reader can be told about rather than a
+   * silent patch of somebody else's row. */
+  async function add(table, rows, onRefused) {
+    if (rows.length === 0) return;
+    await ensurePrepared(table);
+    const key = keyOf(table);
+    const filled = rows.map((r) => blank(table, r));
+    const edgeIndex = new Map();
+    for (const row of filled) await validate(table, "insert", row, undefined, edgeIndex);
+    if (requestOnly(table)) return serverCommand(table, "POST", filled);
+    await settle(
+      onSettled(client.insert(table, filled), table, filled.map((r) => String(r[key]))),
+      ACCEPT_MS,
+      onRefused,
+    );
+  }
+
+  // A write by key names its row, and a table read lazily holds only the
+  // rows some view loaded; the key a form or an effect carries need not be one
+  // of them. Each row the collection lacks is loaded as a view of its key, held
+  // until the write has gone out. A row that does not exist stays missing, and
+  // the write is the collection's own refusal of it.
+  async function holding(table, keys, write) {
+    if (!lazy(table)) {
+      const collection = client.collections[table];
+      if (collection === undefined) throw new Error(`a write by key reads ${table}, which has no collection`);
+      // Request-only reads leave even eager collections idle. Keep their
+      // snapshot subscribed until the mutation has settled.
+      const stop = watch(collection, () => {});
+      try {
+        await wholeCollection(table, "a write by key");
+        return await write();
+      } finally {
+        stop();
+      }
+    }
+    const collection = client.collections[table];
+    const held = [];
+    try {
+      for (const k of new Set(keys.filter((k) => !collection.has(k)))) {
+        const entry = maintainedView(table, { filter: `${keyOf(table)}=eq.${k}` }, true);
+        if (entry === null) throw new ProgramError(`${table} reads lazily, and a view of one row of it by ${keyOf(table)} is not one the engine maintains`);
+        held.push(entry.acquire());
+      }
+      await Promise.all(held.map(settled));
+      return await write();
+    } finally {
+      for (const entry of held) entry.release();
+    }
+  }
+
+  /** Named fields of rows that are already there. */
+  async function patch(table, edits, onRefused) {
+    if (edits.length === 0) return;
+    await ensurePrepared(table);
+    const key = keyOf(table);
+    if (requestOnly(table)) {
+      const edgeIndex = new Map();
+      for (const e of edits) {
+        if (e?.key === undefined) throw new Error(`patch ${table}: an edit names no ${key}`);
+        await validate(table, "update", { ...e.changes, [key]: e.key }, undefined, edgeIndex);
+      }
+      for (const e of edits) await serverCommand(table, "PATCH", e.changes, `${key}=eq.${encodeURIComponent(e.key)}`);
+      return;
+    }
+    await holding(table, edits.map((e) => e.key), async () => {
+      // The key last: a `changes` naming the key cannot redirect the judgement
+      // onto a row other than the one this edit identifies.
+      const edgeIndex = new Map();
+      for (const e of edits) await validate(table, "update", { ...e.changes, [key]: e.key }, undefined, edgeIndex);
+      await settle(
+        onSettled(client.update(table, edits), table, edits.map((e) => String(e.key))),
+        ACCEPT_MS,
+        onRefused,
+      );
+    });
+  }
+
+  // Write the row for a natural key, whether or not it exists yet.
+  //
+  // The decision is local and stays local: the collection holds every row this
+  // reader may see, so "does my row exist" is a lookup rather than a round
+  // trip, and the write leaves as an insert or an update accordingly. The
+  // gateway injects resolution=ignore-duplicates on POST, so a create aimed at
+  // a row that already exists would be swallowed in silence — which is exactly
+  // what this resolves before anything reaches the wire.
+  //
+  // The owner column is filled from the session when the form omits it: it is
+  // DEFAULT auth_uid() and materialises server-side, so the reader's own rows
+  // carry it while the row they are about to write does not.
+  async function upsertBy(table, values, onRefused) {
+    await ensurePrepared(table);
+    const owner = access[table]?.owner;
+    const keys = upsertKey(cfg.uniques?.[table], keyOf(table), owner, values);
+    if (keys === null) {
+      throw new Error(`upsert ${table}: no natural key covers ${Object.keys(values).join(",")}`);
+    }
+    const at = (r, c) => String(r[c] ?? (c === owner ? userId() : ""));
+    const wanted = keys.map((c) => at(values, c));
+    if (requestOnly(table)) {
+      const filter = keys.map((col, i) => values[col] === null ? `${col}=is.null` : `${col}=eq.${encodeURIComponent(wanted[i])}`).join("&");
+      const rows = await readServer(table, null, { filter });
+      if (rows.length > 1) throw new ProgramError(`upsert ${table}: its natural key identifies ${rows.length} rows`);
+      if (rows.length === 1) return patch(table, [{ key: rows[0][keyOf(table)], changes: values }], onRefused);
+      return add(table, [{ [keyOf(table)]: crypto.randomUUID(), ...values }], onRefused);
+    }
+    const collection = await mutationCollection(table, "an upsert by natural key");
+    const existing = collection.toArray.find(
+      (r) => visible(table, r) && keys.every((c, i) => at(r, c) === wanted[i]),
+    );
+    if (existing === undefined) {
+      // The key the row is found by next: the one the form gave it, else
+      // minted here, since nothing else will supply it.
+      const pk = keyOf(table);
+      const id = values[pk] ?? crypto.randomUUID();
+      return write(table, [{ key: id, row: { ...values, [pk]: id } }], onRefused);
+    }
+    return patch(table, [{ key: existing[keyOf(table)], changes: values }], onRefused);
+  }
+
+  async function drop(table, keys, onRefused) {
+    if (keys.length === 0) return;
+    await ensurePrepared(table);
+    const edgeIndex = new Map();
+    for (const key of keys) {
+      if (key === undefined) throw new Error(`drop ${table}: a key is undefined`);
+      await validate(table, "delete", { [keyOf(table)]: key }, undefined, edgeIndex);
+    }
+    if (requestOnly(table)) {
+      for (const key of keys) {
+        await serverCommand(table, "DELETE", undefined, `${keyOf(table)}=eq.${encodeURIComponent(key)}`);
+      }
+      return;
+    }
+    await holding(table, keys, () =>
+      settle(
+        onSettled(client.remove(table, keys), table, keys.map((k) => String(k))),
+        ACCEPT_MS,
+        onRefused,
+      ));
+  }
+
+  // Filter-scoped bulk delete (SPEC #Form.filter): resolve the matching keys,
+  // then one durable per-row delete each — at-least-once row by row.
+  //
+  // The keys come from the local collection whenever the filter translates,
+  // and that is a correctness requirement, not an optimisation. Resolving them
+  // server-side returns rows the server still holds — including one whose
+  // optimistic delete has already been applied here — and deleting a key the
+  // collection no longer has throws, rolls the mutation back and aborts its
+  // own DELETE in flight. A reader toggling quickly then gets a refusal on
+  // every subsequent click while other sessions are unaffected. The collection
+  // holds every row this reader may see (the shape is the whole table), so it
+  // is the same set, read from where the optimistic state lives.
+  async function dropWhere(table, filter, onRefused) {
+    // A limit is a cap the parser reads apart from the predicates, and a
+    // DELETE has no ordering to cap against — honoring the rest of the filter
+    // would silently widen the deletion's scope.
+    if (parseLimit(filter) !== undefined) throw new Error(`delete filter carries a limit: ${filter}`);
+    if (requestOnly(table)) {
+      const rows = await readServer(table, null, { filter });
+      return drop(table, rows.map(row => row[keyOf(table)]), onRefused);
+    }
+    await ensurePrepared(table);
+    const preds = parseFilter(filter, orderOf(table));
+    // A precondition, not a branch: resolving these keys anywhere but the
+    // collection reintroduces the divergence this comment block describes, so
+    // an untranslatable delete filter is a program error rather than a quieter
+    // path that works until it doesn't.
+    if (preds === null) throw new Error(`delete filter is not translatable: ${filter}`);
+    const collection = await mutationCollection(table, "a delete by filter");
+    const rows = collection.toArray.filter((r) => visible(table, r) && preds.every((f) => f(r)));
+    // Re-check presence at the moment of the delete: resolution and mutation
+    // are separated by an await, and a concurrent settle can retire a row in
+    // between.
+    const keys = rows
+      .map((r) => r[keyOf(table)])
+      .filter((k) => collection.has?.(k) !== false);
+    await drop(table, keys, onRefused);
+  }
+
+  async function tabSnapshot() {
+    const saved = {};
+    for (const [table, durability] of Object.entries(local)) {
+      if (durability !== "tab") continue;
+      await ensurePrepared(table);
+      const collection = client.collections[table];
+      if (!collection.isReady?.()) await collection.toArrayWhenReady?.();
+      saved[table] = { schema: cfg.schema?.[table], rows: collection.toArray ?? [] };
+    }
+    return saved;
+  }
+
+  function restoreTabs(saved) {
+    for (const [table, value] of Object.entries(saved ?? {})) {
+      if (local[table] !== "tab" ||
+          JSON.stringify(value.schema) !== JSON.stringify(cfg.schema?.[table])) continue;
+      if (preparedAt.has(table)) throw new Error(`tab recovery after ${table} was prepared`);
+      restoredTabs.set(table, value.rows);
+    }
+  }
+
+  async function upload(key, file) {
+    if (pendingSession && !token()) await pendingSession();
+    if (!token()) throw new Error("an upload requires an authenticated session");
+    return request(`${base}/blobs/mecha-objects/${encodeURIComponent(key)}`, { method: "PUT", body: file });
+  }
+
+  async function pose(table, row) {
+    await ensurePrepared(table);
+    const key = keyOf(table);
+    const collection = client.collections[table];
+    if (collection && !collection.isReady?.() && local[table] !== undefined) {
+      await collection.toArrayWhenReady?.();
+    }
+    const existingRows = [];
+    const seenKeys = new Set();
+    const pushRows = (rows) => {
+      if (!Array.isArray(rows)) return;
+      for (const r of rows) {
+        if (!r || typeof r !== "object" || !visible(table, r)) continue;
+        const k = r[key] !== undefined ? String(r[key]) : undefined;
+        if (k !== undefined && seenKeys.has(k)) continue;
+        if (k !== undefined) seenKeys.add(k);
+        existingRows.push(r);
+      }
+    };
+    if (posed.has(table)) pushRows([...posed.get(table).values()]);
+    if (posedServerBase.has(table)) pushRows([...posedServerBase.get(table).values()]);
+    if (collection) pushRows(collection.toArray ?? []);
+    for (const entry of recalled.values()) {
+      if (entry.tables.values().next().value === table) pushRows(entry.rows);
+    }
+    for (const entry of answered.values()) {
+      if (entry.tables.values().next().value === table && entry.body) {
+        pushRows(JSON.parse(entry.body));
+      }
+    }
+    const cleanRow = {};
+    for (const [k, v] of Object.entries(row ?? {})) {
+      if (!k.startsWith("$")) cleanRow[k] = v;
+    }
+    if (cleanRow[key] === "") delete cleanRow[key];
+    const baseRow = cleanRow[key] !== undefined
+      ? (existingRows.find((r) => String(r[key]) === String(cleanRow[key])) ?? {})
+      : (existingRows[0] ?? {});
+    const baseClean = {};
+    for (const [k, v] of Object.entries(baseRow)) {
+      if (!k.startsWith("$")) baseClean[k] = v;
+    }
+    const targetKey = cleanRow[key] !== undefined
+      ? cleanRow[key]
+      : (baseClean[key] ?? `${table}_0001`);
+    const nextRow = blank(table, { ...baseClean, ...cleanRow, [key]: targetKey });
+
+    if ((requestOnly(table) || collection === undefined) && !posedServerBase.has(table)) {
+      const serverBase = new Map();
+      for (const r of existingRows) {
+        if (r[key] !== undefined) {
+          const copy = {};
+          for (const [k, v] of Object.entries(r)) {
+            if (!k.startsWith("$")) copy[k] = v;
+          }
+          serverBase.set(String(r[key]), copy);
+        }
+      }
+      posedServerBase.set(table, serverBase);
+    }
+
+    let tableMap = posed.get(table);
+    if (!tableMap) {
+      tableMap = new Map();
+      posed.set(table, tableMap);
+    }
+    tableMap.set(String(targetKey), nextRow);
+
+    clearRemoteServed();
+    forget(table);
+    for (const [sink, spec] of foldSinks.entries()) {
+      if (spec.from === table || spec.pair?.table === table) forget(sink);
+    }
+
+    if (collection?._state) {
+      const state = collection._state;
+      const actualKey = state.syncedData.has(targetKey)
+        ? targetKey
+        : state.syncedData.has(String(targetKey))
+        ? String(targetKey)
+        : (typeof targetKey === "string" && /^\d+$/.test(targetKey) && state.syncedData.has(Number(targetKey)))
+        ? Number(targetKey)
+        : targetKey;
+      const opType = state.syncedData.has(actualKey) ? "update" : "insert";
+      const rowWithKey = { ...nextRow, [key]: actualKey };
+      state.pendingSyncedTransactions.push({
+        committed: true,
+        immediate: true,
+        layoutChanged: false,
+        operations: [{ type: opType, key: actualKey, value: rowWithKey }],
+        deletedKeys: new Set(),
+        rowMetadataWrites: new Map(),
+        collectionMetadataWrites: new Map(),
+      });
+      state.commitPendingTransactions();
+      if (collection._lifecycle?.status === "loading") {
+        collection._lifecycle.markReady();
+      }
+    }
+
+    notifySettled(table, [String(targetKey)]);
+    flushNotifications();
+  }
+
+  const writing = (fn) => (table, ...rest) => {
+    if (local[table] === undefined) clearAllServed();
+    return fn(table, ...rest);
+  };
+  return {
+    query,
+    orderOf,
+    seedReads,
+    waitSeed,
+    add: writing(add),
+    write: writing(write),
+    patch: writing(patch),
+    drop: writing(drop),
+    dropWhere: writing(dropWhere),
+    upsertBy: writing(upsertBy),
+    pose,
+    subscribe,
+    upload: (...args) => (clearAllServed(), upload(...args)),
+    flushNotifications,
+    tabSnapshot,
+    restoreTabs,
+    async close() {
+      activeSeed = null;
+      notifyAllSeedWaiters();
+      await client.ready;
+      for (const entry of views.values()) {
+        while (entry.refs > 0) entry.release();
+      }
+      for (const entry of mutatilazys.values()) {
+        while (entry.refs > 0) entry.release();
+      }
+      await Promise.all(Object.values(client.collections).map(c => c.cleanup()));
+      for (const abort of reloading) abort();
+      reloading.clear();
+      await new Promise((r) => setTimeout(r, 0));
+    },
+  };
+}

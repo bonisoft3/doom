@@ -1,0 +1,7 @@
+{
+  "nodeModulesDir": "auto",
+  "imports": {
+    "croner": "npm:croner@10.0.1"
+  },
+  "lock": true
+}

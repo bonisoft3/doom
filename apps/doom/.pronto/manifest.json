@@ -1,0 +1,29 @@
+{
+  "written": [
+    ".github/workflows/cd.yml",
+    ".goreleaser.yaml",
+    ".pronto/check-inputs.json",
+    ".pronto/cluster.json",
+    ".say.yaml",
+    ".vscode/tasks.json",
+    "bayt.cue",
+    "bayt.json",
+    "buf.yaml",
+    "compose.yaml",
+    "docker/Caddyfile",
+    "monorepo/docker-image.yaml",
+    "offline-first-sw.js",
+    "robots.txt",
+    "schema/entities.proto",
+    "shell/boot.js",
+    "shell/design.css",
+    "shell/index.html",
+    "shell/screens/arena.html",
+    "shell/screens/lobby.html",
+    "shell/shell.css",
+    "shell/shell.json",
+    "shell/shell.yaml",
+    "sitemap.xml",
+    "tests/pairs.yaml"
+  ]
+}

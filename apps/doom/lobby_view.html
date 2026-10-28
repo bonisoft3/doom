@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Doom Arena — Lobby</title>
+  <link rel="stylesheet" href="shell/design.css">
+  <link rel="stylesheet" href="shell/screens/lobby.css">
+  <style>
+    body {
+      margin: 0;
+      background: var(--neutral, #0D0F11);
+      color: var(--primary, #D8E2EC);
+      font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen" data-screen="lobby" data-theme="terminal">
+    <div class="lobby-card">
+      <h1 class="lobby-title">UAC PHOBOS ARENA</h1>
+      <p class="lobby-desc">Configuração do Fuzileiro & Parâmetros de Combate</p>
+
+      <form class="lobby-form">
+        <div class="form-field">
+          <label for="input-handle">Nome do Fuzileiro</label>
+          <input type="text" id="input-handle" name="handle" value="Doomguy" maxlength="16" required>
+        </div>
+
+        <div class="form-field">
+          <label>Cor da Armadura</label>
+          <div class="color-options">
+            <label class="color-opt"><input type="radio" name="color" value="green" checked> Verde Militar</label>
+            <label class="color-opt"><input type="radio" name="color" value="indigo"> Azul UAC</label>
+            <label class="color-opt"><input type="radio" name="color" value="brown"> Marrom Terra</label>
+            <label class="color-opt"><input type="radio" name="color" value="red"> Escarlate</label>
+          </div>
+        </div>
+
+        <div class="form-field">
+          <label for="select-frags">Limite de Frags</label>
+          <select id="select-frags" name="frag_limit">
+            <option value="5">5 Frags (Rápida)</option>
+            <option value="10" selected>10 Frags (Padrão)</option>
+            <option value="20">20 Frags (Competitiva)</option>
+          </select>
+        </div>
+
+        <div class="lobby-actions">
+          <a class="act hot" href="showcase.html" style="display:inline-block; padding:10px 20px; background:linear-gradient(180deg, #CC292B 0%, #8E1819 100%); color:#FFF; text-decoration:none; border-radius:4px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em;">Entrar na Arena</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,1984 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Doom Arena — Pronto Kinetic</title>
+  <script src="https://cdn.jsdelivr.net/npm/babylonjs@7.54.3/babylon.js" crossorigin="anonymous"></script>
+  <style>
+    :root {
+      --neutral: #090B0D;
+      --surface: rgba(18, 21, 25, 0.92);
+      --border: rgba(255, 153, 0, 0.35);
+      --primary: #D8E2EC;
+      --secondary: #8B949E;
+      --accent: #FF9900;
+      --danger: #FF3333;
+      --attention: #33FF66;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #000;
+      color: var(--primary);
+      font-family: var(--font-mono);
+    }
+
+    /* Edge-to-Edge Viewport Container */
+    #viewport-container {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+    }
+
+    canvas#view3D {
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    /* Damage Flash & Time Travel Screen Overlays */
+    #dmgFlash {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background: rgba(255, 0, 0, 0.38);
+      opacity: 0;
+      transition: opacity 0.08s ease-out;
+      z-index: 40;
+    }
+    #dmgFlash.active {
+      opacity: 1;
+    }
+
+    #ttWatermark {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 153, 0, 0.15);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      padding: 6px 16px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      pointer-events: none;
+      z-index: 50;
+      display: none;
+      box-shadow: 0 0 12px rgba(255, 153, 0, 0.4);
+    }
+
+    /* Floating Game Menu Button */
+    #game-menu-btn {
+      position: fixed;
+      top: 14px;
+      left: 16px;
+      z-index: 100;
+      background: rgba(16, 18, 22, 0.8);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      color: #ECEFF1;
+      padding: 6px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+      transition: all 0.2s ease;
+    }
+
+    #game-menu-btn:hover {
+      background: rgba(28, 32, 40, 0.95);
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: 0 0 16px rgba(255, 153, 0, 0.35);
+      transform: translateY(-1px);
+    }
+
+    #game-menu-btn .dot {
+      width: 7px;
+      height: 7px;
+      background: #FF3333;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #FF3333;
+    }
+
+    #game-menu-btn .key {
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: #FFF;
+      font-size: 10px;
+    }
+
+    /* Floating UAC Terminal Toggle Button */
+    #uac-toggle {
+      position: fixed;
+      top: 14px;
+      right: 16px;
+      z-index: 100;
+      background: rgba(16, 18, 22, 0.8);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      color: var(--accent);
+      padding: 6px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+      transition: all 0.2s ease;
+    }
+
+    #uac-toggle:hover {
+      background: rgba(28, 32, 40, 0.95);
+      border-color: var(--accent);
+      box-shadow: 0 0 16px rgba(255, 153, 0, 0.35);
+      transform: translateY(-1px);
+    }
+
+    #uac-toggle .dot {
+      width: 7px;
+      height: 7px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    #uac-toggle .key {
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: #FFF;
+      font-size: 10px;
+    }
+
+    /* UAC Tactical Telemetry Terminal HUD Overlay */
+    #uac-terminal {
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%) translateY(0);
+      width: calc(100% - 32px);
+      max-width: 980px;
+      z-index: 200;
+      background: var(--surface);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.85), 0 0 1px 1px rgba(255, 153, 0, 0.25);
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.25s;
+    }
+
+    #uac-terminal.hidden {
+      opacity: 0;
+      visibility: hidden;
+      transform: translateX(-50%) translateY(24px);
+      pointer-events: none;
+    }
+
+    .uac-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 8px;
+    }
+
+    .uac-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.1em;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .uac-pill {
+      background: rgba(255, 153, 0, 0.15);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+
+    .uac-close-btn {
+      background: none;
+      border: none;
+      color: var(--secondary);
+      font-size: 16px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: color 0.15s;
+    }
+    .uac-close-btn:hover {
+      color: #FFF;
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    /* Timeline Controls Bar */
+    .timeline-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #FFF;
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.15s;
+    }
+
+    .btn:hover {
+      background: rgba(255, 153, 0, 0.2);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn:active {
+      transform: translateY(1px);
+    }
+
+    .btn-danger {
+      background: rgba(255, 51, 51, 0.2);
+      border-color: rgba(255, 51, 51, 0.4);
+      color: #FF8888;
+    }
+    .btn-danger:hover {
+      background: rgba(255, 51, 51, 0.35);
+      border-color: var(--danger);
+      color: #FFF;
+    }
+
+    .scrubber {
+      flex: 1;
+      min-width: 140px;
+      height: 6px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .tick-readout {
+      font-size: 12px;
+      min-width: 120px;
+      text-align: right;
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    /* Tactical Telemetry Grid */
+    .telemetry-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 8px;
+    }
+
+    .telemetry-cell {
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 11px;
+    }
+
+    .telemetry-label {
+      color: var(--secondary);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 2px;
+    }
+
+    .telemetry-val {
+      color: var(--primary);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Preset Buttons Bar */
+    .presets-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-top: 4px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      flex-wrap: wrap;
+    }
+
+    .preset-label {
+      font-size: 10px;
+      color: var(--secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .btn-preset {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--secondary);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .btn-preset:hover, .btn-preset.active {
+      background: rgba(255, 153, 0, 0.2);
+      border-color: var(--accent);
+      color: #FFF;
+    }
+
+    /* Plane 2: Declarative HUD & Weapon Overlay */
+    .doom-plane2 {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 30;
+    }
+
+    .doom-crosshair {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: rgba(255, 153, 0, 0.45);
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1;
+      pointer-events: none;
+    }
+
+    .doom-weapon-container {
+      position: fixed;
+      bottom: 42px;
+      left: 50%;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .doom-weapon-stage {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 0;
+      height: 0;
+      will-change: transform;
+    }
+
+    #doom-weapon-img {
+      position: absolute;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      pointer-events: none;
+      will-change: transform;
+    }
+
+    #doom-flash-img {
+      position: absolute;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      pointer-events: none;
+      z-index: 12;
+      filter: drop-shadow(0 0 16px rgba(255, 210, 80, 0.95)) drop-shadow(0 0 32px rgba(255, 140, 0, 0.6));
+    }
+    #doom-flash-img.hidden {
+      display: none;
+    }
+
+    .doom-msg-banner {
+      position: fixed;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 900;
+      color: #FFD600;
+      text-shadow: 0 0 8px rgba(0, 0, 0, 0.9), 2px 2px 0 #000, -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 6px 20px;
+      background: rgba(0, 0, 0, 0.65);
+      border: 1px solid rgba(255, 214, 0, 0.4);
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 36;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.8);
+      transition: opacity 0.25s ease;
+    }
+
+    .doom-msg-banner.hidden {
+      display: none;
+    }
+
+    .doom-status-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      width: 100vw;
+      height: 42px;
+      background: #14171A;
+      border-top: 2px solid #38404A;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: clamp(12px, 4vw, 36px);
+      padding: 0 16px;
+      z-index: 35;
+      pointer-events: auto;
+      box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.75);
+    }
+
+    .hud-box {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .hud-tag {
+      font-size: 9px;
+      font-weight: 700;
+      color: #8B949E;
+      letter-spacing: 0.05em;
+    }
+
+    .hud-num {
+      font-size: 18px;
+      font-weight: 900;
+      color: #FFB300;
+      font-family: var(--font-mono);
+      line-height: 1.1;
+    }
+
+    .health-ok { color: #33FF66 !important; }
+    .health-bad { color: #FF3333 !important; }
+    .armor-blue { color: #48CAE4 !important; }
+    .frag-green { color: #06D6A0 !important; }
+
+    .hud-arms-val {
+      font-size: 13px;
+      font-weight: 700;
+      color: #666;
+      letter-spacing: 0.12em;
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .arm-slot {
+      cursor: pointer;
+      padding: 1px 5px;
+      border-radius: 3px;
+      transition: all 0.15s ease;
+      color: #777;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      user-select: none;
+    }
+
+    .arm-slot:hover {
+      color: #FFF;
+      background: rgba(255, 153, 0, 0.25);
+      border-color: var(--accent);
+    }
+
+    .arm-slot:not(.owned) {
+      opacity: 0.25;
+      pointer-events: none;
+      filter: grayscale(1);
+    }
+
+    .arm-slot.active {
+      color: #000 !important;
+      background: var(--accent) !important;
+      font-weight: 900;
+      box-shadow: 0 0 8px rgba(255, 153, 0, 0.8);
+      border-color: #FFF;
+      opacity: 1 !important;
+    }
+
+    .hud-keys-row {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .key-badge {
+      font-size: 11px;
+      font-weight: 900;
+      padding: 1px 5px;
+      border-radius: 2px;
+      background: rgba(0, 0, 0, 0.4);
+      color: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      user-select: none;
+      transition: all 0.2s ease;
+    }
+
+    .key-badge.key-blue.active {
+      background: rgba(41, 121, 255, 0.35);
+      color: #82B1FF;
+      border-color: #2979FF;
+      box-shadow: 0 0 8px rgba(41, 121, 255, 0.8);
+    }
+
+    .key-badge.key-yellow.active {
+      background: rgba(255, 214, 0, 0.35);
+      color: #FFFF00;
+      border-color: #FFD600;
+      box-shadow: 0 0 8px rgba(255, 214, 0, 0.8);
+    }
+
+    .key-badge.key-red.active {
+      background: rgba(255, 23, 68, 0.35);
+      color: #FF8A80;
+      border-color: #FF1744;
+      box-shadow: 0 0 8px rgba(255, 23, 68, 0.8);
+    }
+
+    .hud-face-frame {
+      width: 34px;
+      height: 34px;
+      border: 1px solid #444;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .hud-face-frame img {
+      width: 32px;
+      height: 32px;
+      image-rendering: pixelated;
+    }
+
+    .doom-overlay-scrim {
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 5, 5, 0.85);
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+    }
+
+    .doom-overlay-scrim.hidden {
+      display: none !important;
+    }
+
+    .doom-modal-card {
+      background: rgba(18, 16, 20, 0.95);
+      border: 2px solid var(--accent);
+      border-radius: 8px;
+      padding: 24px 32px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      max-width: 480px;
+      width: 90vw;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.9);
+      text-align: center;
+    }
+
+    .doom-modal-card.hidden { display: none !important; }
+
+    .doom-banner {
+      font-size: clamp(36px, 8vw, 64px);
+      font-weight: 900;
+      color: #FF2200;
+      text-shadow: 3px 3px 0 #660000, 5px 5px 0 #000;
+      margin: 0;
+      letter-spacing: 0.05em;
+    }
+
+    .doom-banner-sub {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.1em;
+    }
+
+    .doom-modal-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--accent);
+      margin: 0;
+      letter-spacing: 0.05em;
+    }
+
+    .doom-modal-title.danger { color: #FF3333; }
+
+    .doom-menu-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      max-width: 280px;
+    }
+
+    .doom-btn-menu {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 153, 0, 0.3);
+      color: #ECEFF1;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .doom-btn-menu:hover, .doom-btn-menu.active {
+      background: rgba(255, 153, 0, 0.25);
+      border-color: var(--accent);
+      color: #FFF;
+      box-shadow: 0 0 12px rgba(255, 153, 0, 0.4);
+    }
+
+    .doom-key-hint {
+      font-size: 10px;
+      color: var(--secondary);
+      letter-spacing: 0.05em;
+    }
+
+    .doom-stats-row {
+      font-size: 14px;
+      font-weight: 700;
+      color: #ECEFF1;
+    }
+
+    .doom-controls-table {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      width: 100%;
+      text-align: left;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .doom-controls-table div {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 3px 6px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: 3px;
+    }
+
+    .doom-controls-table .col-k {
+      color: var(--accent);
+      white-space: nowrap;
+    }
+
+    .doom-controls-table .col-d {
+      color: #CFD8DC;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Plane 1: Hardware-Accelerated 3D Babylon Viewport -->
+  <div id="viewport-container">
+    <canvas id="view3D" width="640" height="400" aria-label="Doom 3D Viewport"></canvas>
+  </div>
+
+  <!-- Plane 2: Declarative Pronto HTML/CSS Presentation Overlay -->
+  <div id="doom-plane2" class="doom-plane2">
+    <!-- Fullscreen Damage Flash Tint -->
+    <div id="doom-damage-flash" style="position: fixed; inset: 0; pointer-events: none; background: rgba(220, 20, 20, 0); transition: background 0.08s ease; z-index: 25;"></div>
+
+    <!-- Authentic In-Game Message Banner -->
+    <div id="doom-msg-banner" class="doom-msg-banner hidden"></div>
+
+    <!-- Tactical Center Crosshair -->
+    <div class="doom-crosshair">+</div>
+
+    <!-- First-Person Weapon Sprite Layer -->
+    <div id="doom-weapon-container" class="doom-weapon-container">
+      <div id="doom-weapon-stage" class="doom-weapon-stage">
+        <img id="doom-weapon-img" src="shell/assets/things/pisga.png" alt="Weapon">
+        <img id="doom-flash-img" class="hidden" alt="Muzzle Flash">
+      </div>
+    </div>
+
+    <!-- Retro Status Bar -->
+    <div id="doom-status-bar" class="doom-status-bar">
+      <div class="hud-box">
+        <span class="hud-tag">AMMO</span>
+        <span class="hud-num" id="doom-val-ammo">050</span>
+      </div>
+      <div class="hud-box">
+        <span class="hud-tag">HEALTH</span>
+        <span class="hud-num health-ok" id="doom-val-health">100%</span>
+      </div>
+      <div class="hud-box">
+        <span class="hud-tag">ARMS</span>
+        <div class="hud-arms-val" id="doom-val-arms">
+          <span class="arm-slot" data-weapon="fist" data-slot="1" title="[1] Fist">1</span>
+          <span class="arm-slot" data-weapon="pistol" data-slot="2" title="[2] Pistol">2</span>
+          <span class="arm-slot" data-weapon="shotgun" data-slot="3" title="[3] Shotgun">3</span>
+          <span class="arm-slot" data-weapon="chaingun" data-slot="4" title="[4] Chaingun">4</span>
+          <span class="arm-slot" data-weapon="rocketlauncher" data-slot="5" title="[5] Rocket Launcher">5</span>
+          <span class="arm-slot" data-weapon="plasmarifle" data-slot="6" title="[6] Plasma Rifle">6</span>
+          <span class="arm-slot" data-weapon="bfg" data-slot="7" title="[7] BFG9000">7</span>
+        </div>
+      </div>
+      <div class="hud-face-frame">
+        <img id="doom-face-img" src="shell/assets/sprites/face_normal.png" alt="Doomguy" width="32" height="32">
+      </div>
+      <div class="hud-box">
+        <span class="hud-tag">ARMOR</span>
+        <span class="hud-num armor-blue" id="doom-val-armor">050%</span>
+      </div>
+      <div class="hud-box" id="doom-hud-keys">
+        <span class="hud-tag">KEYS</span>
+        <div class="hud-keys-row">
+          <span class="key-badge key-blue" id="hud-key-blue" title="Blue Keycard">B</span>
+          <span class="key-badge key-yellow" id="hud-key-yellow" title="Yellow Keycard">Y</span>
+          <span class="key-badge key-red" id="hud-key-red" title="Red Keycard">R</span>
+        </div>
+      </div>
+      <div class="hud-box">
+        <span class="hud-tag">KILLS</span>
+        <span class="hud-num frag-green" id="doom-val-frags">000</span>
+      </div>
+    </div>
+
+    <!-- Modals & Menu Overlays -->
+    <div id="doom-menu-overlay" class="doom-overlay-scrim hidden">
+      <!-- Title Screen / Main Menu -->
+      <div id="doom-title-card" class="doom-modal-card">
+        <h1 class="doom-banner">DOOM</h1>
+        <div class="doom-banner-sub">FREEDOOM ARENA • PRONTO KINETIC RUNTIME</div>
+        <div class="doom-menu-list">
+          <button type="button" class="doom-btn-menu active" id="menu-newgame">NEW GAME</button>
+          <button type="button" class="doom-btn-menu" id="menu-controls">CONTROLS</button>
+          <button type="button" class="doom-btn-menu" id="menu-credits">CREDITS</button>
+        </div>
+        <div class="doom-key-hint">▲ / ▼ MOVE • ENTER / FIRE SELECT • ~ UAC TERMINAL</div>
+      </div>
+
+      <!-- Controls Modal -->
+      <div id="doom-controls-card" class="doom-modal-card hidden">
+        <h2 class="doom-modal-title">TACTICAL COMBAT CONTROLS</h2>
+        <div class="doom-controls-table">
+          <div><b class="col-k">W / S</b><span class="col-d">Move Forward / Backward</span></div>
+          <div><b class="col-k">A / D</b><span class="col-d">Strafe Left / Strafe Right</span></div>
+          <div><b class="col-k">SHIFT</b><span class="col-d">Hold to Sprint / Run (1.8x Speed)</span></div>
+          <div><b class="col-k">MOUSE LOOK / Q / E / ARROWS</b><span class="col-d">Aim & Turn Vision Left / Right</span></div>
+          <div><b class="col-k">CTRL / LEFT CLICK</b><span class="col-d">Fire Active Weapon</span></div>
+          <div><b class="col-k">1 / 2 / 3 / 4 or HUD SLOTS</b><span class="col-d">Switch: 1 Fist | 2 Pistol | 3 Shotgun | 4 Chaingun</span></div>
+          <div><b class="col-k">E / SPACE</b><span class="col-d">Open Doors & Activate Switches</span></div>
+          <div><b class="col-k">ESCAPE / P</b><span class="col-d">Pause Mission / Main Menu</span></div>
+          <div><b class="col-k">` / TAB / HUD BADGE</b><span class="col-d">UAC Tactical Telemetry Terminal</span></div>
+          <div><b class="col-k">GAMEPAD (XBOX/PS)</b><span class="col-d">LS Move (Click Sprint) • RS Aim • RT Shoot • A Use/Door • LB/RB Strafe</span></div>
+        </div>
+        <button type="button" class="doom-btn-menu active" id="controls-back">[ PRESS ENTER OR ESCAPE TO RETURN ]</button>
+      </div>
+
+      <!-- Credits Modal -->
+      <div id="doom-credits-card" class="doom-modal-card hidden">
+        <h2 class="doom-modal-title">DOOM ARENA PRONTO</h2>
+        <div style="font-size: 11px; line-height: 1.8; color: #CFD8DC;">
+          <p>Original DOOM (C) 1993 id Software, Inc.</p>
+          <p>FreeDoom Project Open Source Textures & Sprites</p>
+          <p>Deterministic 35Hz Kinetic Engine Host & GGPO Rollback</p>
+          <p>Pure SES Compartment Isolation & Bit-Exact Verification</p>
+        </div>
+        <button type="button" class="doom-btn-menu active" id="credits-back">[ PRESS ENTER OR ESCAPE TO RETURN ]</button>
+      </div>
+
+      <!-- Pause Menu Modal -->
+      <div id="doom-pause-card" class="doom-modal-card hidden">
+        <h2 class="doom-modal-title danger">★ PAUSED ★</h2>
+        <div class="doom-menu-list">
+          <button type="button" class="doom-btn-menu active" id="pause-resume">RESUME</button>
+          <button type="button" class="doom-btn-menu" id="pause-restart">RESTART ARENA</button>
+          <button type="button" class="doom-btn-menu" id="pause-difficulty">CHOOSE DIFFICULTY</button>
+          <button type="button" class="doom-btn-menu" id="pause-menu">MAIN MENU</button>
+        </div>
+        <div class="doom-key-hint">ENTER CONFIRM • ESCAPE RESUME</div>
+      </div>
+
+      <!-- Skill / Difficulty Selection Modal -->
+      <div id="doom-skill-card" class="doom-modal-card hidden">
+        <h2 class="doom-modal-title">CHOOSE DIFFICULTY</h2>
+        <div class="doom-menu-list">
+          <button type="button" class="doom-btn-menu" data-skill="0">I'M TOO YOUNG TO DIE</button>
+          <button type="button" class="doom-btn-menu" data-skill="1">HEY, NOT TOO ROUGH</button>
+          <button type="button" class="doom-btn-menu active" data-skill="2">HURT ME PLENTY</button>
+          <button type="button" class="doom-btn-menu" data-skill="3">ULTRA-VIOLENCE</button>
+          <button type="button" class="doom-btn-menu" data-skill="4">NIGHTMARE!</button>
+        </div>
+        <button type="button" class="doom-btn-menu" id="skill-back" style="margin-top: 6px; font-size: 11px;">[ CANCEL / BACK ]</button>
+        <div class="doom-key-hint">ENTER SELECT • ESCAPE BACK</div>
+      </div>
+
+      <!-- Classic Intermission Modal -->
+      <div id="doom-intermission-card" class="doom-modal-card hidden">
+        <h2 id="intermission-title" class="doom-modal-title">E1M1 FINISHED</h2>
+        <div style="font-family: 'Courier New', monospace; font-size: 13px; line-height: 2.2; margin: 16px 0; color: #ECEFF1; text-align: left; padding: 0 20px;">
+          <div style="display: flex; justify-content: space-between;"><b>KILLS</b> <span id="intermission-kills" style="color: #FF5252; font-weight: bold;">100%</span></div>
+          <div style="display: flex; justify-content: space-between;"><b>ITEMS</b> <span id="intermission-items" style="color: #FFD54F; font-weight: bold;">100%</span></div>
+          <div style="display: flex; justify-content: space-between;"><b>SECRET</b> <span id="intermission-secrets" style="color: #69F0AE; font-weight: bold;">100%</span></div>
+          <div style="display: flex; justify-content: space-between; border-top: 1px solid #455A64; padding-top: 6px; margin-top: 6px;"><b>TIME</b> <span id="intermission-time" style="color: #40C4FF; font-weight: bold;">01:15</span></div>
+        </div>
+        <button type="button" class="doom-btn-menu active" id="intermission-advance">[ ENTER NEXT LEVEL: E1M2 ]</button>
+      </div>
+
+      <!-- Match Over Modal -->
+      <div id="doom-matchover-card" class="doom-modal-card hidden">
+        <h2 id="matchover-title" class="doom-modal-title">MISSION ACCOMPLISHED</h2>
+        <div id="matchover-stats" class="doom-stats-row">DOOMGUY: 0 | DEMON: 0</div>
+        <button type="button" class="doom-btn-menu active" id="matchover-action">[ PRESS ENTER OR SPACE TO PLAY AGAIN ]</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- In-game Overlays -->
+  <div id="dmgFlash"></div>
+  <div id="ttWatermark">⏮ TIME TRAVEL ROLLBACK MODE</div>
+
+  <!-- Floating Game Menu Button -->
+  <button id="game-menu-btn" aria-label="Toggle Game Menu">
+    <span class="dot"></span>
+    <span>GAME MENU</span>
+    <span class="key">ESC</span>
+  </button>
+
+  <!-- Floating UAC Tactical Terminal Toggle -->
+  <button id="uac-toggle" aria-label="Toggle UAC Tactical Telemetry Terminal">
+    <span class="dot"></span>
+    <span>UAC TERMINAL</span>
+    <span class="key">~</span>
+  </button>
+
+  <!-- UAC Tactical Telemetry Terminal HUD Overlay -->
+  <div id="uac-terminal" class="hidden" role="dialog" aria-label="UAC Tactical Terminal">
+    <div class="uac-header">
+      <div class="uac-title">
+        <span>⚡ UAC TACTICAL TELEMETRY TERMINAL // KINETIC HOST</span>
+        <span class="uac-pill">35Hz LOCKED</span>
+      </div>
+      <button id="uac-close" class="uac-close-btn" aria-label="Close Terminal">✕</button>
+    </div>
+
+    <!-- Timeline Scrubber Controls -->
+    <div class="timeline-bar">
+      <button class="btn" id="btn-play-pause">⏸ Pause</button>
+      <button class="btn" id="btn-rewind-10">⏪ -10</button>
+      <button class="btn" id="btn-rewind-1">◀ -1</button>
+      <input type="range" class="scrubber" id="time-scrubber" min="0" max="0" value="0" aria-label="Rollback Timeline Scrubber">
+      <button class="btn" id="btn-forward-1">▶ +1</button>
+      <button class="btn" id="btn-forward-10">⏩ +10</button>
+      <button class="btn" id="btn-branch">⚡ Branch</button>
+      <button class="btn btn-danger" id="btn-reset">🔄 Reset</button>
+      <span class="tick-readout" id="tick-label">TICK 0000 / 0000</span>
+    </div>
+
+    <!-- Combat & System Telemetry -->
+    <div class="telemetry-grid">
+      <div class="telemetry-cell">
+        <div class="telemetry-label">Doomguy Position & Angle</div>
+        <div class="telemetry-val" id="diag-player-pos">X: 18.3, Y: 11.3 (0.0 rad)</div>
+      </div>
+      <div class="telemetry-cell">
+        <div class="telemetry-label">Target (Imp Demon)</div>
+        <div class="telemetry-val" id="diag-demon-pos">Dist: 5.2m | LOS: Clear (walk)</div>
+      </div>
+      <div class="telemetry-cell">
+        <div class="telemetry-label">Match State & Score</div>
+        <div class="telemetry-val" id="diag-match-score">DOOMGUY 0  vs  DEMON 0 [10 FRAGS]</div>
+      </div>
+      <div class="telemetry-cell">
+        <div class="telemetry-label">Host Determinism & SES</div>
+        <div class="telemetry-val" id="diag-ses-status">1200 Slots (34.3s) | Pure SES PASS</div>
+      </div>
+      <div class="telemetry-cell">
+        <div class="telemetry-label">Active FreeDoom Map</div>
+        <div class="telemetry-val" id="diag-map-info">E1M1: Outer Prison</div>
+      </div>
+      <div class="telemetry-cell">
+        <div class="telemetry-label">Combat Difficulty</div>
+        <div class="telemetry-val" id="diag-skill-info">Hurt me plenty (Skill 2)</div>
+      </div>
+    </div>
+
+    <!-- Game Controls Bar -->
+    <div class="presets-bar" id="game-controls-bar">
+      <span class="preset-label">Game Controls:</span>
+      <button class="btn" id="hud-btn-restart">🔄 Restart Arena</button>
+      <button class="btn" id="hud-btn-menu">🏠 Main Menu</button>
+      <button class="btn" id="hud-btn-pause">⏸ Pause / Esc</button>
+    </div>
+
+    <!-- Difficulty Selection Bar -->
+    <div class="presets-bar" id="difficulty-bar" style="margin-top: 6px;">
+      <span class="preset-label">Difficulty:</span>
+      <button class="btn-preset btn-skill" data-skill="0" title="I'm too young to die (Demons slower, half damage)">Too Young</button>
+      <button class="btn-preset btn-skill" data-skill="1" title="Hey, not too rough">Not Too Rough</button>
+      <button class="btn-preset btn-skill active" data-skill="2" title="Hurt me plenty (Standard Doom)">Hurt Me Plenty</button>
+      <button class="btn-preset btn-skill" data-skill="3" title="Ultra-Violence (Fast demons, high damage)">Ultra-Violence</button>
+      <button class="btn-preset btn-skill" data-skill="4" title="Nightmare! (Relentless speed & fast respawn)">Nightmare!</button>
+    </div>
+
+    <!-- Simulation Presets -->
+    <div class="presets-bar" style="margin-top: 6px;">
+      <span class="preset-label">Test Scenarios:</span>
+
+    </div>
+
+    <!-- Level Selection -->
+    <div class="presets-bar" id="map-bar" style="margin-top: 6px;">
+      <span class="preset-label">FreeDoom Maps:</span>
+      <button class="btn-preset btn-map active" data-map="e1m1">E1M1</button>
+      <button class="btn-preset btn-map" data-map="e1m2">E1M2</button>
+      <button class="btn-preset btn-map" data-map="e1m3">E1M3</button>
+      <button class="btn-preset btn-map" data-map="e1m4">E1M4</button>
+      <button class="btn-preset btn-map" data-map="e1m5">E1M5</button>
+      <button class="btn-preset btn-map" data-map="e1m6">E1M6</button>
+      <button class="btn-preset btn-map" data-map="e1m7">E1M7</button>
+      <button class="btn-preset btn-map" data-map="e1m8">E1M8</button>
+      <button class="btn-preset btn-map" data-map="e1m9">E1M9</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { createDoomBridge, DEFAULT_PLAYER } from "./shell/engine/bridge.js";
+    import { render3D } from "./shell/engine/renderer.js";
+    import { loadDoomAssets } from "./shell/engine/assets.js";
+    import { createAudioSystem } from "./shell/engine/audio.js";
+    import { createReferee } from "./shell/engine/referee.js";
+    import { getLevel } from "./shell/engine/level.js";
+    import { WEAPONS } from "./shell/engine/weapons.js";
+    import { WEAPON_FRAMES } from "./shell/engine/sprites.js";
+
+    const canvas = document.getElementById("view3D");
+    const uacBadge = document.getElementById("uac-toggle");
+    const uacOverlay = document.getElementById("uac-terminal");
+    const uacClose = document.getElementById("uac-close");
+
+    const valAmmo = document.getElementById("doom-val-ammo");
+    const valHealth = document.getElementById("doom-val-health");
+    const valArmor = document.getElementById("doom-val-armor");
+    const valFrags = document.getElementById("doom-val-frags");
+    const faceImg = document.getElementById("doom-face-img");
+    const weaponStage = document.getElementById("doom-weapon-stage");
+    const weaponImg = document.getElementById("doom-weapon-img");
+    const flashImg = document.getElementById("doom-flash-img");
+    const msgBanner = document.getElementById("doom-msg-banner");
+    let msgTimer = null;
+    let currentBobX = 0;
+    let currentBobY = 0;
+
+    function getWeaponAnimation(curW, shootTimer, tick) {
+      if (shootTimer === 0) {
+        if (curW === "chainsaw") {
+          const frameLetter = (Math.floor(tick / 4) % 2 === 0) ? "A" : "B";
+          return { frame: `SAWG${frameLetter}`, flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1 };
+        }
+        const prefix = WEAPON_FRAMES[curW]?.sprite || "PISG";
+        return { frame: `${prefix}A`, flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1 };
+      }
+
+      const cd = WEAPONS[curW]?.cooldown || 14;
+      const elapsed = cd - shootTimer;
+
+      switch (curW) {
+        case "shotgun": {
+          if (elapsed < 3) {
+            return { frame: "SHTGA", flash: "SHTFA", recoilX: 0, recoilY: -10, recoilRot: 0, recoilScale: 1.03 };
+          } else if (elapsed < 7) {
+            return { frame: "SHTGA", flash: "SHTFB", recoilX: 0, recoilY: -3, recoilRot: 0, recoilScale: 1.0 };
+          } else if (elapsed < 12) {
+            return { frame: "SHTGB", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          } else if (elapsed < 18) {
+            return { frame: "SHTGC", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          } else if (elapsed < 24) {
+            return { frame: "SHTGD", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          } else if (elapsed < 30) {
+            return { frame: "SHTGC", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          } else if (elapsed < 34) {
+            return { frame: "SHTGB", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          } else {
+            return { frame: "SHTGA", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          }
+        }
+        case "pistol": {
+          if (elapsed < 3) {
+            return { frame: "PISGA", flash: "PISFA", recoilX: 0, recoilY: -8, recoilRot: -1.5, recoilScale: 1.02 };
+          } else if (elapsed < 7) {
+            return { frame: "PISGB", flash: null, recoilX: 0, recoilY: 2, recoilRot: -0.5, recoilScale: 1.0 };
+          } else if (elapsed < 11) {
+            return { frame: "PISGC", flash: null, recoilX: 0, recoilY: 1, recoilRot: 0, recoilScale: 1.0 };
+          } else {
+            return { frame: "PISGA", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          }
+        }
+        case "chaingun": {
+          const alt = (Math.floor(elapsed / 2) % 2 === 0);
+          const jx = (shootTimer % 2 === 0 ? 1 : -1);
+          const jy = (shootTimer % 2 === 0 ? -3 : 2);
+          return {
+            frame: alt ? "CHGGA" : "CHGGB",
+            flash: alt ? "CHGFA" : "CHGFB",
+            recoilX: jx,
+            recoilY: jy,
+            recoilRot: 0,
+            recoilScale: 1.01
+          };
+        }
+        case "rocketlauncher": {
+          if (elapsed < 4) {
+            return { frame: "MISGB", flash: "MISFA", recoilX: 0, recoilY: -14, recoilRot: 0, recoilScale: 1.04 };
+          } else if (elapsed < 8) {
+            return { frame: "MISGB", flash: "MISFB", recoilX: 0, recoilY: -7, recoilRot: 0, recoilScale: 1.02 };
+          } else if (elapsed < 12) {
+            return { frame: "MISGB", flash: "MISFC", recoilX: 0, recoilY: 4, recoilRot: 0, recoilScale: 1.0 };
+          } else if (elapsed < 16) {
+            return { frame: "MISGB", flash: "MISFD", recoilX: 0, recoilY: 2, recoilRot: 0, recoilScale: 1.0 };
+          } else {
+            return { frame: "MISGA", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          }
+        }
+        case "plasmarifle": {
+          const alt = (elapsed % 2 === 0);
+          return {
+            frame: alt ? "PLSGA" : "PLSGB",
+            flash: alt ? "PLSFA" : "PLSFB",
+            recoilX: 0,
+            recoilY: alt ? -3 : 1,
+            recoilRot: 0,
+            recoilScale: 1.01
+          };
+        }
+        case "bfg": {
+          if (elapsed < 20) {
+            const shake = Math.sin(elapsed * 1.5) * 2;
+            return { frame: "BFGGA", flash: null, recoilX: shake, recoilY: shake, recoilRot: 0, recoilScale: 1.0 };
+          } else if (elapsed < 30) {
+            return { frame: "BFGGB", flash: "BFGFA", recoilX: 0, recoilY: -18, recoilRot: 0, recoilScale: 1.05 };
+          } else if (elapsed < 40) {
+            return { frame: "BFGGB", flash: "BFGFB", recoilX: 0, recoilY: -10, recoilRot: 0, recoilScale: 1.02 };
+          } else if (elapsed < 50) {
+            return { frame: "BFGGC", flash: null, recoilX: 0, recoilY: 4, recoilRot: 0, recoilScale: 1.0 };
+          } else {
+            return { frame: "BFGGA", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+          }
+        }
+        case "fist": {
+          let frame = "PUNGA";
+          if (elapsed < 4) frame = "PUNGB";
+          else if (elapsed < 9) frame = "PUNGC";
+          else if (elapsed < 14) frame = "PUNGD";
+          else if (elapsed < 18) frame = "PUNGC";
+          else frame = "PUNGB";
+          return { frame, flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+        }
+        case "chainsaw": {
+          const alt = (Math.floor(tick / 2) % 2 === 0);
+          const jx = (tick % 2 === 0 ? 1 : -1);
+          const jy = (tick % 2 === 0 ? -2 : 2);
+          return { frame: alt ? "SAWGC" : "SAWGD", flash: null, recoilX: jx, recoilY: jy, recoilRot: 0, recoilScale: 1.0 };
+        }
+        default:
+          return { frame: "PISGA", flash: null, recoilX: 0, recoilY: 0, recoilRot: 0, recoilScale: 1.0 };
+      }
+    }
+
+    function showBannerMessage(msg) {
+      if (!msgBanner) return;
+      msgBanner.textContent = msg;
+      msgBanner.classList.remove("hidden");
+      if (msgTimer) clearTimeout(msgTimer);
+      msgTimer = setTimeout(() => {
+        msgBanner.classList.add("hidden");
+      }, 3000);
+    }
+
+    const menuOverlay = document.getElementById("doom-menu-overlay");
+    const titleCard = document.getElementById("doom-title-card");
+    const controlsCard = document.getElementById("doom-controls-card");
+    const creditsCard = document.getElementById("doom-credits-card");
+    const pauseCard = document.getElementById("doom-pause-card");
+    const skillCard = document.getElementById("doom-skill-card");
+    const skillBackBtn = document.getElementById("skill-back");
+    const matchoverCard = document.getElementById("doom-matchover-card");
+    const matchoverTitle = document.getElementById("matchover-title");
+    const matchoverStats = document.getElementById("matchover-stats");
+    const intermissionCard = document.getElementById("doom-intermission-card");
+    const intermissionTitle = document.getElementById("intermission-title");
+    const intermissionKills = document.getElementById("intermission-kills");
+    const intermissionItems = document.getElementById("intermission-items");
+    const intermissionSecrets = document.getElementById("intermission-secrets");
+    const intermissionTime = document.getElementById("intermission-time");
+    const intermissionAdvance = document.getElementById("intermission-advance");
+    const gameMenuBtn = document.getElementById("game-menu-btn");
+    const pauseDifficultyBtn = document.getElementById("pause-difficulty");
+
+    const hudBtnRestart = document.getElementById("hud-btn-restart");
+    const hudBtnMenu = document.getElementById("hud-btn-menu");
+    const hudBtnPause = document.getElementById("hud-btn-pause");
+    const diagSkillInfo = document.getElementById("diag-skill-info");
+
+    const SKILL_NAMES = [
+      "I'm too young to die",
+      "Hey, not too rough",
+      "Hurt me plenty",
+      "Ultra-Violence",
+      "Nightmare!"
+    ];
+
+    const playPauseBtn = document.getElementById("btn-play-pause");
+    const rewind1Btn = document.getElementById("btn-rewind-1");
+    const rewind10Btn = document.getElementById("btn-rewind-10");
+    const forward1Btn = document.getElementById("btn-forward-1");
+    const forward10Btn = document.getElementById("btn-forward-10");
+    const branchBtn = document.getElementById("btn-branch");
+    const resetBtn = document.getElementById("btn-reset");
+    const scrubber = document.getElementById("time-scrubber");
+    const tickLabel = document.getElementById("tick-label");
+
+    const diagPlayerPos = document.getElementById("diag-player-pos");
+    const diagDemonPos = document.getElementById("diag-demon-pos");
+    const diagMatchScore = document.getElementById("diag-match-score");
+    const dmgFlash = document.getElementById("dmgFlash");
+    const ttWatermark = document.getElementById("ttWatermark");
+
+    let isPlaying = true;
+    let liveHeadTick = 0;
+    let currentScrubTick = 0;
+    let terminalOpen = false;
+
+    function toggleTerminal() {
+      terminalOpen = !terminalOpen;
+      uacOverlay.classList.toggle("hidden", !terminalOpen);
+    }
+
+    uacBadge.addEventListener("click", toggleTerminal);
+    uacClose.addEventListener("click", toggleTerminal);
+
+    // Responsive Canvas
+    function resizeCanvas() {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(window.innerWidth * dpr);
+      canvas.height = Math.round(window.innerHeight * dpr);
+      if (canvas.__doomBabylonRenderer) {
+        canvas.__doomBabylonRenderer.resize(canvas.width, canvas.height);
+      }
+    }
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+
+    // Relational In-Memory Store
+    const storeData = {
+      match: { "match-01": { id: "match-01", mode: "campaign", map: "e1m1", status: "active", frag_limit: 100, frags_us: 0, frags_them: 0, winner: "" } },
+      player: { "player-local": { ...DEFAULT_PLAYER } },
+      frag: {}
+    };
+
+    const store = {
+      read(entity, key) { return storeData[entity]?.[key] ?? null; },
+      async write(entity, rows) {
+        storeData[entity] ??= {};
+        for (const { key, row } of rows) {
+          storeData[entity][key] = { ...row };
+        }
+      },
+      async add(entity, rows) {
+        storeData[entity] ??= {};
+        for (const r of rows) {
+          storeData[entity][r.id] = { ...r };
+        }
+      },
+      async dropWhere(entity) {
+        storeData[entity] = {};
+      }
+    };
+
+    const referee = createReferee();
+    const assets = await loadDoomAssets("shell/assets/");
+    const sfx = createAudioSystem();
+
+    let audioContextStarted = false;
+    async function ensureAudio() {
+      if (!audioContextStarted) {
+        audioContextStarted = true;
+        await sfx.resume();
+      }
+    }
+
+    // Initialize Doom Bridge in native MENU phase
+    const bridge = createDoomBridge({
+      store,
+      referee,
+      initialMatch: storeData.match["match-01"],
+      onFatal: (err) => {
+        bridge.pause();
+        throw err;
+      },
+      canvas,
+      hudCanvas: null,
+      render3D,
+      assets,
+      sfx,
+      initialPhase: "menu",
+      mapName: "e1m1",
+      onRender(prev, world, alpha, tick, isHistorical) {
+        liveHeadTick = tick;
+        currentScrubTick = tick;
+        scrubber.max = tick;
+        scrubber.value = tick;
+        const padTick = String(tick).padStart(4, "0");
+        tickLabel.textContent = `TICK ${padTick} / ${padTick}`;
+
+        const level = getLevel(world.mapName);
+        const mapInfoEl = document.getElementById("diag-map-info");
+        if (mapInfoEl) mapInfoEl.textContent = `${level.title} (${level.sectors.length} sectors)`;
+
+        const curSkill = world.skill ?? bridge.getSkill();
+        if (diagSkillInfo) {
+          diagSkillInfo.textContent = `${SKILL_NAMES[curSkill]} (Skill ${curSkill})`;
+        }
+        document.querySelectorAll(".btn-skill[data-skill]").forEach(b => {
+          b.classList.toggle("active", parseInt(b.dataset.skill, 10) === curSkill);
+        });
+        document.querySelectorAll("#doom-skill-card button[data-skill]").forEach(b => {
+          b.classList.toggle("active", parseInt(b.dataset.skill, 10) === curSkill);
+        });
+
+        if (world.player) {
+          const p = world.player;
+          valAmmo.textContent = String(p.ammo).padStart(3, "0");
+          valHealth.textContent = `${String(p.health).padStart(3, "0")}%`;
+          valHealth.className = p.health > 25 ? "hud-num health-ok" : "hud-num health-bad";
+          valArmor.textContent = `${String(p.armor).padStart(3, "0")}%`;
+          valFrags.textContent = String(p.fragsUs).padStart(3, "0");
+
+          const flashEl = document.getElementById("doom-damage-flash");
+          if (flashEl) {
+            if (p.damageFlash > 0) {
+              flashEl.style.background = `rgba(220, 20, 20, ${0.15 + (p.damageFlash / 6) * 0.35})`;
+            } else {
+              flashEl.style.background = "rgba(220, 20, 20, 0)";
+            }
+          }
+
+          let fSrc = "shell/assets/sprites/face_normal.png";
+          if (p.status === "over" && p.health <= 0) fSrc = "shell/assets/sprites/face_dead.png";
+          else if (p.shootTimer > 0) fSrc = "shell/assets/sprites/face_evil.png";
+          else if (p.damageFlash > 0) fSrc = "shell/assets/sprites/face_kill.png";
+          else if (p.faceLook < 0) fSrc = "shell/assets/sprites/face_left.png";
+          else if (p.faceLook > 0) fSrc = "shell/assets/sprites/face_right.png";
+          if (faceImg.dataset.src !== fSrc) {
+            faceImg.src = fSrc;
+            faceImg.dataset.src = fSrc;
+          }
+
+          // Dynamic Weapon Animation, Bobbing & Muzzle Flash
+          const curW = p.weapon;
+          const anim = getWeaponAnimation(curW, p.shootTimer, tick);
+          const S = Math.max(1.8, Math.min(3.8, (window.innerHeight - 42) / 190));
+
+          if (p.health <= 0) {
+            weaponStage.style.transform = `translate3d(0, ${300 * (S / 3)}px, 0)`;
+            flashImg.classList.add("hidden");
+          } else {
+            const frameMeta = assets.sprites[anim.frame];
+            if (frameMeta) {
+              const xRelCenter = -frameMeta.left - 160;
+              const yFromStatus = 168 - (-frameMeta.top + frameMeta.height);
+              weaponImg.style.left = `${xRelCenter * S}px`;
+              weaponImg.style.bottom = `${yFromStatus * S}px`;
+              weaponImg.style.width = `${frameMeta.width * S}px`;
+              weaponImg.style.height = `${frameMeta.height * S}px`;
+              const wSrc = `shell/assets/things/${anim.frame.toLowerCase()}.png`;
+              if (weaponImg.dataset.src !== wSrc) {
+                weaponImg.src = wSrc;
+                weaponImg.dataset.src = wSrc;
+              }
+            }
+
+            if (anim.flash) {
+              const flashMeta = assets.sprites[anim.flash];
+              if (flashMeta) {
+                const xRelCenter = -flashMeta.left - 160;
+                const yFromStatus = 168 - (-flashMeta.top + flashMeta.height);
+                flashImg.style.left = `${xRelCenter * S}px`;
+                flashImg.style.bottom = `${yFromStatus * S}px`;
+                flashImg.style.width = `${flashMeta.width * S}px`;
+                flashImg.style.height = `${flashMeta.height * S}px`;
+                const fSrc = `shell/assets/things/${anim.flash.toLowerCase()}.png`;
+                if (flashImg.dataset.src !== fSrc) {
+                  flashImg.src = fSrc;
+                  flashImg.dataset.src = fSrc;
+                }
+                flashImg.classList.remove("hidden");
+              } else {
+                flashImg.classList.add("hidden");
+              }
+            } else {
+              flashImg.classList.add("hidden");
+            }
+
+            weaponImg.style.filter = anim.flash ? "brightness(1.28) contrast(1.08)" : "none";
+
+            // Walking Bobbing & Weapon Sway (framerate-independent via subTick)
+            const speed = Math.hypot(p.momx || 0, p.momy || 0);
+            if (speed > 0.2) {
+              const subTick = tick + (typeof alpha === "number" ? alpha : 0);
+              const bobPhase = subTick * 0.38;
+              const targetBobX = Math.sin(bobPhase) * Math.min(10, speed * 0.7) * (S / 3);
+              const targetBobY = Math.abs(Math.sin(bobPhase)) * Math.min(6, speed * 0.5) * (S / 3);
+              currentBobX += (targetBobX - currentBobX) * 0.3;
+              currentBobY += (targetBobY - currentBobY) * 0.3;
+            } else {
+              currentBobX *= 0.8;
+              currentBobY *= 0.8;
+            }
+
+            const finalX = (anim.recoilX * (S / 3)) + currentBobX;
+            const finalY = (anim.recoilY * (S / 3)) + currentBobY;
+            weaponStage.style.transform = `translate3d(${finalX}px, ${finalY}px, 0) rotate(${anim.recoilRot}deg) scale(${anim.recoilScale})`;
+          }
+
+          if (p.ammo === 0 && curW !== "fist") {
+            valAmmo.style.color = "#FF1744";
+            valAmmo.style.textShadow = "0 0 8px rgba(255,23,68,0.8)";
+          } else {
+            valAmmo.style.color = "";
+            valAmmo.style.textShadow = "";
+          }
+
+          const weapons = p.weapons;
+          document.querySelectorAll(".arm-slot[data-weapon]").forEach(slot => {
+            const w = slot.dataset.weapon;
+            const owned = weapons.includes(w);
+            slot.classList.toggle("owned", owned);
+            slot.classList.toggle("active", w === curW);
+          });
+
+          const keys = p.keys || {};
+          const hasBlue = typeof keys.includes === "function" ? keys.includes("blue") : Boolean(keys.blue);
+          const hasYellow = typeof keys.includes === "function" ? keys.includes("yellow") : Boolean(keys.yellow);
+          const hasRed = typeof keys.includes === "function" ? keys.includes("red") : Boolean(keys.red);
+          document.getElementById("hud-key-blue")?.classList.toggle("active", hasBlue);
+          document.getElementById("hud-key-yellow")?.classList.toggle("active", hasYellow);
+          document.getElementById("hud-key-red")?.classList.toggle("active", hasRed);
+
+          if (Array.isArray(world.events)) {
+            for (const ev of world.events) {
+              if (typeof ev === "string" && ev.startsWith("msg:")) {
+                showBannerMessage(ev.slice(4).toUpperCase());
+              }
+            }
+          }
+
+          if (world.phase === "paused") {
+            menuOverlay.classList.remove("hidden");
+            matchoverCard.classList.add("hidden");
+            titleCard.classList.add("hidden");
+            controlsCard.classList.add("hidden");
+            creditsCard.classList.add("hidden");
+            if (skillCard.classList.contains("hidden")) {
+              pauseCard.classList.remove("hidden");
+            }
+          } else if (world.phase === "intermission") {
+            menuOverlay.classList.remove("hidden");
+            intermissionCard.classList.remove("hidden");
+            pauseCard.classList.add("hidden");
+            matchoverCard.classList.add("hidden");
+            titleCard.classList.add("hidden");
+            controlsCard.classList.add("hidden");
+            creditsCard.classList.add("hidden");
+            skillCard.classList.add("hidden");
+
+            const im = world.intermission || {};
+            const kPct = im.totalKills ? Math.round((im.kills / im.totalKills) * 100) : 100;
+            const iPct = im.totalItems ? Math.round((im.items / im.totalItems) * 100) : 100;
+            const sec = im.time || 0;
+            const minStr = String(Math.floor(sec / 60)).padStart(2, "0");
+            const secStr = String(sec % 60).padStart(2, "0");
+
+            intermissionTitle.textContent = `${im.levelName || "E1M1"} FINISHED`;
+            intermissionKills.textContent = `${kPct}% (${im.kills || 0}/${im.totalKills || 0})`;
+            intermissionItems.textContent = `${iPct}% (${im.items || 0}/${im.totalItems || 0})`;
+            const sPct = im.totalSecrets ? Math.round((im.secrets / im.totalSecrets) * 100) : 100;
+            intermissionSecrets.textContent = `${sPct}% (${im.secrets}/${im.totalSecrets})`;
+            intermissionTime.textContent = `${minStr}:${secStr}`;
+            intermissionAdvance.textContent = im.nextMap ? `[ ENTER NEXT LEVEL: ${im.nextMap.toUpperCase()} ]` : "[ EPISODE COMPLETE - ENTER ]";
+          } else if (p.status === "over") {
+            menuOverlay.classList.remove("hidden");
+            matchoverCard.classList.remove("hidden");
+            intermissionCard.classList.add("hidden");
+            pauseCard.classList.add("hidden");
+            titleCard.classList.add("hidden");
+            controlsCard.classList.add("hidden");
+            creditsCard.classList.add("hidden");
+            skillCard.classList.add("hidden");
+            const won = p.fragsUs >= p.fragLimit && world.mode !== "campaign";
+            matchoverTitle.textContent = won ? "MISSION ACCOMPLISHED" : "YOU DIED";
+            matchoverTitle.className = won ? "doom-modal-title" : "doom-modal-title danger";
+            matchoverStats.textContent = `KILLS: ${p.fragsUs}   |   HEALTH: ${p.health}%`;
+          } else if (world.phase === "menu") {
+            menuOverlay.classList.remove("hidden");
+            pauseCard.classList.add("hidden");
+            matchoverCard.classList.add("hidden");
+            intermissionCard.classList.add("hidden");
+            if (controlsCard.classList.contains("hidden") && creditsCard.classList.contains("hidden") && skillCard.classList.contains("hidden")) {
+              titleCard.classList.remove("hidden");
+            }
+          } else {
+            menuOverlay.classList.add("hidden");
+            matchoverCard.classList.add("hidden");
+            intermissionCard.classList.add("hidden");
+            pauseCard.classList.add("hidden");
+            titleCard.classList.add("hidden");
+            controlsCard.classList.add("hidden");
+            creditsCard.classList.add("hidden");
+            skillCard.classList.add("hidden");
+          }
+
+          diagPlayerPos.textContent = `X: ${p.x.toFixed(0)}, Y: ${p.y.toFixed(0)}, Z: ${p.z.toFixed(0)} (${Math.round((p.angle * 360) / 65536)}°)`;
+          const st = world.stats;
+          diagMatchScore.textContent = `KILLS: ${st.kills}/${st.totalKills}  |  ITEMS: ${st.items}/${st.totalItems}  |  SECRETS: ${st.secrets}/${st.totalSecrets}`;
+
+          if (p.damageFlash > 0 && !isHistorical) {
+            dmgFlash.classList.add("active");
+          } else {
+            dmgFlash.classList.remove("active");
+          }
+        }
+
+        const awake = world.monsters.filter((m) => m.health > 0 && m.target).length;
+        diagDemonPos.textContent = `Monsters awake: ${awake} / ${world.monsters.filter((m) => m.health > 0).length}`;
+
+        ttWatermark.style.display = isHistorical ? "block" : "none";
+      }
+    });
+    window.__bridge = bridge;
+
+    async function playAgain(skill) {
+      isPlaying = true;
+      menuOverlay.classList.add("hidden");
+      matchoverCard.classList.add("hidden");
+      pauseCard.classList.add("hidden");
+      titleCard.classList.add("hidden");
+      controlsCard.classList.add("hidden");
+      creditsCard.classList.add("hidden");
+      skillCard.classList.add("hidden");
+      liveHeadTick = 0;
+      currentScrubTick = 0;
+      scrubber.min = 0;
+      scrubber.max = 0;
+      scrubber.value = 0;
+      tickLabel.textContent = `TICK 0000 / 0000`;
+      playPauseBtn.textContent = "⏸ Pause";
+      bridge.clearInputs();
+      await bridge.restartMatch(10, skill !== undefined ? { skill } : {});
+      document.activeElement?.blur();
+      window.focus();
+    }
+
+    async function returnToTitle() {
+      isPlaying = false;
+      menuOverlay.classList.remove("hidden");
+      titleCard.classList.remove("hidden");
+      matchoverCard.classList.add("hidden");
+      pauseCard.classList.add("hidden");
+      controlsCard.classList.add("hidden");
+      creditsCard.classList.add("hidden");
+      skillCard.classList.add("hidden");
+      liveHeadTick = 0;
+      currentScrubTick = 0;
+      scrubber.min = 0;
+      scrubber.max = 0;
+      scrubber.value = 0;
+      tickLabel.textContent = `TICK 0000 / 0000`;
+      playPauseBtn.textContent = "▶ Play";
+      bridge.clearInputs();
+      await bridge.resetMatch(10);
+      host.pause();
+      document.activeElement?.blur();
+      window.focus();
+    }
+
+    function resumeGame() {
+      menuOverlay.classList.add("hidden");
+      pauseCard.classList.add("hidden");
+      matchoverCard.classList.add("hidden");
+      titleCard.classList.add("hidden");
+      controlsCard.classList.add("hidden");
+      creditsCard.classList.add("hidden");
+      skillCard.classList.add("hidden");
+      isPlaying = true;
+      playPauseBtn.textContent = "⏸ Pause";
+      bridge.clearInputs();
+      bridge.play();
+      document.activeElement?.blur();
+      window.focus();
+    }
+
+    function pauseGame() {
+      host.pause();
+      isPlaying = false;
+      playPauseBtn.textContent = "▶ Play";
+      menuOverlay.classList.remove("hidden");
+      pauseCard.classList.remove("hidden");
+      matchoverCard.classList.add("hidden");
+      titleCard.classList.add("hidden");
+      controlsCard.classList.add("hidden");
+      creditsCard.classList.add("hidden");
+      skillCard.classList.add("hidden");
+      document.activeElement?.blur();
+      window.focus();
+    }
+
+    let skillReturnTo = "title";
+    function openSkillSelect(from = "title") {
+      skillReturnTo = from;
+      titleCard.classList.add("hidden");
+      pauseCard.classList.add("hidden");
+      controlsCard.classList.add("hidden");
+      creditsCard.classList.add("hidden");
+      matchoverCard.classList.add("hidden");
+      menuOverlay.classList.remove("hidden");
+      skillCard.classList.remove("hidden");
+      const currentSkill = bridge.getSkill();
+      document.querySelectorAll("#doom-skill-card button[data-skill]").forEach(b => {
+        b.classList.toggle("active", parseInt(b.dataset.skill, 10) === currentSkill);
+      });
+    }
+
+    function closeSkillSelect() {
+      skillCard.classList.add("hidden");
+      if (skillReturnTo === "pause") {
+        pauseCard.classList.remove("hidden");
+      } else {
+        titleCard.classList.remove("hidden");
+      }
+    }
+
+    async function resetMatch() {
+      await playAgain();
+    }
+
+    function requestPointerLockSafe() {
+      try {
+        const p = canvas.requestPointerLock?.();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {});
+        }
+      } catch {}
+    }
+
+    gameMenuBtn.addEventListener("click", () => {
+      ensureAudio().catch(() => {});
+      if (isPlaying && menuOverlay.classList.contains("hidden")) {
+        pauseGame();
+      } else if (!pauseCard.classList.contains("hidden")) {
+        resumeGame();
+      } else if (!menuOverlay.classList.contains("hidden")) {
+        resumeGame();
+      } else {
+        pauseGame();
+      }
+    });
+
+    document.getElementById("menu-newgame").addEventListener("click", () => {
+      openSkillSelect("title");
+    });
+    document.getElementById("menu-controls").addEventListener("click", () => {
+      titleCard.classList.add("hidden");
+      controlsCard.classList.remove("hidden");
+    });
+    document.getElementById("controls-back").addEventListener("click", () => {
+      controlsCard.classList.add("hidden");
+      titleCard.classList.remove("hidden");
+    });
+    document.getElementById("menu-credits").addEventListener("click", () => {
+      titleCard.classList.add("hidden");
+      creditsCard.classList.remove("hidden");
+    });
+    document.getElementById("credits-back").addEventListener("click", () => {
+      creditsCard.classList.add("hidden");
+      titleCard.classList.remove("hidden");
+    });
+    pauseDifficultyBtn.addEventListener("click", () => {
+      openSkillSelect("pause");
+    });
+    skillBackBtn.addEventListener("click", () => {
+      closeSkillSelect();
+    });
+    document.querySelectorAll("#doom-skill-card button[data-skill]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const s = parseInt(btn.dataset.skill, 10);
+        bridge.setSkill(s);
+        playAgain(s).catch(console.error);
+        requestPointerLockSafe();
+      });
+    });
+    document.getElementById("pause-resume").addEventListener("click", () => {
+      resumeGame();
+      requestPointerLockSafe();
+    });
+    document.getElementById("pause-restart").addEventListener("click", () => {
+      playAgain().catch(console.error);
+      requestPointerLockSafe();
+    });
+    document.getElementById("pause-menu").addEventListener("click", () => {
+      returnToTitle().catch(console.error);
+    });
+    document.getElementById("matchover-action").addEventListener("click", () => {
+      playAgain().catch(console.error);
+      requestPointerLockSafe();
+    });
+    // The engine carries the inventory into the next level on Enter.
+    intermissionAdvance.addEventListener("click", () => {
+      intermissionCard.classList.add("hidden");
+      menuOverlay.classList.add("hidden");
+      bridge.setKey("Enter", true);
+      setTimeout(() => bridge.setKey("Enter", false), 60);
+      requestPointerLockSafe();
+    });
+
+    hudBtnRestart.addEventListener("click", () => {
+      playAgain().catch(console.error);
+    });
+    hudBtnMenu.addEventListener("click", () => {
+      returnToTitle().catch(console.error);
+    });
+    hudBtnPause.addEventListener("click", () => {
+      if (isPlaying && menuOverlay.classList.contains("hidden")) {
+        pauseGame();
+      } else {
+        resumeGame();
+      }
+    });
+
+    document.querySelectorAll(".arm-slot[data-weapon]").forEach(slot => {
+      slot.addEventListener("click", () => {
+        ensureAudio().catch(() => {});
+        const w = slot.dataset.weapon;
+        bridge.setWeapon(w);
+      });
+    });
+    document.querySelectorAll(".btn-skill[data-skill]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const s = parseInt(btn.dataset.skill, 10);
+        bridge.setSkill(s);
+        document.querySelectorAll(".btn-skill[data-skill]").forEach(b => {
+          b.classList.toggle("active", parseInt(b.dataset.skill, 10) === s);
+        });
+      });
+    });
+
+    const host = bridge.host;
+
+    // Prevent debug HUD and timeline buttons from capturing Enter/Space during gameplay
+    document.querySelectorAll("#uac-terminal button, #uac-terminal input, #uac-toggle, #game-menu-btn, .btn-preset").forEach((el) => {
+      el.addEventListener("focus", () => el.blur());
+      el.addEventListener("mouseup", () => el.blur());
+      el.addEventListener("touchend", () => el.blur());
+    });
+
+    // Global Keyboard Listener for Combat, Debug HUD Toggle, and Modal Confirmations
+    window.addEventListener("keydown", (e) => {
+      ensureAudio().catch(() => {});
+      if (e.key === "`" || e.key === "~" || e.key === "Tab") {
+        e.preventDefault();
+        toggleTerminal();
+        return;
+      }
+
+      const isModalVisible = !menuOverlay.classList.contains("hidden");
+
+      if (isModalVisible) {
+        const isMatchOverOpen = !matchoverCard.classList.contains("hidden");
+        const isTitleOpen = !titleCard.classList.contains("hidden");
+        const isSkillOpen = !skillCard.classList.contains("hidden");
+        const isControlsOpen = !controlsCard.classList.contains("hidden");
+        const isCreditsOpen = !creditsCard.classList.contains("hidden");
+        const isPauseOpen = !pauseCard.classList.contains("hidden");
+
+        if (isSkillOpen) {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            closeSkillSelect();
+            return;
+          }
+          if (e.key === "Enter" || e.key === " " || e.code === "Space") {
+            e.preventDefault();
+            e.stopPropagation();
+            const activeBtn = document.querySelector("#doom-skill-card button[data-skill].active") ||
+                              document.querySelector("#doom-skill-card button[data-skill]");
+            const s = activeBtn ? parseInt(activeBtn.dataset.skill, 10) : bridge.getSkill();
+            bridge.setSkill(s);
+            playAgain(s).catch(console.error);
+            return;
+          }
+        }
+
+        if (isMatchOverOpen) {
+          if (e.key === "Enter" || e.key === " " || e.code === "Space") {
+            e.preventDefault();
+            e.stopPropagation();
+            playAgain().catch(console.error);
+            return;
+          }
+        }
+
+        if (isControlsOpen || isCreditsOpen) {
+          if (e.key === "Enter" || e.key === " " || e.code === "Space" || e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            controlsCard.classList.add("hidden");
+            creditsCard.classList.add("hidden");
+            titleCard.classList.remove("hidden");
+            return;
+          }
+        }
+
+        if (isTitleOpen) {
+          if (e.key === "Enter" || e.key === " " || e.code === "Space") {
+            e.preventDefault();
+            e.stopPropagation();
+            openSkillSelect("title");
+            return;
+          }
+        }
+
+        if (isPauseOpen) {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            resumeGame();
+            return;
+          }
+          if (e.key === "Enter" || e.key === " " || e.code === "Space") {
+            e.preventDefault();
+            e.stopPropagation();
+            resumeGame();
+            return;
+          }
+        }
+
+        if (!intermissionCard.classList.contains("hidden")) {
+          if (e.key === "Enter" || e.key === " " || e.code === "Space") {
+            e.preventDefault();
+            e.stopPropagation();
+            intermissionAdvance.click();
+            return;
+          }
+        }
+
+        return;
+      }
+
+      if (e.key === "Escape" || e.key === "p" || e.key === "P") {
+        e.preventDefault();
+        pauseGame();
+        return;
+      }
+
+      if (e.key === " " || e.code === "Space") e.preventDefault();
+      bridge.setKey(e.key, true);
+    });
+
+    window.addEventListener("keyup", (e) => {
+      bridge.setKey(e.key, false);
+    });
+
+    let isDragging = false;
+    let lastMouseX = 0;
+    let dragDistance = 0;
+
+    canvas.addEventListener("mousedown", (e) => {
+      ensureAudio().catch(() => {});
+      if (!menuOverlay.classList.contains("hidden")) return;
+      if (document.pointerLockElement === canvas) {
+        if (e.button === 0) {
+          bridge.fireWeapon();
+        }
+        return;
+      }
+      isDragging = true;
+      lastMouseX = e.clientX;
+      dragDistance = 0;
+    });
+
+    window.addEventListener("mouseup", (e) => {
+      if (isDragging) {
+        if (dragDistance < 4 && !menuOverlay.classList.contains("hidden")) {
+          if (document.pointerLockElement !== canvas) {
+            requestPointerLockSafe();
+          } else if (e.button === 0) {
+            bridge.fireWeapon();
+          }
+        }
+        isDragging = false;
+        dragDistance = 0;
+      }
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (document.pointerLockElement === canvas) {
+        bridge.addMouseRotation(e.movementX || 0);
+        return;
+      }
+      if (!isDragging) return;
+      const dx = e.clientX - lastMouseX;
+      dragDistance += Math.abs(dx);
+      lastMouseX = e.clientX;
+      bridge.addMouseRotation(dx);
+    });
+
+    playPauseBtn.addEventListener("click", () => {
+      isPlaying = !isPlaying;
+      host.togglePlay();
+      playPauseBtn.textContent = isPlaying ? "⏸ Pause" : "▶ Play";
+    });
+
+    function updateScrubberOnStep() {
+      const stats = host.getStats();
+      const current = stats.displayTick ?? currentScrubTick;
+      scrubber.value = current;
+      tickLabel.textContent = `TICK ${String(current).padStart(4, "0")} / ${String(liveHeadTick).padStart(4, "0")} [REWIND]`;
+    }
+
+    rewind1Btn.addEventListener("click", () => {
+      isPlaying = false;
+      playPauseBtn.textContent = "▶ Play";
+      host.stepBackward(1);
+      updateScrubberOnStep();
+    });
+
+    rewind10Btn.addEventListener("click", () => {
+      isPlaying = false;
+      playPauseBtn.textContent = "▶ Play";
+      host.stepBackward(10);
+      updateScrubberOnStep();
+    });
+
+    forward1Btn.addEventListener("click", () => {
+      isPlaying = false;
+      playPauseBtn.textContent = "▶ Play";
+      host.stepForward(1);
+      updateScrubberOnStep();
+    });
+
+    forward10Btn.addEventListener("click", () => {
+      isPlaying = false;
+      playPauseBtn.textContent = "▶ Play";
+      host.stepForward(10);
+      updateScrubberOnStep();
+    });
+
+    branchBtn.addEventListener("click", () => {
+      const targetTick = parseInt(scrubber.value, 10);
+      host.branch(targetTick);
+      isPlaying = true;
+      bridge.play();
+      playPauseBtn.textContent = "⏸ Pause";
+    });
+
+    scrubber.addEventListener("input", (e) => {
+      const targetTick = parseInt(e.target.value, 10);
+      isPlaying = false;
+      playPauseBtn.textContent = "▶ Play";
+      host.seek(targetTick);
+      currentScrubTick = targetTick;
+      tickLabel.textContent = `TICK ${String(targetTick).padStart(4, "0")} / ${String(liveHeadTick).padStart(4, "0")} [REWIND]`;
+    });
+
+    resetBtn.addEventListener("click", () => {
+      playAgain().catch(console.error);
+    });
+
+    // FreeDoom Map Selection
+    document.querySelectorAll(".btn-map[data-map]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        document.querySelectorAll(".btn-map").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        await bridge.loadMap(btn.dataset.map);
+        liveHeadTick = 0;
+        currentScrubTick = 0;
+        scrubber.min = 0;
+        scrubber.max = 0;
+        scrubber.value = 0;
+        tickLabel.textContent = `TICK 0000 / 0000`;
+        playPauseBtn.textContent = "⏸ Pause";
+      });
+    });
+
+    // Start simulation loop
+    bridge.play();
+  </script>
+</body>
+</html>

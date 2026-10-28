@@ -1,0 +1,68 @@
+# generated from bayt.cue — do not edit
+services:
+  libraries_mecha-caddy:
+    build:
+      additional_contexts:
+        libraries_mecha-crud: service:libraries_mecha-crud
+        root: ../../..
+      context: ..
+      dockerfile: .bayt/Dockerfile.caddy
+      target: caddy
+      tags:
+      - bayt-libraries_mecha-caddy:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-libraries_mecha-caddy:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    depends_on:
+      libraries_mecha-crud:
+        condition: service_healthy
+        restart: true
+    develop:
+      watch:
+      - action: sync+restart
+        path: ../services/proxy/Caddyfile
+        target: /etc/caddy/Caddyfile
+      - action: sync+restart
+        path: ../.certs
+        target: /certs
+    environment:
+      ELECTRIC_SECRET: ${ELECTRIC_SECRET:-dev-electric-secret}
+      ORIGIN: ${ORIGIN:-http://localhost:${MECHA_DOOR_HOST_PORT:-8080}}
+    healthcheck:
+      test:
+      - CMD
+      - httpcheck
+      - http://127.0.0.1:8080/health
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+      start_interval: 500ms
+    image: bayt-libraries_mecha-caddy:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    networks:
+      default:
+        aliases:
+        - caddy
+  libraries_mecha-caddy_bayt:
+    build:
+      additional_contexts:
+        libraries_mecha-crud_bayt: service:libraries_mecha-crud_bayt
+      context: ..
+      dockerfile: .bayt/Dockerfile.caddy
+      target: caddy_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-caddy_bayt:latest
+    scale: 0
+  libraries_mecha-caddy_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.caddy
+      target: caddy_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-caddy_srcs:latest
+    scale: 0

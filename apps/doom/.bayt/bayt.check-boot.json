@@ -1,0 +1,272 @@
+{
+  "_generated_from": "bayt.cue (do not edit)",
+  "compose": {
+    "up": true,
+    "manual": true,
+    "build": {
+      "additional_contexts": {
+        "plugins_omnishell-runtime-image": "${MONOREPO_COMPOSE_MODE:-docker-image://bonitao/omnishell:0.20.2@sha256:0f7d84358244c875a76bf97f13974bf6336e15f639a2f01fa31ad3eb0ce0d8a7}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image}"
+      },
+      "secrets": [],
+      "args": {}
+    },
+    "command": [
+      "mise",
+      "x",
+      "--",
+      "sh",
+      "-c",
+      "deno run --config tests/deno.json --lock tests/deno.lock --frozen --allow-read --allow-write --allow-net --allow-env --allow-run --allow-sys --unsafely-ignore-certificate-errors=caddy tests/boot.ts"
+    ],
+    "depends_on": {
+      "doom-launch": {
+        "condition": "service_healthy"
+      }
+    },
+    "environment": {
+      "APP_URL": "https://caddy:8443",
+      "ORIGIN": "${ORIGIN:-https://localhost:${CADDY_TLS_HOST_PORT}}",
+      "SETTLE_TIMEOUT_MS": "50000"
+    },
+    "ports": [],
+    "volumes": []
+  },
+  "dockerfile": {
+    "preamble": [],
+    "preambleCopyContexts": [],
+    "from": {
+      "ref": ":browser",
+      "name": "doom-browser"
+    },
+    "add": [],
+    "mounts": [],
+    "secrets": {},
+    "extra_hosts": [],
+    "epilogue": [],
+    "copy": [
+      {
+        "from": {
+          "name": "plugins_omnishell-runtime-image"
+        },
+        "srcs": [
+          "/"
+        ],
+        "dst": "/omnishell",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      }
+    ],
+    "healthcheck": null,
+    "expose": [],
+    "entrypoint": null,
+    "incremental": false,
+    "cmd": null
+  },
+  "name": "check-boot",
+  "project": "doom",
+  "dir": ".",
+  "activate": "mise x --",
+  "srcs": {
+    "globs": [
+      "tests/**"
+    ],
+    "exclude": []
+  },
+  "outs": {
+    "globs": [],
+    "exclude": []
+  },
+  "state": {
+    "globs": []
+  },
+  "env": {},
+  "synthetics": {
+    "bayt": {
+      "name": "check-boot_bayt",
+      "project": "doom",
+      "dir": ".",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          ".bayt/compose.check-boot.yaml",
+          ".bayt/Dockerfile.check-boot",
+          ".bayt/bayt.check-boot.json",
+          ".bayt/Taskfile.yml",
+          ".bayt/Taskfile.bayt.yml",
+          ".bayt/Taskfile.check-boot.yaml",
+          ".bayt/compose.check-boot.closure.yaml",
+          ".bayt/process-compose.yaml",
+          ".bayt/compose.*.yaml",
+          ".bayt/Dockerfile.*",
+          ".bayt/bayt.*.json",
+          ".bayt/Taskfile.*.yaml",
+          "monorepo/${MONOREPO_COMPOSE_MODE:-docker-image}.yaml"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "./.bayt/compose.check-boot.yaml",
+        "./.bayt/compose.browser.yaml",
+        "./.bayt/compose.launch.yaml",
+        "./.bayt/compose.caddy.yaml",
+        "./.bayt/compose.served.yaml"
+      ]
+    },
+    "outs": {
+      "name": "check-boot_outs",
+      "project": "doom",
+      "dir": ".",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "./.bayt/compose.check-boot.yaml",
+        "./.bayt/compose.browser.yaml",
+        "./.bayt/compose.launch.yaml",
+        "./.bayt/compose.caddy.yaml",
+        "./.bayt/compose.served.yaml"
+      ]
+    },
+    "srcs": {
+      "name": "check-boot_srcs",
+      "project": "doom",
+      "dir": ".",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          "tests/**",
+          "[m]ise.toml",
+          "[.]mise.toml",
+          "[m]ise.lock",
+          "[.]tool-versions"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [
+        "browser_srcs",
+        "launch_outs_srcs"
+      ],
+      "transitiveCrossDeps": [
+        {
+          "project": "doom",
+          "name": "browser_srcs",
+          "dir": ".",
+          "outs": {
+            "globs": [
+              "[m]ise.toml",
+              "[.]mise.toml",
+              "[m]ise.lock",
+              "[.]tool-versions"
+            ],
+            "exclude": []
+          }
+        }
+      ],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "./.bayt/compose.check-boot.yaml",
+        "./.bayt/compose.browser.yaml",
+        "./.bayt/compose.launch.yaml",
+        "./.bayt/compose.caddy.yaml",
+        "./.bayt/compose.served.yaml"
+      ]
+    }
+  },
+  "taskfile": {
+    "run": "once",
+    "incremental": true,
+    "preconditions": []
+  },
+  "visibility": "internal",
+  "emitsSrcs": true,
+  "deps": [
+    "browser",
+    "launch_outs"
+  ],
+  "sameProjectDeps": [
+    "browser",
+    "launch_outs"
+  ],
+  "transitiveDeps": [
+    "browser",
+    "launch_outs"
+  ],
+  "transitiveCrossDeps": [],
+  "upClosure": [
+    "./.bayt/compose.check-boot.yaml",
+    "./.bayt/compose.browser.yaml",
+    "./.bayt/compose.launch.yaml",
+    "./.bayt/compose.caddy.yaml",
+    "./.bayt/compose.served.yaml"
+  ],
+  "chainedDeps": [
+    {
+      "name": "browser",
+      "project": "doom",
+      "dir": ".",
+      "outs": {
+        "globs": [],
+        "exclude": []
+      }
+    },
+    {
+      "name": "launch_outs",
+      "project": "doom",
+      "dir": ".",
+      "outs": {
+        "globs": [],
+        "exclude": []
+      }
+    }
+  ],
+  "cmds": [],
+  "cache": {
+    "full": false,
+    "similar": false
+  }
+}

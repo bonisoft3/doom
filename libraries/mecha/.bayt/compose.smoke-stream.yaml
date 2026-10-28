@@ -1,0 +1,51 @@
+# generated from bayt.cue — do not edit
+services:
+  libraries_mecha-smoke-stream:
+    build:
+      additional_contexts:
+        libraries_mecha-arroyo: service:libraries_mecha-arroyo
+        libraries_mecha-kafka-fanout: service:libraries_mecha-kafka-fanout
+        libraries_mecha-conduit: service:libraries_mecha-conduit
+        libraries_mecha-transform: service:libraries_mecha-transform
+      context: ..
+      dockerfile: .bayt/Dockerfile.smoke-stream
+      target: smoke-stream
+      tags:
+      - bayt-libraries_mecha-smoke-stream:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-libraries_mecha-smoke-stream:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    depends_on:
+      libraries_mecha-arroyo:
+        condition: service_healthy
+        restart: true
+      libraries_mecha-kafka-fanout:
+        condition: service_started
+      libraries_mecha-conduit:
+        condition: service_healthy
+        restart: true
+      libraries_mecha-transform:
+        condition: service_started
+    image: bayt-libraries_mecha-smoke-stream:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    scale: 0
+  libraries_mecha-smoke-stream_bayt:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.smoke-stream
+      target: smoke-stream_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-smoke-stream_bayt:latest
+    scale: 0
+  libraries_mecha-smoke-stream_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.smoke-stream
+      target: smoke-stream_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-smoke-stream_srcs:latest
+    scale: 0

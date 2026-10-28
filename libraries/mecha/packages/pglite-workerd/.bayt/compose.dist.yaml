@@ -1,0 +1,53 @@
+# generated from bayt.cue — do not edit
+services:
+  libraries_mecha_packages_pglite-workerd-dist:
+    build:
+      additional_contexts:
+        libraries_mecha_packages_pglite-workerd-wasm_outs: service:libraries_mecha_packages_pglite-workerd-wasm_outs
+      context: ..
+      dockerfile: .bayt/Dockerfile.dist
+      target: dist
+      tags:
+      - >-
+        bayt-libraries_mecha_packages_pglite-workerd-dist:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-libraries_mecha_packages_pglite-workerd-dist:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: >-
+      bayt-libraries_mecha_packages_pglite-workerd-dist:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    scale: 0
+  libraries_mecha_packages_pglite-workerd-dist_bayt:
+    build:
+      additional_contexts:
+        libraries_mecha_packages_pglite-workerd-wasm_bayt: service:libraries_mecha_packages_pglite-workerd-wasm_bayt
+      context: ..
+      dockerfile: .bayt/Dockerfile.dist
+      target: dist_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha_packages_pglite-workerd-dist_bayt:latest
+    scale: 0
+  libraries_mecha_packages_pglite-workerd-dist_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.dist
+      target: dist_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha_packages_pglite-workerd-dist_srcs:latest
+    scale: 0
+  libraries_mecha_packages_pglite-workerd-dist_outs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.dist
+      target: dist_outs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+      additional_contexts:
+        libraries_mecha_packages_pglite-workerd-dist: service:libraries_mecha_packages_pglite-workerd-dist
+    image: bayt-libraries_mecha_packages_pglite-workerd-dist_outs:latest
+    scale: 0

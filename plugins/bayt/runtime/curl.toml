@@ -1,0 +1,30 @@
+#!/usr/bin/env -S mise tool-stub
+# Static builds; the musl ones run on glibc and musl hosts alike.
+bin = "curl"
+version = "8.23.0"
+
+[platforms.darwin-arm64]
+url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-macos-arm64-8.23.0.tar.xz"
+checksum = "sha256:d4e58f2ca3ca88970888dd513243da2336339e4021aaccd1041566564d278f01"
+size = 3351352
+
+[platforms.darwin-amd64]
+url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-macos-x86_64-8.23.0.tar.xz"
+checksum = "sha256:9021e95516ca1835560cac46718d6c957d1f4b5fae48a56cd9d267d6663169c0"
+size = 3276756
+
+[platforms.linux-amd64]
+url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-linux-x86_64-musl-8.23.0.tar.xz"
+checksum = "sha256:049f982cb7db34e745cc0be0bdce2246b51fbf7ef17fc95ce37980f711ca91bb"
+size = 4191096
+
+[platforms.linux-arm64]
+url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-linux-aarch64-musl-8.23.0.tar.xz"
+checksum = "sha256:4db6c9b5e7f61f6a8cfa7f83e8c24e54259334bbb46743f6207ffb67bc0d1c3a"
+size = 4311556
+
+[platforms.windows-amd64]
+url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-windows-x86_64-8.23.0.tar.xz"
+checksum = "sha256:6fbaf750e89b143068dcef9a0a6f2c84fafbf03d652fc7476ff443e88a6deda5"
+size = 3556788
+bin = "curl.exe"

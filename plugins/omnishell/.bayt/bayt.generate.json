@@ -1,0 +1,101 @@
+{
+  "_generated_from": "bayt.cue (do not edit)",
+  "name": "generate",
+  "project": "plugins_omnishell",
+  "dir": "plugins/omnishell",
+  "activate": "mise x --",
+  "srcs": {
+    "globs": [],
+    "exclude": []
+  },
+  "outs": {
+    "globs": [],
+    "exclude": []
+  },
+  "state": {
+    "globs": []
+  },
+  "env": {},
+  "taskfile": {
+    "run": "once",
+    "incremental": true,
+    "preconditions": []
+  },
+  "visibility": "internal",
+  "emitsSrcs": false,
+  "deps": [
+    "bundle"
+  ],
+  "sameProjectDeps": [
+    "bundle"
+  ],
+  "transitiveDeps": [
+    "bundle",
+    "setup"
+  ],
+  "transitiveCrossDeps": [
+    {
+      "name": "setup_srcs",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "outs": {
+        "globs": [
+          "packages/**",
+          "[m]ise.toml",
+          "[.]mise.toml",
+          "[m]ise.lock",
+          "[.]tool-versions"
+        ],
+        "exclude": []
+      }
+    }
+  ],
+  "upClosure": [
+    "plugins/omnishell/.bayt/compose.bundle.yaml",
+    "plugins/omnishell/.bayt/compose.setup.yaml",
+    "libraries/mecha/.bayt/compose.setup.yaml"
+  ],
+  "chainedDeps": [
+    {
+      "name": "bundle",
+      "project": "plugins_omnishell",
+      "dir": "plugins/omnishell",
+      "outs": {
+        "globs": [
+          "interpreter/vendor/mecha-client.js",
+          "interpreter/vendor/morphlex.js",
+          "interpreter/vendor/js-yaml.js",
+          "interpreter/vendor/messages.js"
+        ],
+        "exclude": []
+      }
+    },
+    {
+      "name": "setup",
+      "project": "plugins_omnishell",
+      "dir": "plugins/omnishell",
+      "outs": {
+        "globs": [],
+        "exclude": []
+      }
+    }
+  ],
+  "cmds": [
+    {
+      "srcs": {
+        "globs": [],
+        "exclude": [],
+        "defaultGlobs": null,
+        "defaultExclude": null
+      },
+      "do": "nu -c \"null\"",
+      "name": "builtin",
+      "shell": "exec",
+      "stop": false
+    }
+  ],
+  "cache": {
+    "full": false,
+    "similar": false
+  }
+}

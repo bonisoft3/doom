@@ -1,0 +1,62 @@
+# generated from bayt.cue — do not edit
+services:
+  workspaceroot-pronto-sources:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.pronto-sources
+      target: pronto-sources
+      tags:
+      - bayt-workspaceroot-pronto-sources:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-workspaceroot-pronto-sources:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+      x-bake:
+        cache-from:
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE:-unscoped}-pronto-sources
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE_FALLBACK:-unscoped}-pronto-sources
+        cache-to:
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE:-unscoped}-pronto-sources,mode=min,image-manifest=true,oci-mediatypes=true,compression=zstd,compression-level=3
+    image: bayt-workspaceroot-pronto-sources:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    scale: 0
+  workspaceroot-pronto-sources_bayt:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.pronto-sources
+      target: pronto-sources_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+      x-bake:
+        cache-from:
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE:-unscoped}-workspaceroot-pronto-sources_bayt
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE_FALLBACK:-unscoped}-workspaceroot-pronto-sources_bayt
+        cache-to:
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE:-unscoped}-workspaceroot-pronto-sources_bayt,mode=max,image-manifest=true,oci-mediatypes=true,compression=zstd,compression-level=3
+    image: bayt-workspaceroot-pronto-sources_bayt:latest
+    scale: 0
+  workspaceroot-pronto-sources_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.pronto-sources
+      target: pronto-sources_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+      x-bake:
+        cache-from:
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE:-unscoped}-workspaceroot-pronto-sources_srcs
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE_FALLBACK:-unscoped}-workspaceroot-pronto-sources_srcs
+        cache-to:
+        - >-
+          type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE:-unscoped}-workspaceroot-pronto-sources_srcs,mode=max,image-manifest=true,oci-mediatypes=true,compression=zstd,compression-level=3
+    image: bayt-workspaceroot-pronto-sources_srcs:latest
+    scale: 0

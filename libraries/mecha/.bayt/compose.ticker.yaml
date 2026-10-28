@@ -1,0 +1,57 @@
+# generated from bayt.cue — do not edit
+services:
+  libraries_mecha-ticker:
+    build:
+      additional_contexts:
+        libraries_mecha-ticker-image: service:libraries_mecha-ticker-image
+        libraries_mecha-crud: service:libraries_mecha-crud
+      context: ..
+      dockerfile: .bayt/Dockerfile.ticker
+      target: ticker
+      tags:
+      - bayt-libraries_mecha-ticker:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-libraries_mecha-ticker:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    depends_on:
+      libraries_mecha-crud:
+        condition: service_healthy
+        restart: true
+    environment:
+      CRUD_URL: http://crud:3000
+      CALL_TIMEOUT_MS: "35000"
+      WAKE_URLS: http://mesh-events:3500/v1.0/healthz/outbound
+      SERVICE_JWT: >-
+        ${SERVICE_JWT:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZSIsInN1YiI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMCIsImV4cCI6MTk4ODE1MDQwMH0.dGYz_sMSnOvZy0eANh7spJbgyr2fEzeynOERIqW7gd4}
+    image: bayt-libraries_mecha-ticker:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    networks:
+      default:
+        aliases:
+        - ticker
+    restart: on-failure
+  libraries_mecha-ticker_bayt:
+    build:
+      additional_contexts:
+        libraries_mecha-ticker-image_bayt: service:libraries_mecha-ticker-image_bayt
+        libraries_mecha-crud_bayt: service:libraries_mecha-crud_bayt
+      context: ..
+      dockerfile: .bayt/Dockerfile.ticker
+      target: ticker_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-ticker_bayt:latest
+    scale: 0
+  libraries_mecha-ticker_srcs:
+    build:
+      additional_contexts:
+        libraries_mecha-ticker-image_srcs: service:libraries_mecha-ticker-image_srcs
+      context: ..
+      dockerfile: .bayt/Dockerfile.ticker
+      target: ticker_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-ticker_srcs:latest
+    scale: 0

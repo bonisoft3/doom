@@ -1,0 +1,494 @@
+---
+type: metric
+title: Pending
+description: What pronto argues for and has not built, and what a measurement found that nothing has fixed, each checked against this tree on the date given.
+---
+
+# Pending
+
+What pronto argues for and does not have, and what a measurement found that
+nothing has fixed. A line leaves when it lands or when a document refuses it.
+Anything a subsystem document already states is not repeated here.
+
+Every claim below was checked against this tree on 2026-09-27, unless it says
+otherwise.
+
+## The compiler
+
+**[The ir pin](SPEC.md#programcue) is compared with nothing.**
+
+**The brief's lints do not exist.** SPEC's lints 1–3, 8 and 9 have no
+implementation: nothing reads a brief's `[[id]]`, a `![[…]]` transclusion, the
+harness frontmatter or `pronto-brief-sha256`. The CEL half of lint 10 is
+missing too: no `<code class="cel">` span in an ir is parsed, while mermaid
+blocks are (`diagrams.ts`).
+
+**Review is not levied by consequence**, and no handler declares a write set
+([review by consequence](docs/decisions/2026-08-27-review-by-consequence.md)).
+
+**Nothing parses a module against Jessie's grammar.** `jessie.ts` scans for the
+names in `DENIED` and checks the completion value's shape, omnishell's `check
+handlers` loads the module in its role's compartment, and SES confines it at
+run time. A construct Jessie excludes and SES runs, such as a `class`, passes
+all three.
+
+## Types and identity
+
+**A statement nothing can keep still compiles.** The argued rule: the program
+derives an `enforced_by` for each statement from a table of what each tier can
+keep, declared non-empty, so a statement no tier keeps does not unify; and
+every prohibition carries at least one row it refuses, handed to every keeper,
+because a keeper existing is not a keeper working (`matches()` is RE2 in CEL,
+POSIX in a `CHECK` and ECMAScript in the browser). Neither `enforced_by` nor
+refused rows exist in `schema.cue`.
+
+**Set statements stop at uniques.** The argued vocabulary is dbt's test
+grammar verbatim — `unique`, `relationships`, `unique_combination_of_columns`,
+`mutually_exclusive_ranges` — with `relationships.to` holding a type id and
+`config.where` holding CEL, because nothing else is portable for sets: Datalog
+has only incompatible dialects, and DuckDB rejects `ON DELETE CASCADE`. Today
+`uniques[].where` speaks the data plane's fragment grammar on browser
+durabilities only, and `ref:` means both the edge a validation walks and `ON
+DELETE CASCADE`, so an app that wants the edge takes the cascade.
+
+**Productions are SQL strings.** `#Field.default` and `#Field.generated` are SQL
+expressions. The argued vocabulary, kept per tier like prohibitions: `default`
+limited to a uuid, the clock, the caller or a literal; `stamp` for a field no
+writer may set; `computed` as CEL with its strings extension; `on_delete` on a
+relationship.
+
+**No shape fingerprint.** It would be sha256 over the RFC 8785 form of the
+identity projection — the type id, then each ordinal's type, `required` and
+`retired`, with no label — so a rename leaves it unchanged. A versioned device
+collection needs it ([omnishell's pending](../omnishell/PENDING.md#data)), and
+a message on the bus would carry it in its metadata to say which shape wrote
+it. Nothing computes it, and nothing in the tree implements RFC 8785.
+
+**Two apps on one origin share a device collection.** The mecha client keys a
+`device` collection's `localStorage` as `mecha:<table>`, so two apps served
+from one origin that each declare a table of that name read and write each
+other's rows. Keying by type id, with the shape fingerprint beside the rows,
+would end it.
+
+**An entity cannot be retired.** `retired` exists only on `#Field`.
+`identity.ts` refuses an entity that disappears, and no declaration retires
+one.
+
+**An entity has two names.** `#Entity` carries `name`, the PascalCase ir id,
+and `table`, snake case, authored separately. Casing is rendering, and a second
+authored spelling is how one entity comes to have two names that drift; nothing
+derives one from the other or checks them.
+
+**The platform's columns belong to no identity.** `txid` and `scope_id` are
+emitted columns no entity declares, and `#tickFields` is concatenated into an
+app's field list, taking the app's ordinals; the argued rule is that mecha
+mints these once. `identity.ts mint` reads only a literal `fields: [` list, so
+an emits entity spelled `list.Concat([#tickFields, [...]])`, as the guide
+writes it, cannot be minted.
+
+**`app_user` has no owner.** truco and realworld each
+declare it under a type id of their own. Who mints it waits on whether it is
+mecha's entity an app extends or an app's entity mecha is told about.
+
+**CEL is rendered without its field's type.** `cel-emit.ts` renders a
+comparison the same way whatever the field's type, so `this > '0'` on a
+decimal is right in SQL and lexical in CUE, and `duration()` and subtraction
+have no rendering, so "a break fits inside its shift" cannot be stated.
+
+**CEL is parsed and never checked.** `cel.ts` calls `parse` alone and never
+resolves an identifier against the entity's fields, which is cheap and
+certain over `ParsedExpr`; a type checker would also refuse a string compared
+with an integer.
+
+**A server row's transitions cannot be stated.** A machine governs a `tab` or
+`device` row only ([omnishell's chart](../omnishell/docs/machines.md#the-chart)),
+and nothing else speaks of transitions. Either machines govern cluster rows
+too, or CEL gains a binding for the previous row.
+
+**A label is rewritten by hand.** Inside a program a field's label is spelled
+in six languages nothing rewrites: CEL, the fragment grammar, bloblang, Jessie,
+SQL assembly and the markup's `data-live` and `data-text`. The argued surface
+is one command, `pronto rename <entity>.<old> <new>`, which rewrites every
+spelling and keeps the ordinal. Once holders keep the name,
+[schema changes](docs/schema-change-admission.md#what-pronto-admits) refuse the
+rename, so the command serves a field no deployment holds yet.
+
+**`tsvector` is a field.** realworld, thenote and xpense each declare a
+generated `search` column of type `tsvector`, which `#typeAlias` maps to
+`string` though it is an index, a construction rather than a value anyone
+states. Each is filtered by markup as `search=plfts(simple).…`, so once it is
+an index the markup checks must admit a filter on a name no field carries, and
+the construction must keep that name.
+
+**A value's spelling in markup is not defined per type.** 93 fields across the
+apps are booleans spelled as text (`this in ['true','false']`, or yes and no)
+against 10 declared `bool`, and a `date` form control submits `…T00:00:00Z`
+(`#FormField`) rather than `YYYY-MM-DD`.
+
+**The first hop is not told how identity moves.** The prelude, read on every
+compile, says nothing about type ids, ordinals or retirement: that a new entity
+or field carries no identity, a rename keeps the identity attributes, and a
+drop retires. Those are in GUIDE and SPEC, which a compile does not read.
+
+**A statement is declared inside its entity.** The argued rule is that a
+reference goes from what cannot stand alone to what can, so a validation or an
+access rule would name its entity rather than be declared inside it. The
+machine case is [omnishell's](../omnishell/PENDING.md#data).
+
+**An enum value cannot be renamed.** A value in `this in [...]` and a chart's
+state names are data every holder keeps in rows, so renaming one has a field
+rename's reach, and nothing declares one.
+
+## Schema changes
+
+**Nothing prompts folding a pgroll migration into its entity.** The second
+step of [the rule](docs/schema-change-admission.md#pgroll-migrations)
+is manual, and a migration left declared after its effect moved into the
+entity fails every fresh-volume replay.
+
+**A hatch may withhold an emitted file.** `withheld()` in `check-sql.ts` and
+`check-proto.ts` accepts any path, `005_create_tables.sql` or
+`schema/entities.proto` included. A path `.pronto/manifest.json` lists should
+be an error.
+
+**A `proto` hatch may withhold a file that does not exist.** `check-sql.ts`
+refuses a missing file; `check-proto.ts` does not look.
+
+**An undeclared key reaches a device row.** The mecha client's `normalizeRow`
+copies every key and canonicalizes only the declared ones (pronto's copy in
+`portable-types.ts`), so a handler can write an undeclared column into a `tab`
+or `device` collection, and none of the four readers sees it.
+
+## The lattice
+
+**Durability and effect level are declared together and compared nowhere.**
+`#DurabilityEffectLevel` is written twice, in `schema.cue` and omnishell's
+`machine.cue`, and nothing unifies an effect's level with its entity's
+durability, so an ephemeral effect on a `server` entity passes `cue vet`, lint
+and every test. Unifying each effect's level against its entity's row — at
+`cue vet`, where the program holds both, or in `machineLint`, which already
+reads the level ([omnishell's half](../omnishell/PENDING.md#machines)) — makes
+the lattice's first join a refusal, and lets one copy of the table import the
+other.
+
+**A lazy read takes only equality.** A view whose filter holds a boolean, a
+range or a pattern is read from the collection, so its table is read whole
+([screens](docs/screens.md#the-reads-decide-how-a-table-is-read)): golaberto's
+`game_card`, `team_game`, `position_chance`, `standing` and its directories.
+The view engine's clause vocabulary lacks those ops, and a boolean clause is
+refused because an optimistic row lacks the schema's defaulted booleans, which
+belongs with the writers paragraph below. A named read (`data-read-*`) counts as a whole
+read until derive can prove an identical view on its screen serves it, and an
+`is.null` clause on a domain-typed column counts as a comparison Electric
+cannot make, though `IS NULL` needs no operator; it is the first reason ponto's
+`shift` is eager. No pronto deployment carries a data directory from one
+image to the next, so the domain/base split reaches every database rebuilt from
+the regenerated migrations; a database container started again from an image
+built before it keeps its domains, and the first subset on one is Electric's
+400, which the store raises as a ProgramError naming the table. An in-place
+retype waits for a deployed database (the generated columns and policies that
+read a retyped column block `ALTER COLUMN TYPE`,
+[schema change](docs/schema-change-admission.md)).
+
+**A capped view ordered by free text keeps its table eager**
+([screens](docs/screens.md#the-reads-decide-how-a-table-is-read)): golaberto's
+`stage_group`, read `limit=1` by `position,name`. Postgres picks the rows inside
+the cap by ICU root and the view orders them by the reader's locale; it goes on
+demand once both sides order by one collation, which TanStack's
+`lexical`/`locale` choice does not offer.
+
+**A reduce keeps every server table eager**, whatever event it is bound to. Its
+updates and effects name their entities in code, so derive cannot read them off
+the markup; no app with a lazy table has one today. Closing it needs the
+entities a reduce writes stated somewhere derive reads and the store enforces.
+
+**Two kinds of writer on one entity is shown, not refused.** `#Entity.writers`
+(writers.cue) lists every declaration that writes the entity, so a sink a form
+also targets reads `pipeline:tally upsert, form:board create` on its card; no
+lint, store check or policy consults the list, and `app_user` holds whatever
+write arm the access mode grants. Refusing a form or effect aimed at a
+pipeline-written entity at lint, and emitting no `app_user` write arm for it,
+would make "a sink is written by its pipeline alone" a rule.
+
+**A `tab` or `device` write is judged by its validations alone**
+([the lattice](docs/lattice.md#the-validation-ladder)); a judge beside
+`validate.js`, where every write passes, would hold type, field CEL and row CEL
+at every rung ([omnishell's `cel:` line](../omnishell/PENDING.md#data)).
+
+## Access
+
+**The owner is stamped by a column default**
+([owner stamping](docs/decisions/2026-08-31-owner-stamping.md)).
+
+**`public` names no owner**
+([access](docs/access.md#the-browsers-mirror)); an `owner`
+on `public` would let the emitter write both the arms and the stamp.
+
+**A cluster entity may omit `access`**
+([access](docs/access.md#the-four-modes)); every app in the tree declares one,
+and requiring it wherever `#Entity.server` is true would keep it so at `cue
+vet`.
+
+## Pipelines and schedules
+
+**No pipeline runs below the cluster**
+([below the cluster](docs/pipelines-and-schedules.md#below-the-cluster)); either
+the transforms run in the page, or `pages` refuses a pipeline.
+
+**Nothing holds a CDC pipeline's source to `server` or its sink off it.** The
+publication carries `server` tables only, so a pipeline `from` a `live` or
+`offline` entity never fires, and one whose `to` is `server` publishes its own
+upserts to every stream, kept from feeding itself only by its mapping's table
+check. The prelude states the sink rule as one the author keeps, and
+`_scheduleShape` states both rules for a schedule's entities; `#Pipeline` has
+no counterpart that would refuse a feedback loop at `cue vet`. Every pipeline
+in the apps reads a `server` entity and writes a `live` one.
+
+**A schedule's hour and cadence are unchecked.** An hour-pinning expression
+with no `timeZone` fires by UTC, the default rather than anyone's choice. A
+cadence finer than the resolution of the clock at a declared target keeps pace
+on a laptop and never where that clock runs, and nothing compares them, since
+`meta.clocks` names targets and no clock declares a resolution.
+
+**The schedule refusals go untested.** `testdata/emit/schedule.cue` pins the
+seed and where the table comes from, but `_scheduleShape`, `_clockDeclared` and
+`_pagesBundle` are hidden fields of `#emit` it never references, so `cue vet`
+does not evaluate them: its program still passes with the schedule emitting
+into a `live` entity. GolAberto's two midnights are the one app's schedules,
+which its own `cue vet` holds to them.
+
+**A schedule reaches only a volume initdb built.** mecha's `800_schedule.sql`
+and the `801_schedule_seed.sql` rows are initdb steps, and migrate runs only
+the pgroll ledger, so a schedule declared, changed or suspended after a volume
+exists never reaches it; until then such a volume is recreated. Migrate refuses
+a cluster that declares a schedule over a volume without the table, so the
+absence is loud. The fix is migrate's: re-apply the steps the cluster placed
+that the volume lacks, every one of them idempotent, then upsert the seed on
+every boot, which is what the seed's `ON CONFLICT` already assumes.
+
+## Localization
+
+**Catalogue completeness is not a `cue vet` error.** Only `slug` and `label`
+keys fail at export; any other key missing from a locale is found at `test` by
+`check i18n`, as default-language text after a render. Closing each catalogue
+over the default's key set, the way `#Design.dark` closes over `colors`, would
+refuse it at `lint`; `#I18n.catalogues` is open.
+
+**A validation cannot use locale data.** `Intl` is denied to every role but the
+adapter, and `derive.ts` refuses it in a validation because plv8 in the
+database image has no ICU. Where two tiers must agree, the design is one
+vendored ICU bundle (FormatJS) pinned by `deno.lock`, built into the database
+image as a plv8 `start_proc` migration and endowed alike into the browser
+compartment, the Deno cage and plv8, gated on the app having a validated
+entity. Nothing in the tree mentions `start_proc` or FormatJS.
+
+**A number field reads only ASCII.** A reader typing `1.234,5` is refused by the
+hand-authored `pattern=` before the form submits. `Intl.NumberFormat(locale)
+.formatToParts` gives the separators; what blocks it is choosing how the value
+crosses the wire for every text control bound to a numeric column, since a
+parser guessing the separator wrong turns `R$ 1.234` into `R$ 1,234` silently.
+Nothing in omnishell's `interpreter/` parses locale-formatted input.
+
+**Text expansion is not graded.** German and Finnish run about 30% longer than
+English. The pseudo-locale pads 40%, but linkedom has no layout; the check is a
+narrow-viewport lane in `check-visual.ts`, at `integrate`, reporting an
+overflow the pseudo-locale shows and the default does not. There is no such
+lane.
+
+**Prose in CSS reaches no catalogue.** truco's `arena.css` writes `content:
+"você"`, xpense's `month.css` `content: "orçamento "`, thenote's `wall.css`
+`content: "on its way"`. `facts.ts` strips `<style>`, linkedom applies no CSS,
+and `innerText` excludes pseudo-element content, so no pass sees them. A
+`content:` string carrying a word, in an app with catalogues, is decidable
+from the stylesheet parse `styles.ts` already runs.
+
+**Rows are not translated, and the route is where demand would come from.** A
+screen's reads carry no locale to the server, and pronto emits no translation
+table, view or pipeline. The design
+([rows in the reader's language](docs/localization.md#rows-in-the-readers-language)):
+a route's reads run under the page's locale; the server answers
+`coalesce(translation, source)` at once and enqueues the missing (row,
+language) on the change feed; a pipeline translates only that pair and sync
+delivers it. The demand row's primary key is derived from (row, language),
+because the door's `ignore-duplicates` resolves only on the key and a composite
+unique answers 409; a translated row indexed for search needs its language's
+text-search dictionary; and omnishell's `data-prefetch` would warm a route
+before the click. `guis/iris` runs the change-feed half: `translate.yaml`
+captures a translation-request row, and `server/utils/translate.ts` translates
+and caches it per (item, language).
+
+## The design scale
+
+**The ladders a second vocabulary has not won.**
+[The quotation](docs/design-scale.md#the-quotation) refuses an app seam on
+`#Design` until a second whole vocabulary exists that an app measurably lands on
+more than the shipping one. Primer Primitives 11.10.0 supplies two of the nine
+dimensions — `text` and `leading` quote its base typography ladder. The other
+four are the measurement that would decide the rest, and each loses to what is
+already there:
+
+- `--base-size-*`, 33 steps, against Open Props' seventeen in `space`.
+- `--base-duration-*` and `--base-easing-*`, 12 and 5, against Open Props'
+  eighty-one curves in `motion`.
+- `--borderWidth-*` against `rule`, which carries a units argument on top:
+  `--borderWidth-thin` is `0.0625rem` where `--border-size-1` is `1px`.
+- the `zIndex` ladder against `layer`.
+
+`#Scale.joined` states that as a constraint: two buckets in one joining
+dimension fail `cue vet`, so each argument has to be won before the composition
+compiles. The step counts are upstream Primer's, which this tree vendors only
+as `typography.css`.
+
+## Screens
+
+**Forms, placeholders, create forms and renderer names are found at hydrate,
+not at lint.** `check markup` compares a region's table and filter columns with
+the emitted schema, and nothing compares a `data-form` whose id is not in
+`#Screen.forms` or whose `[name]` inputs differ from its `fields`; a `{col}`
+with no column on its row (`screen.js` throws at bind, and visual lint sees
+only painted braces); a `create` form on a `tab` or `device` entity that
+omits a field no SQL default fills; or a `data-text-format` that is neither a
+built-in nor a declared renderer. Each is a set difference needing no page and
+no cluster, and belongs in omnishell's `interpreter/lint.ts`; the placeholder
+rule must resolve `param.*`, `{now}`, dotted embeds and `data-empty-row`
+fields, and read a region's own `data-filter` against the enclosing row.
+
+**A route over private or folder reads cannot be rendered on request**, and
+`#emit` refuses `ssr: "ssr"` there and in an app behind a sign-in
+([screens](docs/screens.md#how-a-routes-first-document-is-rendered)). A document
+request carries no credential: the token lives in one tab's sessionStorage, by
+design one guest per tab. Rendering per session needs a cookie session — a new
+auth concept, with CSRF, cross-tab sign-out and changed guest semantics — and
+`private, no-store` would give it no offline value.
+
+**No JSON-LD is rendered from rows.** Mapping an entity to a schema.org type is
+a declaration nothing derives, so it would be a new knob.
+
+**A row's address is in no sitemap, and nothing purges a CDN.** The sitemap
+lists no `:param` address on purpose, and purging belongs to each release
+target; inside the stack the renderer's own cache is the purged one, and
+downstream gets `public, no-cache` with an ETag.
+
+**The pages target ships no documents.** Rows would need the server renderer
+running over the in-page cluster at bundle time, and a `:param` route's
+documents (golaberto: about 12 000 players times 6 locales) would pass Pages'
+1 GB limit, so a deep link keeps `404.html`.
+
+**A screen's states are not derived from what it reads.** A `tab` or `device`
+read is total and synchronous, so it has no `loading`, `gone` or
+`network-error`; `#Screen.states` is a free list, so a browser-only screen is
+storyboarded against states it cannot reach.
+
+**Nothing catches a column no screen reads.** Each one so far was found by hand
+with a grep: a chart's `nxt_pos` whose reader was rewritten out from under it,
+and `typed` on four menu entities, a fossil wearing a one-member CEL that made
+it look deliberate. The rule is decidable off the facts `derive.ts` extracts —
+a field must be bound in markup, named in a filter, an order or a projection,
+be a chart's own field, or be written by one — and the same pass catches a CSS
+rule matching no class on its own screen.
+
+**Screen state is decided by whichever top-level region refreshed last**, so a
+screen can settle on a state its route does not declare (`screen.js`).
+
+**A region cannot render SVG.** A `<template>`'s content is parsed as HTML, so a
+region filling an `<svg>` produces elements in the wrong namespace — present,
+carrying every attribute the binding wrote, drawn by no engine, and rendered
+happily by linkedom. Only the browser tier sees it.
+
+**`check parity` runs nowhere.** realworld declares `capabilities: native:
+true` and `check-parity.ts` exists, but omnishell's `terminal.cue` declares no
+`parity` check, so no app's `.say.yaml` carries one and the native peer of a web
+affordance is never compared.
+
+**`just generate` fails in the shadcnui gallery** (last checked 2026-09-20).
+
+## Visual lint
+
+**A perpetual animation reads as a screen still moving.** `settle()`
+fingerprints every element's geometry and waits for it to hold still; a
+rotating square's bounding box changes with the angle, so one spinner leaves a
+route reported as moving and everything measured after it measured a moving
+screen. The atoms screen works around it by spinning a pseudo-element, which
+the fingerprint does not walk — an app should not have to know that. Emulating
+`prefers-reduced-motion` would settle every such route by construction, and it
+is already what visual lint means by a settled moment.
+
+**It never hovers.** One settled moment per route, so a hover rule outranking a
+state rule is invisible: pagination's did, hiding the page a reader had just
+chosen until the pointer left. A second moment with the pointer on the first
+interactive element catches the class.
+
+**It measures an arbitrary moment.** It never enters a hand of truco and
+reports zero criticals while a reader sees cards covering each other. The clock
+that fixes it ships already — `?clock=manual` with `__prontoClock.advance(ms)`,
+driven the way `apps/truco/tests/acceptance.ts` drives it — and at ~18ms per
+page of checks, walking every beat costs less than one of the sleeps it
+replaced.
+
+## The build graph
+
+**Pronto apps don't use `sayt.depot`** until bayt writes the depot flatten
+from its own manifests: no app emits `depot.yaml` or `depot.json`, and no app
+build reads or writes the Depot bake cache. Checked 2026-10-02.
+
+## Release targets
+
+`pages` and `cloudflare` are emitted. The remaining designs are
+[release targets](docs/release-targets.md)'s, built on a branch of their own.
+
+**gcloud is not a pinned tool.** `release@gcp` runs with the Cloud CLI the
+machine has: its SDK is its own install, and the k8s release pins neither
+kubectl nor skaffold; a pin in `#Tools` would carry it to every consumer's
+toolchain. The release refuses to start without it.
+
+**The edge derives by drain alone**
+([cloudflare](docs/release-targets.md#cloudflare)): its drains and its clock
+run in the object, and no stream or computation does. A stream's mapping is
+bloblang, and a computation's queries are DuckDB's, whose engine (8 MB of
+WebAssembly gzipped, measured) does not fit a Worker beside PGlite. The outbox
+and Queue, the scale-to-zero containers for transform and compute with
+compute's tables on R2, and their generation from the compose closure are
+designed and not built.
+
+**`gcp` runs the database, crud, auth, electric and the ticker alone**
+([gcp](docs/release-targets.md#gcp)): it refuses the change-feed unit, the airlock, compute, blobs, images and
+render, each of which needs its own Cloud Run shape and wake. Its clock pokes
+the ticker with the service role's token on a public path, where mecha's
+contract wants a poke-specific credential.
+
+**No container TURN relay is built** ([ICE servers](docs/release-targets.md#ice-servers)):
+`release@cloudflare` mints ephemeral credentials from Cloudflare Calls TURN
+when opted in; container targets (`docker`, `gcp`, `k8s`) configure STUN alone.
+
+**`aws` has no rule** ([the design](docs/release-targets.md#the-clouds-and-k8s)).
+
+**`azure` is not in `#Target`**
+([the design](docs/release-targets.md#the-clouds-and-k8s)).
+
+**`k8s` is in neither `#Target` nor `#Tier`**
+([the design](docs/release-targets.md#the-clouds-and-k8s)).
+
+**Compose integration drivers run remotely for `gcp` alone.**
+The other targets use HTTP and browser verification; they do not yet run the
+compose drivers against the deployed address ([[docs/release-targets]]).
+
+**The page derives by drain alone** ([pages](docs/release-targets.md#pages)).
+Its streams' and computations' rows are the release's, so a result recorded in
+the page moves no stream's table, chance or rating; the derivation running in
+the page on DuckStream's machinery is what closes it.
+
+**A duckstream's sink is empty in the page** ([pages](docs/release-targets.md#pages)):
+the release derives the rows of streams and computations, and xpense's
+`MonthStat` and `CategoryMonthStat` are neither's.
+
+**Settling waits out the slowest computation's cadence**
+([pages](docs/release-targets.md#pages)): compute says nothing when a look
+finds its reads unchanged, so a release cannot see that one has looked.
+
+**The page serves no blob, and `pages` does not refuse one**
+([pages](docs/release-targets.md#pages)).
+
+**A unit cannot be bundled** ([pages](docs/release-targets.md#pages)). Bundling
+it needs three changes the terminal owns: `hatch.js` admitting `blob:`, the
+hatch worker resolving its siblings from its own `location.hash`, and the glue
+starting at `glueBlobUrl#<wasmBlobUrl>`.

@@ -1,0 +1,509 @@
+# ticker
+
+A periodic wake that survives scale-to-zero. One row, a derived key and a dumb
+poke.
+
+Four words carry the whole design, and nothing else is a concept:
+
+| | |
+|---|---|
+| **clock** | The per-tier cadence source. Owns resolution and nothing else. |
+| **poke** | A contentless authenticated HTTP request whose only job is to make a scaled-to-zero unit exist. The clock pokes the ticker, and the ticker pokes the units a tick needs: the mesh, and where an effect is declared the [airlock](../airlock/README.md#in-a-cluster). |
+| **tick** | One occurrence of a schedule, as a row in the app's own table, keyed `uuid5(schedule, instant)`. |
+| **outcome** | Where a pipeline says it answered a tick. Keyed by the same tick, in a different table, because a source cannot be its own sink. |
+
+`sweep` is the function that runs when poked. It is not a concept.
+
+## The shape
+
+Due-ness is a pure function of `(schedule, now, done)`, and everything a
+caller is allowed to be careless about follows from that — **Why a tick needs
+no durability** below argues why. What it means here: a poke may be lost,
+duplicated, coarse or doubled by a second clock, and none of those changes the
+answer.
+
+- `due.ts` — the pure core: what a schedule owes at an instant. No clock of its
+  own, no network. Its header lists the hard cases it decides.
+- `sweep.ts` — the sweep over a crud and a wake. Reads schedules, writes the
+  rows, wakes the unit that reads the WAL, advances the watermark, in that
+  order. The edge object runs this same file on its alarm.
+- `main.ts` — the container tier's shell: the poke's credential, crud over
+  HTTP, the wake as a GET to each unit.
+
+`deno.json` keeps `node_modules` beside these (`deno install`): the edge
+release bundles `due.ts` with wrangler, whose bundler resolves croner there
+and nowhere Deno's cache is.
+
+```sh
+task test          # from libraries/mecha; runs these alongside cue vet + buf lint
+deno test --allow-read --allow-env .
+```
+
+## Contract
+
+`POST /poke` carries no cadence, no schedule name and no payload. What is due is
+never the caller's business. Authorised by the cluster's `SERVICE_JWT`, the same
+credential every other write carries. `?caller=<label>` is diagnostic: it is
+recorded on every tick, so when two clocks are running you can see which is
+winning rather than infer it.
+
+The answer is a report. It is `500` when any schedule errored or the wake did
+not land — safe, because a retried sweep rewrites the same keys.
+
+```
+POST /poke?caller=cloud-scheduler
+Authorization: Bearer $SERVICE_JWT
+
+200 {"at":"…","caller":"cloud-scheduler",
+     "schedules":[{"schedule":"sweep","emitted":1,"late":0,"held":0,"behind":false}],
+     "poke":{"ok":true}}
+```
+
+Environment, all required — an unset one refuses to start rather than degrading
+into a service that looks healthy and does half its job:
+
+| | |
+|---|---|
+| `CRUD_URL` | PostgREST directly, not the proxy: the proxy's client-facing `Prefer` injection would clobber the resolution below. |
+| `SERVICE_JWT` | Both the incoming poke's credential and the outgoing writes'. |
+| `WAKE_URLS` | The units a tick needs up, comma-separated, each answering a GET: `mesh-events`'s `/v1.0/healthz/outbound` where the change feed is on, the airlock's `/healthz` where an effect is declared. Empty where neither is: a machine timer fires in the database its tick is written to. See **The wake**. |
+
+## One table of mecha's, and the app's own
+
+`schedule` is mecha's mechanism, created by the database image as
+`800_schedule.sql` where the cluster declares a schedule, and inside
+`012_airlock.sql` where it declares an effect, and seeded from the app's
+declarations at `801`. 800–899 is the framework's initdb range; an app's own
+steps hold 000–799 and its seed 900
+([schema](../../docs/schema.md#how-a-schema-reaches-the-database)). An app
+never authors its rows by hand. Both steps are initdb's, so they reach only a
+volume initdb builds, and migrate refuses a volume that lacks the table.
+
+```sql
+create table schedule (
+  name                 text primary key,
+  cron                 text,                      -- five fields, the only grammar
+  due_at               timestamptz,               -- or one instant: a one-shot row
+  time_zone            text not null default 'UTC',
+  suspended            boolean not null default false,
+  max_lateness_seconds integer not null default 300,
+  concurrency_policy   text not null default 'Allow'
+                         check (concurrency_policy in ('Allow', 'Forbid')),
+  done_entity          text,                      -- Forbid requires both
+  done_filter          text,                      -- a PostgREST filter
+  emits_entity         text not null,
+  emits_values         jsonb not null default '{}',
+  last_tick_at         timestamptz,               -- the watermark
+  check (concurrency_policy <> 'Forbid'
+         or (done_entity is not null and done_filter is not null)),
+  check ((cron is null) <> (due_at is null))
+);
+```
+
+`suspended` is `not null` because the sweep selects on `suspended=is.false`; a
+null would silently drop the schedule.
+
+**A tick is the app's row**, and there is no ledger beside it. The table named
+by `emits_entity` carries whatever the schedule sets plus five columns mecha
+writes last, so a schedule's values can overwrite none of them:
+
+```sql
+id        uuid primary key,      -- uuid5(schedule, tick_at); see below
+schedule  text not null,
+tick_at   timestamptz not null,
+late      boolean not null,      -- asked for nothing; a pipeline skips it
+caller    text
+```
+
+A separate table holds the **outcome**, keyed by the same `id` — separate
+necessarily, for the reason in **A fan-out schedule** below. `done_entity` +
+`done_filter` are how `Forbid` asks it whether the previous tick was answered.
+
+Retention is not mecha's business. A tick table that should be trimmed gets an
+ordinary predicate-driven pipeline to trim it — level-triggered, idempotent,
+and the app's own policy.
+
+**Do not add `unique (schedule, tick_at)` to the tick table.** It looks like
+belt and braces and it breaks idempotency: `resolution=ignore-duplicates`
+resolves against the primary key, so a duplicate `id` comes back as `[]` with
+201, while a *secondary* unique violation comes back `23505` with 409. The
+derived id already is that uniqueness.
+
+### A one-shot row
+
+A row with `due_at` in place of `cron` is owed once that instant has passed and
+its watermark has not reached it, and is owed again when its watermark is
+cleared. It is how a unit asks to be woken for work it already holds: the
+airlock's initdb step seeds one, named `airlock`, emitting into `airlock_wake`;
+an interpreter that enqueues an effect (pronto's) re-arms it in the transition's
+commit, so the next sweep emits one tick, whatever the number of claims since
+the last, and wakes the airlock with it. The re-arm writes only a row not yet
+armed and waits on no lock, so claims never queue on the one row. Below cloud
+tier the airlock heard the enqueue itself, and the tick costs a row, which the
+airlock prunes after a day.
+
+Pronto's server machines use the same one-shot mechanism for `after`.
+Each state entry creates a distinct `machine:` schedule per delay. It emits
+into the private `machine_timer_tick` table, whose interpreter locks the owner
+and checks cancellation before applying the transition. Leaving the state
+deletes its schedules; retained ticks absorb duplicate delivery. The timing
+and migration contract is in [[../../../../plugins/pronto/SPEC|Pronto's spec]].
+
+## What the mechanism guarantees
+
+**The key is derived.** `uuid5(mecha-namespace, "<schedule>\n<tick_at>")`, and it
+is the primary key of the tick row and of the outcome that answers it, so the
+two join on it. A redelivery, a second clock and a retried sweep all write the
+same row — see `tickId` for the normalisation that keeps two spellings of one
+instant hashing alike.
+
+**The write order is load-bearing.** Emit, record, wake, *then* advance the
+watermark — see `sweep` in `main.ts` for why each boundary is where it is. Die
+anywhere before the last step and the next poke recomputes the same ticks,
+rewrites the same keys, gets empty bodies back and knocks again. Die after and
+nothing is owed. It converges from either side, at the cost of a set of absorbed
+duplicates instead of a transaction this layer cannot hold.
+
+**`tick_at` is the instant the tick was scheduled for**, never the instant a poke
+arrived. That is what makes redelivery recognisable, clock skew harmless, and a
+coarse clock produce exact instants.
+
+**Three bounds, all deliberate.** `TICKS_PER_SWEEP = 64` in `main.ts` is the most
+one poke emits for a schedule; the watermark moves by what was resolved, so a backlog
+drains across pokes instead of running past the caller's deadline and repeating
+forever. `WALK_CAP = 512` in `due.ts` guards a pathological expression.
+Each call to crud is bounded by `CALL_TIMEOUT_MS`, which the cluster sets past
+the service role's statement bound (pronto's resilience `tickerCall`), so a
+call given up on is not one the database then commits; each wake ping by
+`WAKE_TIMEOUT_MS = 10_000` in `main.ts`, a health read needing none of that.
+A hung upstream fails the poke rather than holding the pass open.
+
+## Time, decided once
+
+Each of these is pinned by a test in `due_test.ts`, because implementations
+differ on exactly these cases.
+
+- **The hour that does not exist** (spring forward). Never due. The guard asks
+  whether an instant's local wall time is one the expression *names*, so it
+  holds for `30 2,4 * * *` as well as `30 2 * * *`, and correctly admits 03:30
+  under `30 * * * *` — that expression names 03:30 in its own right.
+- **The hour that happens twice** (fall back). Fires once, at the first instant.
+- **Ticks missed while nothing listened.** Older than `max_lateness_seconds` is
+  written `late` and not run: a keep-alive forty minutes late is not a
+  keep-alive. A pipeline reading the tick table skips those rows, and `Forbid`
+  never waits on one — nothing answered it because nothing was asked. One entry
+  per poke, so a long outage on a sparse schedule drains across pokes.
+- **A run that outlives its cadence.** `Forbid` asks the `done_filter` whether
+  the previous tick's row reached a terminal state and declines to emit while it
+  has not, without advancing the watermark — so it delays rather than drops.
+- **Delivery is at-least-once by design.** The derived key absorbs all of it.
+
+## A fan-out schedule, end to end
+
+The shape every keep-alive-like consumer wants: one tick, N rows, one row per
+tenant. The worked example is a session keep-alive for a portal that expires a
+session after 15 idle minutes, warns at 14, and renews it on a bare GET carrying
+the session's cookies from outside any browser. The numbers are that portal's,
+not defaults to copy blindly.
+
+```sql
+-- the schedule row this example seeds
+name                 = 'session-keepalive'
+cron                 = '*/5 * * * *'    -- three touches inside the 15m window
+max_lateness_seconds = 300              -- never wider than the cadence
+concurrency_policy   = 'Allow'
+emits_entity         = 'session_touch'
+emits_values         = '{"status": "requested"}'
+```
+
+**Cadence 5 minutes against a 15-minute expiry.** Three touches inside the
+window, so two can be lost before a session is. A cadence equal to the expiry
+has no margin at all, and one at half leaves none for the fan-out's own jitter.
+
+**`max_lateness_seconds` no wider than the cadence.** A touch that arrives after
+the next one was already due has defended nothing. At 300 a late tick is
+recorded and skipped, which is the honest outcome: the session it was
+protecting either survived on a later touch or is already gone, and running it
+manufactures a success that hides the loss. **A late tick must be skipped by
+the pipeline, not acted on** — it is a row like any other in the emits table,
+wearing `late`, and the mapping opens by dropping those.
+
+**`Allow`, deliberately, and this is the one that bites.** A missed touch is
+harmless; a wedged schedule is not. `Forbid` holds the watermark until the
+previous tick is answered, so one slow or broken tenant stops every subsequent
+touch for every tenant — the failure mode is total where the risk was partial.
+Reach for `Forbid` only where a second run would do damage.
+
+**Jitter belongs beside the fan-out, never on the schedule.** Calendar cron
+fires every tenant on the same instant, so the pipeline offsets each row by a
+value derived from the tenant's own id — deterministic, therefore stateless and
+reproducible. Keep it under 2 minutes: it is bounded by the lateness budget, and
+a tenant whose offset exceeds it is dropped every single time, silently, and
+always the same tenants.
+
+### What the emits table carries
+
+It is in the change feed's publication, so conduit reads its rows, and it
+carries mecha's five columns. Beyond them a fan-out tick needs nothing — the
+tick names an instant, not a tenant. **Which tenants are live is a question for
+the pipeline**, asked when it runs, against rows that may have changed since the
+tick was minted. Putting a tenant list on the tick would freeze it at mint time
+and reintroduce the fan-out this design moved out.
+
+### What the outcome row looks like when the touch is a GET
+
+The signal is thin on purpose: a touch succeeds when it is **not** redirected to
+the login door. So the outcome is not "200 OK" — a login page is also 200. It is
+the absence of a redirect, or the presence of a marker only an authenticated
+page carries.
+
+```sql
+create table session_touch_outcome (
+  id          uuid primary key default uuidv7(),
+  tick_id     uuid not null references session_touch (id),  -- the tick answered, never the key
+  employer_id uuid not null references employer (id),
+  renewed     boolean not null,                              -- not redirected to the door
+  checked_at  timestamptz not null,
+  unique (tick_id, employer_id)
+);
+```
+
+One row per tenant per tick, naming the tick it answers; the upsert targets
+that pair (`?on_conflict=tick_id,employer_id`). A shared key would make one
+upsert address the same row twice. `renewed = false` is the interesting row: the
+session lapsed and the next operation needs a fresh challenge. Nothing retries
+a touch — the next tick is five minutes away and recomputes the same answer.
+
+The outcome must be **a different table from the emits table, and one outside
+the change feed's publication**. That is not stylistic: the emits table is a
+change-feed source, and a pipeline that wrote its answer back into a table it
+reads would feed itself the answer it just wrote.
+
+### Reading a restricted table from the pipeline
+
+The keep-alive needs each tenant's session cookies, and those cannot sit in a
+table a browser can read. **This needs nothing from mecha.** The pipeline reads
+PostgREST directly at `CRUD_URL` — never the gateway — carrying `SERVICE_JWT`,
+and that token resolves to the `service` role, which holds `BYPASSRLS`. A table
+whose policies admit neither `anon` nor `app_user` is therefore readable by the
+pipeline and by nothing a browser can reach.
+
+A restricted table settles the query path and only the query path. **A row's
+contents reach the bus whatever its policy says**: every table in the change
+feed's publication is read by logical replication, and logical decoding answers
+to no RLS. So a credential in a column is a credential in Redis and in every
+consumer group on `cdc-events`, whether that column sits on the emits table or
+on the restricted table beside it. The emits table only makes it worse, by
+putting it there on every tick rather than on every write.
+
+The way out is not a policy. Keep the credential out of Postgres: store it
+wherever the app already keeps blobs and let the row carry its key, since a key
+on the bus is not a credential. Where it genuinely must be a column, leaving its
+table out of the change feed's publication keeps it off the bus, and if the sync
+service serves that table it is then on the browser's sync path instead — a
+trade, not an answer.
+
+## The wake
+
+A row INSERT reaches PostgREST and never the bus, so the sweep knocks on the
+door of the unit that reads the WAL — and the wake is an HTTP request, not a
+publish. Above container tier daprd, conduit and transform are three containers
+of one Cloud Run instance at `minInstanceCount: 0`, and only daprd holds the
+ingress, so a request to daprd is what starts the other two.
+
+Publishing to `/v1.0/publish/…/cdc-events` would do the opposite of what it
+looks like: it puts a message on the bus and wakes neither puller, and every
+CDC pipeline opens by dropping a message whose `.data` is not a non-empty
+string, so it would be discarded on arrival too.
+
+The endpoints are `WAKE_URLS`: `GET /v1.0/healthz/outbound` on `mesh-events`,
+dapr's own readiness, which answers 204 and is enough to wake the unit; and
+`GET /healthz` on the airlock where an effect is declared. Every one must
+answer, or the wake failed. On daprd 1.16.1 it answers once
+daprd's servers are up, before daprd waits on its app channel. `/v1.0/healthz`
+answers 500 until daprd's initialization completes, and that initialization
+blocks until the app channel accepts a connection, so a wake that asked it
+would fail for as long as daprd waits on an app that is not listening.
+
+It fires only when the sweep emitted something, and no watermark moves until it
+lands: a wake that fails leaves every schedule owing the same ticks, so the
+retry rewrites the same keys and knocks again rather than stranding a durable
+row nothing will read. On a unit pinned to `cpuIdle: false` a wake nobody needs
+is a billed cold start.
+
+Below cloud tier nothing scales to zero, so the wake delivers nothing: conduit
+is already tailing the WAL and a tick reaches its pipeline whether or not
+anything knocked. It is still required, and a failed one still holds every
+watermark. That is the point. A wake aimed at the wrong sidecar is invisible to
+the tests, invisible to the data — the rows travel regardless — and would
+surface first in production, where it is the only thing keeping the pipeline
+alive. Requiring it everywhere turns that into a DNS error on a laptop.
+
+Because those containers rise together, a tick drains whatever the CDC path had
+backed up, not merely the row it just wrote. An app with a schedule keeps its
+own pipeline alive; an app with none has nothing waking that path at all.
+
+## Clocks
+
+One shape at every tier: a contentless `POST /poke` from something outside the
+unit. What varies is only who sends it and how coarse it is. Never an
+`rpk generate` input inside transform: a clock inside a unit at zero instances
+cannot start it, and a schedule placed there is dead in the cloud and silent
+about it.
+
+| Tier | Clock | Resolution | State |
+|---|---|---|---|
+| docker compose | a `clock` service: rpk `generate` → POST | 60s (`POKE_INTERVAL`) | wired |
+| k8s | one cluster-wide CronJob | 60s | not written |
+| host (process-compose) | the same container | 60s | not written |
+| cloud | Cloud Scheduler | 60s | not written |
+| edge (Cloudflare) | the object's alarm at the next owed instant, and an hourly Cron Trigger → POST from outside it | ms | wired ([the edge cluster](../../packages/mecha-edge/README.md#the-clock)) |
+| browser (wasm) | `setInterval` | ms | needs a different shell |
+
+The binding floor is 60s, from Cloud Scheduler and CronJob. Local and compose
+may be told to go finer, which is the dangerous direction: a schedule that
+keeps pace on a laptop and never does in the cloud.
+
+At k8s, deliberately **one** CronJob rather than one per schedule: the moment
+k8s objects hold schedules, the missed and overlap policies are k8s's at that
+tier and mecha's everywhere else.
+
+### The cloud clock, as a contract
+
+Not written, because it cannot be exercised before the ticker has a URL. What
+follows is the whole of it, so a deployment can carry it without deciding
+anything.
+
+Declared beside the app's other Cloud Run resources as one `CloudSchedulerJob`,
+cluster-wide rather than one per schedule. The moment scheduler objects hold
+schedules, the missed and overlap policies belong to Cloud Scheduler at that
+tier and to mecha everywhere else, which is the one-behaviour-per-tier split
+this design exists to prevent.
+
+```yaml
+schedule:  "* * * * *"          # the floor; resolution, never cadence
+timeZone:  "Etc/UTC"            # the tick's zone is the schedule row's, not this
+httpTarget:
+  uri:         "https://<app>-<hash>-<region>.run.app/poke?caller=cloud-scheduler"
+  httpMethod:  POST
+  body:        ""               # contentless: what is due is never the caller's
+  oidcToken:                    # NOT the bearer, see below
+    serviceAccountEmail: "<app>-clock@<project>.iam.gserviceaccount.com"
+    audience:            "https://<app>-<hash>-<region>.run.app"
+retryConfig:
+  retryCount: 0                 # a lost poke costs resolution; the next recomputes
+```
+
+Three things it fixes rather than copies from the compose clock.
+
+**`?caller=cloud-scheduler`.** Recorded on every tick this job mints. It is the
+only way to tell which clock is winning during a tier migration rather than
+infer it, and running two is safe by construction.
+
+**Auth is OIDC, not the bearer.** The compose clock sends
+`Authorization: Bearer $SERVICE_JWT` because everything inside the cluster
+network already carries that credential. A Cloud Run URL is internet-facing,
+and a permanently valid service token on a public path is a worse trade than
+two auth mechanisms. So: Cloud Scheduler signs an OIDC token for its own
+service account, the ticker's Cloud Run service is `--no-allow-unauthenticated`
+with that account granted `roles/run.invoker`, and Cloud Run verifies the token
+before the request reaches the container. **The ticker's own `SERVICE_JWT`
+check then has nothing to verify** — it must either accept an
+already-authenticated request at cloud tier, or the job must carry both, which
+is the choice to make when this lands.
+
+**`retryCount: 0`.** Cloud Scheduler's default retry would queue pokes behind
+an unreachable ticker for no gain: due-ness is recomputed from the expression,
+so the next minute's poke produces the same answer as the retry would.
+
+The job must exist wherever the app runs in the cloud with a schedule that is
+not suspended.
+
+## Why a tick needs no durability
+
+Due-ness is a pure function of `(schedule, now, done)`, so losing a tick costs
+nothing: the next poke recomputes the same answer. The clock can be stupid, two
+clocks can run at once without coordinating, a coarse clock produces exact
+instants, and the only durable thing is the row the app already wanted.
+
+The facts the design rests on:
+
+- **PostgREST 12.2.3.** A conditional PATCH with
+  `or=(last_tick_at.is.null,last_tick_at.lt.X)` is a no-op when the stored value
+  is newer. A `tick_at` written as `…Z` reads back as `…+00:00`, which is why
+  `tickId` normalises through `Date` before hashing.
+- **Cloud Run.** In a two-container service at `minScale 0`, one request to the
+  container holding the ingress starts the portless sibling a second later: it
+  starts because the instance starts.
+- **Postgres grants.** `ALTER DEFAULT PRIVILEGES` in `002_grants` reaches every
+  later table, mecha's own included: without a policy, `app_user` could repoint
+  `schedule.emits_entity` and set `suspended`, which the ticker then acts on as
+  `service`. `ENABLE ROW LEVEL SECURITY` with no policy closes it.
+- **croner.** A step steps over `*` or a range (`*/10`, `5-59/10`); croner 10
+  refuses `n/step`, and so does the DST gap check's own parser, so the two never
+  disagree on which minutes an expression names. Its time zones are read through
+  `Intl.DateTimeFormat`, which a page's SES lockdown leaves alone; croner 9's
+  `toLocaleString` answered every zoned schedule there "Invalid time value".
+- **A coarse clock.** Poking every 10 seconds against a minutely schedule
+  produces exactly one tick per minute, on the minute. At cloud tier each poke is
+  a billed wake, which is why `?caller=` is recorded.
+
+**Edge and level.** An edge is an occurrence at a named instant: it can be
+missed, must not double-fire, and wants identity, a watermark and a lateness
+rule. That is a tick. A level is a predicate to re-assert, *make this false,
+repeatedly*; running it twice is free, and it wants a guard at the point of use,
+not a clock. A lease reaper, a stale-claim sweep — a conditional PATCH guarded on
+unheld-or-expired makes the next claimer the reclaim — and a purge of old rows
+are levels; a session keep-alive is an edge, which is what
+`max_lateness_seconds` expresses. Reach for a tick only when lateness changes
+the answer: most periodic work is a level wearing a cron expression.
+
+Rejected:
+
+- **dapr Jobs** deliver to the app's own endpoint, so the app must already be
+  awake.
+- **A durable tick stream** persists something reconstructible.
+- **Fan-out inside the ticker** needs a resumable cursor and an all-or-nothing
+  bulk insert; a tick is the app's row, with mecha's five columns written last.
+- **A `schedule_run` table with a `historyLimit`**: retention is a level the app
+  declares.
+- **`done` as a filter over the emits table**: the current schedule contract
+  keeps the occurrence and its outcome in different tables. Publication
+  carries both; consumers select the changes they handle.
+
+## Not built
+
+- **The cloud clock**, per the contract above. Until it exists the ticker fires
+  nowhere that scales to zero.
+- **An integration test** against a live cluster: a schedule seeded, a poke
+  posted, one row emitted, a second poke producing nothing. Nothing exercises
+  the ticker end to end.
+- **The k8s and host clocks**, when a tier needs one. Both run the same
+  container as compose; only `?caller=` differs.
+- **The browser tier.** `due.ts` and `sweep.ts` port unchanged, as the edge
+  proves; `main.ts` does not — no Deno, no daprd to wake, and crud is
+  [the wasm PostgREST subset](../../docs/browser.md#what-stands-in-for-what). That subset answers
+  `resolution=ignore-duplicates` with a bare `ON CONFLICT DO NOTHING`, so the
+  derived key holds there too.
+- **A poke-specific credential.** `/poke` is routed on every app's public
+  gateway and guarded only by `SERVICE_JWT` compared byte-for-byte, the token
+  the ticker then writes with as `service`, which holds `BYPASSRLS`: the secret
+  that must reach Cloud Scheduler on a public request is cross-tenant write
+  access. A credential of its own costs one env var and makes a leak survivable.
+- **`Forbid` when a tick row is pruned.** `priorFinished` reads an absent prior
+  row as finished, right for a late tick and wrong for a deleted one, and a tick
+  table is an app table an app may trim.
+- Known and unfixed: `TICKS_PER_SWEEP` bounds one schedule rather than the pass,
+  and a pass killed part-way commits no watermarks; a DST-skipped instant stalls
+  the late-branch drain; a schedule producing only late ticks never wakes its
+  reader; nothing checks that an emits table carries the five columns; a tick on
+  the lateness horizon is neither run nor recorded.
+
+## Open
+
+- Cloud Scheduler → wake → drain, measured end to end. Stand transform up at
+  `minInstanceCount: 0`, confirm a `generate` pipeline does not run, then measure
+  a POST waking it and the stream draining once.
+- Five-field cron cannot say "last business day", which some deadlines may
+  eventually want. That is the moment to reach for RFC 5545 RRULE, and the
+  ceiling is worth knowing before it is hit.

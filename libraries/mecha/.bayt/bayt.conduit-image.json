@@ -1,0 +1,121 @@
+{
+  "_generated_from": "bayt.cue (do not edit)",
+  "dockerfile": {
+    "preamble": [
+      "ARG TARGETARCH",
+      "RUN mkdir -p /app/connectors && ARCH=$(case \"${TARGETARCH}\" in arm64) echo \"arm64\" ;; *) echo \"x86_64\" ;; esac) && wget -qO- \"https://github.com/conduitio-labs/conduit-connector-http/releases/download/v0.4.0/conduit-connector-http_0.4.0_Linux_${ARCH}.tar.gz\" | tar -xzf - -C /app/connectors conduit-connector-http && chmod +x /app/connectors/conduit-connector-http && apk add --no-cache gettext"
+    ],
+    "preambleCopyContexts": [],
+    "from": {
+      "name": "ghcr.io/conduitio/conduit:v0.20.4@sha256:0301dff5cce57e2e5edf128c1e0d85c7852d5e54e93c7498215bf1969447cdc4"
+    },
+    "workdir": "/app",
+    "add": [],
+    "mounts": [],
+    "secrets": {},
+    "extra_hosts": [],
+    "epilogue": [],
+    "copy": [],
+    "healthcheck": null,
+    "expose": [],
+    "entrypoint": null,
+    "incremental": false,
+    "cmd": null
+  },
+  "name": "conduit-image",
+  "project": "libraries_mecha",
+  "dir": "libraries/mecha",
+  "activate": "",
+  "srcs": {
+    "globs": [],
+    "exclude": []
+  },
+  "outs": {
+    "globs": [],
+    "exclude": []
+  },
+  "state": {
+    "globs": []
+  },
+  "env": {},
+  "synthetics": {
+    "bayt": {
+      "name": "conduit-image_bayt",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          ".bayt/compose.conduit-image.yaml",
+          ".bayt/Dockerfile.conduit-image",
+          ".bayt/bayt.conduit-image.json",
+          ".bayt/Taskfile.yml",
+          ".bayt/Taskfile.bayt.yml",
+          ".bayt/process-compose.yaml"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "public",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "libraries/mecha/.bayt/compose.conduit-image.yaml"
+      ]
+    },
+    "outs": {
+      "name": "conduit-image_outs",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "public",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "libraries/mecha/.bayt/compose.conduit-image.yaml"
+      ]
+    }
+  },
+  "visibility": "public",
+  "emitsSrcs": false,
+  "deps": [],
+  "sameProjectDeps": [],
+  "transitiveDeps": [],
+  "transitiveCrossDeps": [],
+  "upClosure": [
+    "libraries/mecha/.bayt/compose.conduit-image.yaml"
+  ],
+  "chainedDeps": [],
+  "cmds": [],
+  "cache": {
+    "full": false,
+    "similar": false
+  }
+}

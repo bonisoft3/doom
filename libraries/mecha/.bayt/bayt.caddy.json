@@ -1,0 +1,314 @@
+{
+  "_generated_from": "bayt.cue (do not edit)",
+  "compose": {
+    "up": false,
+    "manual": false,
+    "build": {
+      "additional_contexts": {
+        "root": "../../.."
+      },
+      "secrets": [],
+      "args": {}
+    },
+    "environment": {
+      "ELECTRIC_SECRET": "${ELECTRIC_SECRET:-dev-electric-secret}",
+      "ORIGIN": "${ORIGIN:-http://localhost:${MECHA_DOOR_HOST_PORT}}"
+    },
+    "ports": [],
+    "volumes": [],
+    "depends_on": {
+      "libraries_mecha-crud": {
+        "condition": "service_healthy"
+      }
+    },
+    "networks": {
+      "default": {
+        "aliases": [
+          "caddy"
+        ]
+      }
+    },
+    "healthcheck": {
+      "test": [
+        "CMD",
+        "httpcheck",
+        "http://127.0.0.1:8080/health"
+      ],
+      "interval": "5s",
+      "timeout": "5s",
+      "retries": 30,
+      "start_period": "10s",
+      "start_interval": "500ms"
+    },
+    "develop": {
+      "watch": [
+        {
+          "action": "sync+restart",
+          "path": "../services/proxy/Caddyfile",
+          "target": "/etc/caddy/Caddyfile"
+        },
+        {
+          "action": "sync+restart",
+          "path": "../.certs",
+          "target": "/certs"
+        }
+      ]
+    }
+  },
+  "dockerfile": {
+    "preamble": [],
+    "preambleCopyContexts": [],
+    "from": {
+      "name": "caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f"
+    },
+    "copy": [
+      {
+        "from": {
+          "name": "tarampampam/microcheck:1@sha256:79c187c05bfa67518078bf4db117771942fa8fe107dc79a905861c75ddf28dfa"
+        },
+        "srcs": [
+          "/bin/httpcheck"
+        ],
+        "dst": "/usr/local/bin/httpcheck",
+        "chmod": "755",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      },
+      {
+        "from": null,
+        "srcs": [
+          "services/proxy/Caddyfile"
+        ],
+        "dst": "/etc/caddy/Caddyfile",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      },
+      {
+        "from": null,
+        "srcs": [
+          ".cert[s]"
+        ],
+        "dst": "/certs/",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      }
+    ],
+    "healthcheck": {
+      "test": [
+        "CMD",
+        "httpcheck",
+        "http://127.0.0.1:8080/health"
+      ],
+      "interval": "5s",
+      "timeout": "5s",
+      "retries": 30,
+      "start_period": "10s"
+    },
+    "add": [],
+    "mounts": [],
+    "secrets": {},
+    "extra_hosts": [],
+    "epilogue": [],
+    "expose": [],
+    "entrypoint": null,
+    "incremental": false,
+    "cmd": null
+  },
+  "entrypoint": {
+    "do": "case \"${ORIGIN#http://}\" in \"$ORIGIN\") h=${ORIGIN#https://};; *) h=${ORIGIN#http://};; esac; case \"$h\" in \"$ORIGIN\"|\"\"|*[!A-Za-z0-9.:-]*) echo \"ORIGIN '$ORIGIN' is no origin: set it to the scheme and host readers reach the door at, as https://app.example\" >&2; exit 1;; esac; set -e -o pipefail; roots=$(caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile | tr , '\\n' | grep -o '\"root\":\"[^\"]*\"' | cut -d'\"' -f4 | sort -u); if [ -n \"$roots\" ]; then find $roots -type f ! -name '*.etag' -exec sh -c 'set -e; q=$1; shift; for f do h=$(sha256sum < \"$f\"); printf \"$q%s$q\" \"${h%% *}\" > \"$f.etag\"; done' sh '\"' {} +; fi; if [ -f /certs/localhost.pem ]; then export CADDY_TLS='/certs/localhost.pem /certs/localhost-key.pem'; fi; exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile",
+    "shell": "sh",
+    "env": {
+      "ELECTRIC_SECRET": "${ELECTRIC_SECRET:-dev-electric-secret}",
+      "ORIGIN": "${ORIGIN:-http://localhost:${MECHA_DOOR_HOST_PORT}}"
+    },
+    "after": {
+      "crud": "healthy"
+    },
+    "host": true
+  },
+  "expose": {
+    "door": {
+      "port": 8080,
+      "host": 8080,
+      "publish": {
+        "environment": "MECHA_DOOR_HOST_PORT"
+      }
+    }
+  },
+  "healthcheck": {
+    "template": "http",
+    "url": "http://127.0.0.1:8080/health",
+    "authorization": null,
+    "headers": [],
+    "interval": "5s",
+    "start_interval": "500ms",
+    "timeout": "5s",
+    "retries": 30,
+    "start_period": "10s"
+  },
+  "name": "caddy",
+  "project": "libraries_mecha",
+  "dir": "libraries/mecha",
+  "activate": "",
+  "srcs": {
+    "globs": [
+      "services/proxy/Caddyfile"
+    ],
+    "exclude": []
+  },
+  "outs": {
+    "globs": [],
+    "exclude": []
+  },
+  "state": {
+    "globs": []
+  },
+  "env": {},
+  "synthetics": {
+    "bayt": {
+      "name": "caddy_bayt",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          ".bayt/compose.caddy.yaml",
+          ".bayt/Dockerfile.caddy",
+          ".bayt/bayt.caddy.json",
+          ".bayt/Taskfile.yml",
+          ".bayt/Taskfile.bayt.yml",
+          ".bayt/process-compose.yaml"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "libraries/mecha/.bayt/compose.caddy.yaml",
+        "libraries/mecha/.bayt/compose.crud.yaml",
+        "libraries/mecha/.bayt/compose.database.yaml",
+        "libraries/mecha/.bayt/compose.database-image.yaml",
+        "libraries/mecha/.bayt/compose.migrate.yaml"
+      ]
+    },
+    "outs": {
+      "name": "caddy_outs",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "libraries/mecha/.bayt/compose.caddy.yaml",
+        "libraries/mecha/.bayt/compose.crud.yaml",
+        "libraries/mecha/.bayt/compose.database.yaml",
+        "libraries/mecha/.bayt/compose.database-image.yaml",
+        "libraries/mecha/.bayt/compose.migrate.yaml"
+      ]
+    },
+    "srcs": {
+      "name": "caddy_srcs",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          "services/proxy/Caddyfile"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [
+        "crud_outs_srcs"
+      ],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "libraries/mecha/.bayt/compose.caddy.yaml",
+        "libraries/mecha/.bayt/compose.crud.yaml",
+        "libraries/mecha/.bayt/compose.database.yaml",
+        "libraries/mecha/.bayt/compose.database-image.yaml",
+        "libraries/mecha/.bayt/compose.migrate.yaml"
+      ]
+    }
+  },
+  "visibility": "internal",
+  "emitsSrcs": true,
+  "deps": [
+    "crud_outs"
+  ],
+  "sameProjectDeps": [
+    "crud_outs"
+  ],
+  "transitiveDeps": [
+    "crud_outs"
+  ],
+  "transitiveCrossDeps": [],
+  "upClosure": [
+    "libraries/mecha/.bayt/compose.caddy.yaml",
+    "libraries/mecha/.bayt/compose.crud.yaml",
+    "libraries/mecha/.bayt/compose.database.yaml",
+    "libraries/mecha/.bayt/compose.database-image.yaml",
+    "libraries/mecha/.bayt/compose.migrate.yaml"
+  ],
+  "chainedDeps": [
+    {
+      "name": "crud_outs",
+      "project": "libraries_mecha",
+      "dir": "libraries/mecha",
+      "outs": {
+        "globs": [],
+        "exclude": []
+      }
+    }
+  ],
+  "cmds": [],
+  "cache": {
+    "full": false,
+    "similar": false
+  }
+}

@@ -1,0 +1,44 @@
+# generated from bayt.cue — do not edit
+services:
+  doom-generate:
+    build:
+      additional_contexts:
+        doom-setup: service:doom-setup
+      context: ..
+      dockerfile: .bayt/Dockerfile.generate
+      target: generate
+      tags:
+      - bayt-doom-generate:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-doom-generate:latest
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-generate:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    scale: 0
+  doom-generate_bayt:
+    build:
+      additional_contexts:
+        doom-setup_bayt: service:doom-setup_bayt
+      context: ..
+      dockerfile: .bayt/Dockerfile.generate
+      target: generate_bayt
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-generate_bayt:latest
+    scale: 0
+  doom-generate_srcs:
+    build:
+      additional_contexts:
+        doom-setup_srcs: service:doom-setup_srcs
+      context: ..
+      dockerfile: .bayt/Dockerfile.generate
+      target: generate_srcs
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-generate_srcs:latest
+    scale: 0

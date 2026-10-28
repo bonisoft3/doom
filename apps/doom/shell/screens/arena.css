@@ -1,0 +1,385 @@
+/* Doom Arena — UAC Terminal Interface Stylesheet */
+
+body:has(.screen[data-screen="arena"]:not([hidden])) {
+  block-size: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+body:has(.screen[data-screen="arena"]:not([hidden])) > nav {
+  flex: none;
+}
+
+body:has(.screen[data-screen="arena"]:not([hidden])) > #app {
+  flex: 1;
+  min-block-size: 0;
+}
+
+#app > .shell-screen:has(.screen[data-screen="arena"]) {
+  block-size: 100%;
+}
+
+.screen[data-screen="arena"] {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  inline-size: 100%;
+  background: var(--neutral);
+  color: var(--primary);
+  overflow: hidden;
+  font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+  user-select: none;
+}
+
+.arena-frame {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  block-size: 100%;
+  inline-size: 100%;
+  position: relative;
+}
+
+/* 3D Viewport Box */
+.viewport-box {
+  position: relative;
+  inline-size: 100%;
+  block-size: 100%;
+  background: var(--neutral);
+  overflow: hidden;
+}
+
+.viewport-box canvas {
+  inline-size: 100%;
+  block-size: 100%;
+  display: block;
+}
+
+/* CRT Scanline Overlay */
+.viewport-box::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%,
+    var(--shadow-ink-6) 50%
+  );
+  background-size: 100% var(--r-sm);
+  z-index: 10;
+}
+
+/* Top-Right Killfeed / Frag Feed */
+.frag-feed {
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-end: var(--sp-md);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 20;
+}
+
+.frag-entry {
+  background: color-mix(in oklch, var(--surface) 80%, transparent);
+  border: var(--border-size-1) solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--size-1) 10px;
+  font-size: var(--type-label);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  box-shadow: var(--shadow-2);
+  animation: fragIn 200ms ease-out;
+}
+
+@keyframes fragIn {
+  from { opacity: 0; translate: var(--size-4) 0; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+.frag-entry .killer {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.frag-entry .weapon-badge {
+  background: var(--surface-muted);
+  border: var(--border-size-1) solid var(--border);
+  border-radius: var(--border-size-2);
+  padding: var(--border-size-1) var(--size-1);
+  font-size: 0.6875rem;
+  color: var(--primary);
+}
+
+.frag-entry .victim {
+  color: var(--danger);
+}
+
+/* Match Status Banner */
+.match-notice {
+  position: absolute;
+  inset-block-start: 12px;
+  inset-inline-start: var(--sp-md);
+  z-index: 20;
+  display: flex;
+  gap: var(--sp-sm);
+}
+
+.status-pill, .score-pill {
+  background: color-mix(in oklch, var(--surface) 85%, transparent);
+  border: var(--border-size-1) solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--size-1) var(--sp-sm);
+  font-size: var(--type-label);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.status-pill {
+  color: var(--attention);
+}
+
+.match-notice:not([data-status="warmup"]) #btn-start {
+  display: none;
+}
+
+/* Intermission / Match Over Overlay */
+.overlay-game-over {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklch, var(--neutral) 85%, transparent);
+  backdrop-filter: blur(var(--size-1));
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-md);
+  z-index: 30;
+}
+
+.screen:has([data-status="over"]) .overlay-game-over {
+  display: flex;
+}
+
+.title-over {
+  margin: 0;
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  color: var(--danger);
+  letter-spacing: 0.1em;
+  text-shadow: 0 0 var(--sp-md) var(--danger);
+}
+
+.winner-text {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+/* Classic Doom Status Bar (HUD) */
+.doom-hud {
+  display: grid;
+  grid-template-columns: auto auto auto auto 1fr auto;
+  align-items: center;
+  gap: clamp(var(--sp-sm), 1.5vw, var(--sp-md));
+  padding: clamp(6px, 1dvh, 10px) clamp(10px, 2vw, var(--size-4));
+  background: linear-gradient(180deg, var(--surface-muted) 0%, var(--surface) 100%);
+  border-block-start: var(--border-size-2) solid var(--border);
+  box-shadow: var(--shadow-3);
+  z-index: 25;
+  box-sizing: border-box;
+  max-inline-size: 100vw;
+}
+
+@media (max-width: 850px) {
+  .doom-hud {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding: 6px var(--sp-sm);
+  }
+  .hud-block {
+    min-inline-size: 0;
+    padding: var(--size-1) 6px;
+  }
+  .hud-face-block {
+    grid-column: span 1;
+    margin: 0 auto;
+  }
+  .arms-block {
+    display: none;
+  }
+  .hud-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: stretch;
+  }
+  .hud-actions .act {
+    flex: 1;
+  }
+}
+
+.hud-block {
+  background: var(--neutral);
+  border: var(--border-size-1) solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--size-1) 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: var(--shadow-1);
+  min-inline-size: 70px;
+  box-sizing: border-box;
+}
+
+.hud-label {
+  font-size: 0.625rem;
+  color: var(--secondary);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hud-value.digital {
+  font-size: clamp(1.25rem, 2.5dvh, 1.75rem);
+  font-weight: 800;
+  color: var(--accent);
+  text-shadow: 0 0 var(--sp-sm) var(--accent);
+  line-height: 1.1;
+}
+
+.health-block[data-danger="true"] .hud-value.digital,
+.health-block[data-tier="critical"] .hud-value.digital,
+.health-block[data-tier="dead"] .hud-value.digital {
+  color: var(--danger);
+  text-shadow: 0 0 var(--sp-sm) var(--danger);
+  animation: pulseHealth 1s infinite alternate;
+}
+
+@keyframes pulseHealth {
+  from { opacity: 0.7; }
+  to { opacity: 1; }
+}
+
+/* Doomguy Face Block */
+.hud-face-block {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  inline-size: 54px;
+  block-size: 54px;
+  background: var(--surface);
+  border: var(--border-size-2) solid var(--border);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+}
+
+.doomguy-face {
+  inline-size: 38px;
+  block-size: 44px;
+  background: #E8B48A;
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow-1);
+}
+
+.face-eye {
+  position: absolute;
+  block-size: var(--size-1);
+  inline-size: 6px;
+  background: var(--neutral);
+  inset-block-start: var(--sp-md);
+  border-radius: var(--border-size-1);
+}
+
+.face-eye.left { inset-inline-start: var(--sp-sm); }
+.face-eye.right { inset-inline-end: var(--sp-sm); }
+
+.face-mouth {
+  position: absolute;
+  block-size: 3px;
+  inline-size: 14px;
+  background: #5A2A2A;
+  inset-block-start: 30px;
+  inset-inline-start: 12px;
+  border-radius: var(--border-size-2);
+}
+
+.doomguy-face[data-pain="true"] {
+  background: #D96A6A;
+}
+
+.doomguy-face[data-tier="dead"] {
+  background: var(--secondary);
+}
+
+/* Arms Matrix */
+.arms-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--border-size-2) 6px;
+  margin-block-start: var(--border-size-2);
+}
+
+.arm-slot {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--secondary);
+}
+
+.arm-slot.active {
+  color: var(--accent);
+}
+
+/* Action Buttons */
+.hud-actions {
+  display: flex;
+  gap: var(--sp-sm);
+}
+
+.act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 36px;
+  block-size: 36px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: var(--border-size-1) solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+  color: var(--primary);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 120ms ease-out;
+}
+
+.act:hover {
+  background: var(--surface);
+  border-color: var(--accent);
+}
+
+.act.hot {
+  background: linear-gradient(180deg, var(--danger) 0%, color-mix(in oklch, var(--danger) 70%, #000) 100%);
+  border-color: var(--danger);
+  color: #FFF;
+  box-shadow: var(--shadow-2);
+}
+
+.act.hot:hover {
+  background: linear-gradient(180deg, color-mix(in oklch, var(--danger) 90%, #FFF) 0%, var(--danger) 100%);
+}
+
+.act.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--secondary);
+}
+
+.act.ghost:hover {
+  color: var(--primary);
+}

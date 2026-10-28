@@ -1,0 +1,52 @@
+# generated from bayt.cue — do not edit
+services:
+  libraries_mecha-smoke:
+    build:
+      additional_contexts:
+        libraries_mecha-crud: service:libraries_mecha-crud
+        libraries_mecha-caddy: service:libraries_mecha-caddy
+        libraries_mecha-auth: service:libraries_mecha-auth
+        libraries_mecha-electric: service:libraries_mecha-electric
+      context: ..
+      dockerfile: .bayt/Dockerfile.smoke
+      target: smoke
+      tags:
+      - bayt-libraries_mecha-smoke:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-libraries_mecha-smoke:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    depends_on:
+      libraries_mecha-crud:
+        condition: service_healthy
+        restart: true
+      libraries_mecha-caddy:
+        condition: service_healthy
+        restart: true
+      libraries_mecha-auth:
+        condition: service_started
+      libraries_mecha-electric:
+        condition: service_healthy
+        restart: true
+    image: bayt-libraries_mecha-smoke:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    scale: 0
+  libraries_mecha-smoke_bayt:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.smoke
+      target: smoke_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-smoke_bayt:latest
+    scale: 0
+  libraries_mecha-smoke_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.smoke
+      target: smoke_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-smoke_srcs:latest
+    scale: 0

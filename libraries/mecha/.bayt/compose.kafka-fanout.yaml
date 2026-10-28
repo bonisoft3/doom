@@ -1,0 +1,50 @@
+# generated from bayt.cue — do not edit
+services:
+  libraries_mecha-kafka-fanout:
+    build:
+      additional_contexts:
+        libraries_mecha-redis: service:libraries_mecha-redis
+        libraries_mecha-redpanda: service:libraries_mecha-redpanda
+      context: ..
+      dockerfile: .bayt/Dockerfile.kafka-fanout
+      target: kafka-fanout
+      tags:
+      - bayt-libraries_mecha-kafka-fanout:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-libraries_mecha-kafka-fanout:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    depends_on:
+      libraries_mecha-redis:
+        condition: service_healthy
+        restart: true
+      libraries_mecha-redpanda:
+        condition: service_healthy
+        restart: true
+    develop:
+      watch:
+      - action: sync+restart
+        path: ../services/transform/kafka-fanout.yaml
+        target: /pipelines/kafka-fanout.yaml
+    image: bayt-libraries_mecha-kafka-fanout:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    restart: on-failure
+  libraries_mecha-kafka-fanout_bayt:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.kafka-fanout
+      target: kafka-fanout_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-kafka-fanout_bayt:latest
+    scale: 0
+  libraries_mecha-kafka-fanout_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.kafka-fanout
+      target: kafka-fanout_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-kafka-fanout_srcs:latest
+    scale: 0

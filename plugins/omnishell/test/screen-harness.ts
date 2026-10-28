@@ -1,0 +1,929 @@
+// A whole emitted screen, mounted the way the terminal mounts it: the app's
+// own markup and Jessie read off disk, a store that answers the fragment
+// grammar the shipped one answers, and a clock the test steps.
+//
+// screen.js reads its clock and its seed from location.search once, at module
+// evaluation, so this module owns that import: it sets location and only then
+// loads the interpreter. A test file that also imports screen.js statically
+// has already frozen those knobs, and mountScreen says so rather than racing
+// real beats.
+//
+// Nothing here knows an app. The app dir is an argument, and what a screen
+// means is the caller's.
+
+import { parseHTML } from "npm:linkedom@0.18.4";
+import "npm:fake-indexeddb@6.2.5/auto";
+import { load as parseYaml } from "../interpreter/vendor/js-yaml.js";
+import { screenEnv } from "../interpreter/fragment.js";
+import { type Call, fakeDataSync, type FakeDataSync } from "./data-sync-fake.ts";
+import "../interpreter/vendor/ses.umd.min.js";
+import { ensureSes } from "../interpreter/jessie.js";
+import { controlProperties } from "../server/linkedom-controls.ts";
+import { compileCatalog } from "../src/messages.ts";
+
+
+// The Jessie tier's lockdown, taken once at load: the ses pin is imported
+// first so ensureSes skips script injection (linkedom executes no scripts), and
+// the vendored bundle rather than the CDN's, so a whole-screen mount needs no
+// network reach of any kind. Lockdown reports the intrinsics it removes
+// through console.error; that is the platform booting, and it is over before
+// the seam below exists.
+await ensureSes();
+
+const ORIGIN = "http://app.test";
+
+/** The console seam every silent failure passes through. Lockdown leaves a
+ * frozen console on a writable global, so the seam is a console of its own
+ * that forwards everything else to the tamed one. Nothing is collected until a
+ * mount asks. */
+const tamed = console;
+let collect: ((err: unknown) => void) | null = null;
+globalThis.console = {
+  ...tamed,
+  error: (...args: unknown[]) => {
+    if (collect === null) return tamed.error(...args);
+    collect(args[0] instanceof Error ? args[0] : new Error(args.map(String).join(" ")));
+  },
+};
+
+export type Row = Record<string, unknown>;
+
+/** The elements of a role under `root`, optionally the one whose accessible
+ * name matches — the query a screen reader makes, and the one a class rename
+ * cannot break. Implicit roles are not inferred: a control that wants to be
+ * found this way says what it is. A suite that boots its own store reaches
+ * this directly; a mounted screen has it as `m.byRole`. */
+export function byRole(root: El, role: string, name?: string | RegExp): El[] {
+  const found = [...root.querySelectorAll(`[role="${role}"]`)] as El[];
+  if (name === undefined) return found;
+  // aria-label first, then the element's own text: the accessible name in the
+  // order the platform computes it, minus the parts this tier cannot see (a
+  // label element's for=, aria-labelledby's referent).
+  const named = (el: El) => el.getAttribute("aria-label") ?? textOf(el);
+  return found.filter((el) => typeof name === "string" ? named(el) === name : name.test(named(el)));
+}
+
+/** The one element of a role and name; none or several is the screen
+ * disagreeing with the reader, which is a finding rather than a filter. */
+export function oneByRole(root: El, role: string, name: string): El {
+  const found = byRole(root, role, name);
+  if (found.length !== 1) throw new Error(`"${name}" names ${found.length} elements of role ${role}, not one`);
+  return found[0];
+}
+
+/** One element's text, trimmed. */
+export const textOf = (el: { textContent: string | null }) => (el.textContent ?? "").trim();
+
+/** Throw the message the test wrote, so a failure reads as a sentence about
+ * the screen rather than as a diff of two values. */
+export function assert(ok: unknown, msg: string): asserts ok {
+  if (!ok) throw new Error(msg);
+}
+
+/** The one row a claim is about; any other count is the claim being wrong
+ * about the world rather than about the row. */
+export const only = (rows: Row[], what: string): Row => {
+  if (rows.length !== 1) throw new Error(`${what}: ${rows.length} rows, not one — ${JSON.stringify(rows)}`);
+  return rows[0];
+};
+
+export type Route = {
+  /** The path the screen answers, `:param` segments and all. Absent on a route
+   * a test builds by hand: only shell.yaml states one. */
+  path?: string;
+  /** The same path in each declared locale, on a route carrying a slug. */
+  paths?: Record<string, string>;
+  screen: string;
+  hatches?: string[];
+  files: { html: string; css: string; handlers: string[]; renderers?: string[]; adapters?: string[]; shared?: string[] };
+  states?: string[];
+};
+
+/** The locales an app declares, as shell.yaml states them. */
+export type I18n = { default: string; locales: Record<string, { path: string }> };
+
+/** shell.yaml's `schema:`, keyed by table, in the one shape a mount reads out
+ * of it: the columns, what an integer counts where it counts money, and the
+ * table a foreign key refers to. */
+export type Schema = Record<string, {
+  fields: { name: string; type: string; default?: string | number | boolean | null; money?: { currency: string; minorUnits: number }; ref?: string }[];
+}>;
+
+/** A catalogue per locale. A value is a sentence or a compile-time AST. */
+export type Catalogs = Record<string, Record<string, unknown>>;
+
+
+/** What the cluster fills in that the browser never computes. A mount that
+ * omits all of it can still read and create; only upsert needs a key to
+ * resolve against. */
+export type Cluster = {
+  uniques?: Record<string, string[][]>;
+  owners?: Record<string, string>;
+  /** The pk of every table whose pk is not `id` (shell.yaml `keys:`), which is
+   * how a pipeline sink keys on its subject. */
+  keys?: Record<string, string>;
+  /** Each table's fields (shell.yaml `schema:`), whose `ref`s are how
+   * PostgREST resolves an embed. */
+  schema?: Schema;
+  /** Each entity's access scope (shell.yaml `access:`), which decides which
+   * rows a reader can see at all. Answered only for a mount that names its
+   * reader: with nobody reading there is no visibility question to settle. */
+  access?: Record<
+    string,
+    { scope: string; owner?: string; parent?: string; on?: string; shared?: { via: string; on: string; user: string } }
+  >;
+  me?: string;
+  /** Column DEFAULTs the database fills and the browser never computes, per
+   * table. The shipped store has the same hole transiently — it writes the
+   * submitted values optimistically and learns the rest when the server row
+   * arrives — so a mount that declares none is faithful to that instant and
+   * one that declares them is faithful to the settled row. A binding over a
+   * column no default supplies renders nothing, which is a guarded refresh
+   * error the rejection trap cannot see. */
+  defaults?: Record<string, Row>;
+};
+
+
+const shellCache = new Map<string, Promise<Record<string, unknown>>>();
+
+function appShell(appDir: URL): Promise<Record<string, unknown>> {
+  const url = new URL("shell/shell.yaml", appDir).href;
+  const hit = shellCache.get(url);
+  if (hit !== undefined) return hit;
+  const loaded = Deno.readTextFile(new URL(url)).then(
+    (text) => parseYaml(text) as Record<string, unknown>,
+    (err) => {
+      shellCache.delete(url);
+      throw err;
+    },
+  );
+  shellCache.set(url, loaded);
+  return loaded;
+}
+
+/** Every route the app ships, in the order shell.yaml lists them — what a
+ * driver that has no screen in mind walks. */
+export async function appRoutes(appDir: URL): Promise<Route[]> {
+  const shell = await appShell(appDir) as {
+    routes?: Route[];
+  };
+  return [...(shell.routes ?? [])];
+}
+
+/** The locales the app declares, or undefined where it declares none — which
+ * is what decides whether a composed href wears a locale prefix. */
+export async function appI18n(appDir: URL): Promise<I18n | undefined> {
+  const shell = await appShell(appDir) as {
+    i18n?: I18n;
+  };
+  return shell.i18n;
+}
+
+/** The route a screen ships under, read from the emitted shell.yaml so a test
+ * cannot drift from what the app actually mounts. */
+export async function appRoute(appDir: URL, screen: string): Promise<Route> {
+  const route = (await appRoutes(appDir)).find((r) => r.screen === screen);
+  if (route === undefined) throw new Error(`shell.yaml declares no screen "${screen}"`);
+  return route;
+}
+
+/** Every collection the app declares: the browser tier's `local:` and the
+ * cluster's `tables:`. fakeDataSync refuses a read of a table it was not given,
+ * so a driver that does not know which collections a screen touches states
+ * them all — empty, which is where a visit starts. */
+export async function appCollections(appDir: URL): Promise<string[]> {
+  const shell = await appShell(appDir) as {
+    local?: Record<string, unknown>;
+    tables?: string[];
+  };
+  return [...Object.keys(shell.local ?? {}), ...(shell.tables ?? [])];
+}
+
+/** A route's own files, keyed by the paths the route names them by. */
+export async function appFiles(appDir: URL, route: Route): Promise<Record<string, string>> {
+  const paths = [
+    ...(route.files.shared ?? []),
+    route.files.html,
+    route.files.css,
+    ...route.files.handlers,
+    ...(route.files.renderers ?? []),
+    ...(route.files.adapters ?? []),
+  ];
+  const files: Record<string, string> = {};
+  for (const path of paths) {
+    // The terminal serves its own adapters; the app carries no copy, so the
+    // harness reads them where they live.
+    const from = path.startsWith("/omnishell/components/")
+      ? new URL(`../components/${path.slice("/omnishell/components/".length)}`, import.meta.url)
+      : new URL(path, appDir);
+    // Keyed the way the fetch stub looks one up: by pathname, leading slash
+    // stripped, so a terminal path and an app path land in one map.
+    files[path.replace(/^\//, "")] = await Deno.readTextFile(from);
+  }
+  return files;
+}
+
+// The DOM this needs, structurally: test/deno.json carries no dom lib, and a
+// linkedom node is not the platform's Element anyway.
+export type El = {
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+  hasAttribute(name: string): boolean;
+  querySelectorAll(selector: string): ArrayLike<El> & Iterable<El>;
+  dispatchEvent(event: unknown): boolean;
+  readonly firstElementChild: El | null;
+  readonly textContent: string | null;
+  readonly tagName: string;
+};
+
+/** A vendored unit, as shell.yaml declares it and as the interpreter resolves
+ * a `data-hatch` name against. */
+export type Unit = {
+  isolation: string;
+  ports: { reads: string[]; raises: string[] };
+  /** An agent's memo as the terminal performs it: the table, the key and the
+   * columns an answer fills. */
+  memo?: { table: string; key: string[]; columns: string[] };
+  src: string;
+};
+
+type Interpreter = {
+  interpretScreen(
+    mount: El,
+    base: string,
+    route: Route,
+    store: FakeDataSync,
+    params: Record<string, string>,
+    opts: {
+      units: Record<string, Unit>;
+      mountUnits: boolean;
+      mountHostDom: boolean;
+      messages?: Catalogs;
+      locale?: string;
+      routes?: Route[];
+      i18n?: I18n;
+    },
+  ): Promise<{ pause(): void; resume(): Promise<unknown>; stop(): void }>;
+};
+
+const global = globalThis as unknown as Record<string, unknown>;
+
+// The interpreter, imported once per test file with the knobs it reads at
+// evaluation already standing. Deno gives each test module its own realm, so
+// "once per file" is also once per clock queue and once per draw sequence.
+let engine: Promise<Interpreter> | undefined;
+let knobs: string | undefined;
+
+async function interpreter(search: string): Promise<Interpreter> {
+  if (engine !== undefined) {
+    if (knobs !== search) {
+      throw new Error(
+        `the clock and the seed belong to the test file, not the case: "${knobs}" stands, "${search}" was asked for`,
+      );
+    }
+    return engine;
+  }
+  knobs = search;
+  global.location = new URL(`${ORIGIN}/${search}`);
+  engine = import("../interpreter/screen.js") as unknown as Promise<Interpreter>;
+  await engine;
+  if (global.__prontoClock === undefined) {
+    throw new Error(
+      "screen.js evaluated without the manual clock: this file imports it outside the harness, and its waits are real",
+    );
+  }
+  return engine;
+}
+
+const macrotask = () => new Promise((r) => setTimeout(r, 0));
+
+export type Mounted = {
+  mount: El;
+  screen: El;
+  store: FakeDataSync;
+  rows(table: string): Row[];
+  /** The one element the selector names; absent or ambiguous is an error. */
+  one(selector: string): El;
+  all(selector: string): El[];
+  /** Dispatch a bubbling DOM event, the way a reader's finger would. `init`
+   * carries the fields the binding reads — `key` for a data-key gesture — and
+   * `bubbles`/`cancelable` reach the constructor. */
+  /** Dispatches the event and hands it back, so a test can assert whether the
+   * terminal cancelled it. */
+  fire(target: string | El, type?: string, init?: Record<string, unknown>): { defaultPrevented: boolean };
+  /** Deliver a store refusal through a region and account for its expected diagnostic. */
+  refuse(region: El, entity: string, error: Error): void;
+  /** Every match's text, trimmed — a region's rendered rows in order. */
+  texts(selector: string): string[];
+  /** The elements of a role, optionally the one whose accessible name matches
+   * — the query a screen reader makes, and the one a class rename cannot
+   * break. Implicit roles are not inferred: a control that wants to be found
+   * this way says what it is. */
+  byRole(role: string, name?: string | RegExp): El[];
+  /** Set a DOM property linkedom does not model as an attribute. */
+  set(target: string | El, prop: string, value: unknown): void;
+  /** Pick an option in a native select and report it, the way a reader does.
+   * linkedom's select reads its value off the selected ATTRIBUTE, so the
+   * attribute is what moves. */
+  choose(target: string | El, value: string): void;
+  /** Move the table's clock on; returns the waits still queued. */
+  advance(ms: number): number;
+  /** Let every promise the last stimulus started run out. */
+  quiet(): Promise<void>;
+  /** Drive the clock until the screen has stopped: nothing waiting, nothing
+   * writing. */
+  settle(): Promise<void>;
+  stop(): Promise<void>;
+};
+
+export type MountSpec = {
+  route: Route;
+  files: Record<string, string>;
+  tables: Record<string, Row[]>;
+  seed: number;
+  params?: Record<string, string>;
+  /** Minimum table milliseconds per clock advance while settling; waits due
+   * further out jump straight to the soonest queued wait. */
+  step?: number;
+  /** Table milliseconds one settle may spend before the screen is declared
+   * unable to stop. */
+  cap?: number;
+  /** What the cluster fills in that the browser never computes. mountApp reads
+   * it from the app's own shell.yaml; `me` is the only part a test supplies. */
+  cluster?: Cluster;
+  /** Where the held clock starts, as an ISO instant, so a row stamped {now}
+   * lands somewhere a test can name. Unset starts at zero. */
+  epoch?: string;
+  /** Let the screen answer a refusal without failing the test: the interpreter
+   * reports one through the same console.error every silent failure takes. */
+  expectRefusal?: boolean;
+  /** The vendored units a `data-hatch` may name. mountApp reads them from the
+   * app's own shell.yaml; a screen naming one it does not declare is refused at
+   * mount, so a hatch on the screen under test makes this mandatory. The unit
+   * itself still needs its boundary faked — a real Worker answers off the held
+   * clock, where settle() cannot see it. */
+  units?: Record<string, Unit>;
+  /** The kinetic children a `data-kinetic` may name (shell.yaml `kinetic:`),
+   * resolved at mount as a unit is; mounted only where units are. */
+  kinetic?: Record<string, unknown>;
+  /** Whether a resolved unit is also mounted. The machine walker declares
+   * false: linkedom has neither a Worker nor a frame, and a unit renders
+   * nothing and declares no machine, so mounting one adds nothing to a walk. */
+  mountUnits?: boolean;
+  hostDom?: Record<string, { src: string; note: string }>;
+  mountHostDom?: boolean;
+  messages?: Catalogs;
+  locale?: string;
+  timeZone?: string;
+  /** The whole route table, because a link names a route and the binder
+   * composes its href from that table — the screen under test links to screens
+   * it is not. mountApp reads it from the app's own shell.yaml; a hand-built
+   * spec states the routes its markup names. */
+  routes?: Route[];
+  i18n?: I18n;
+  /** The emitted entity projection, which a value format resolves a column's
+   * declaration in — data-text-format="money" reads its currency and its
+   * minor-unit scale off the column. mountApp reads it from the app's own
+   * shell.yaml. */
+  schema?: Schema;
+  endowments?: Record<string, string[]>;
+};
+
+/** linkedom's HTMLFormElement carries no constraint API, and the interpreter
+ * gates every submit on checkValidity — so without this a form's submit
+ * listener throws out of dispatchEvent and takes the whole test file with it.
+ * The check is the real one, not a blanket true: a test that cannot see its
+ * own `required` cannot claim the form validates anything. */
+function formValidation(document: unknown, submitEvent: new (t: string, i: object) => unknown) {
+  const proto = Object.getPrototypeOf(
+    (document as { createElement(tag: string): object }).createElement("form"),
+  ) as { checkValidity?: () => boolean; reset?: () => void; requestSubmit?: () => void };
+  if (proto.checkValidity !== undefined) return;
+
+  type Field = {
+    name?: string;
+    type?: string;
+    value: string;
+    disabled?: boolean;
+    hasAttribute(name: string): boolean;
+    getAttribute(name: string): string | null;
+    setAttribute(name: string, value: string): void;
+    removeAttribute(name: string): void;
+  };
+  const fieldsOf = (form: { querySelectorAll(sel: string): Field[] }) =>
+    [...form.querySelectorAll("input, select, textarea")].filter((f) => f.disabled !== true);
+
+  proto.checkValidity = function (this: { querySelectorAll(sel: string): Field[] }) {
+    for (const field of fieldsOf(this)) {
+      const value = field.value ?? "";
+      if (field.hasAttribute("required") && value === "") return false;
+      const pattern = field.getAttribute("pattern");
+      if (pattern !== null && value !== "" && !new RegExp(`^(?:${pattern})$`, "u").test(value)) return false;
+      if (field.getAttribute("type") === "number" && value !== "") {
+        const n = Number(value);
+        if (Number.isNaN(n)) return false;
+        const min = field.getAttribute("min");
+        const max = field.getAttribute("max");
+        if (min !== null && n < Number(min)) return false;
+        if (max !== null && n > Number(max)) return false;
+      }
+    }
+    return true;
+  };
+  // The interpreter resets a form inside its submit try, so a throw here is
+  // caught by the form's own refused() and lands a settled write on
+  // network-error: a harness fault wearing the app's face. Nothing is assigned
+  // that linkedom refuses.
+  //
+  // What it therefore cannot do: clear a field. linkedom stores an input's
+  // value IN its value attribute, so the live value and the default are one
+  // storage and a reset has nothing to restore from. "The form clears after a
+  // successful write" is not assertable at this tier — assert the row instead.
+  proto.reset = function () {};
+  // A buttonless form is submitted by its own change listener calling
+  // requestSubmit, so without this the reader's actual gesture is undrivable
+  // and a test has to dispatch submit behind the control's back.
+  proto.requestSubmit = function (this: { dispatchEvent(e: unknown): boolean }) {
+    this.dispatchEvent(new submitEvent("submit", { bubbles: true, cancelable: true }));
+  };
+}
+
+/** An element's box, which this tier has no layout to measure.
+ *
+ * A normalized pointer is a fraction of the affordance it landed on, so without
+ * a box the allowlist advertises two fields that work in every browser and are
+ * silently absent under test. A test states the box it means with
+ * `boxOf(el, {...})`; anything unstated is zero-sized, which is what the
+ * interpreter already refuses to divide by. */
+function layoutBoxes(document: unknown): void {
+  const proto = Object.getPrototypeOf(
+    (document as { createElement(tag: string): object }).createElement("div"),
+  ) as object;
+  if (Object.getOwnPropertyDescriptor(proto, "getBoundingClientRect") !== undefined) return;
+  Object.defineProperty(proto, "getBoundingClientRect", {
+    configurable: true,
+    value(this: { _prontoBox?: Box }) {
+      return this._prontoBox ?? { left: 0, top: 0, width: 0, height: 0 };
+    },
+  });
+}
+
+/** The top layer, which this tier has no layers to hold.
+ *
+ * Only the state is modelled, because only the state is what a row decides:
+ * `showPopover` on an open popover throws and `hidePopover` on a closed one
+ * throws, and the interpreter leans on exactly that to stay idempotent. A stub
+ * that accepted both would let a double-open through here and fail in a
+ * browser. `:popover-open` is the state a test reads back.
+ *
+ * Both fire `toggle`, because that event is the only way anything learns of a
+ * dismissal the UA performed on its own — light dismiss and Escape. A stub
+ * silent about it would leave the interpreter's one guard against a second
+ * writer untested here and broken there. */
+export function topLayer(document: unknown, Event: new (t: string, i: object) => object): void {
+  const proto = Object.getPrototypeOf(
+    (document as { createElement(tag: string): object }).createElement("div"),
+  ) as object;
+  if (Object.getOwnPropertyDescriptor(proto, "showPopover") !== undefined) return;
+  type Surface = {
+    _prontoShown?: boolean;
+    localName: string;
+    getAttribute(name: string): string | null;
+    setAttribute(name: string, value: string): void;
+    removeAttribute(name: string): void;
+    dispatchEvent(e: unknown): void;
+  };
+  const toggled = (el: Surface, newState: string) =>
+    el.dispatchEvent(Object.assign(new Event("toggle", { bubbles: false }), { newState }));
+  Object.defineProperty(proto, "showPopover", {
+    configurable: true,
+    value(this: Surface) {
+      if (this.getAttribute("popover") === null) throw new Error("showPopover on an element with no popover")
+      if (this._prontoShown === true) throw new Error("InvalidStateError: already open")
+      this._prontoShown = true
+      // The attribute stands in for :popover-open, which no selector engine
+      // here answers.
+      this.setAttribute("data-popover-open", "")
+      toggled(this, "open")
+    },
+  });
+  Object.defineProperty(proto, "hidePopover", {
+    configurable: true,
+    value(this: Surface) {
+      if (this._prontoShown !== true) throw new Error("InvalidStateError: already closed")
+      this._prontoShown = false
+      this.removeAttribute("data-popover-open")
+      toggled(this, "closed")
+    },
+  });
+}
+
+/** A <template>'s children are not in the document.
+ *
+ * linkedom's SELECTORS already hold to that — `querySelector("#x")` and
+ * `querySelectorAll("form")` both decline to enter template content — but its
+ * `getElementById` walks an index that includes it. A browser parses those
+ * children into `content`, a fragment of another document, where
+ * `getElementById` cannot reach them at all.
+ *
+ * Without this the tier answers `data-key` from markup that
+ * was never rendered: a key whose form only exists inside the template it is
+ * stamped from resolves here and throws in a browser, so the one case that
+ * matters — a filtered list with nothing in it — passes under test and fails in
+ * front of a reader.
+ *
+ * `closest` is what tells them apart, and it works for the same reason the bug
+ * does: linkedom keeps template children parented to the template. A node the
+ * interpreter has stamped into the live tree is a clone, and its chain reaches
+ * no template. */
+function templateIsolation(document: unknown): void {
+  const doc = document as {
+    getElementById(id: string): { closest(sel: string): unknown } | null
+    _prontoIsolated?: boolean
+  }
+  if (doc._prontoIsolated === true) return
+  doc._prontoIsolated = true
+  const own = doc.getElementById.bind(doc)
+  doc.getElementById = (id: string) => {
+    const found = own(id)
+    return found !== null && found.closest("template") !== null ? null : found
+  }
+}
+
+export type Box = { left: number; top: number; width: number; height: number }
+
+/** States the box an element occupies, for the tier that cannot measure one. */
+export function boxOf(el: unknown, box: Box): void {
+  ;(el as { _prontoBox?: Box })._prontoBox = box
+}
+
+/** Every store call a mount made that was not a read. */
+export const writes = (m: Mounted): Call[] => m.store.calls.filter((c) => c.op !== "query");
+
+export async function mountScreen(spec: MountSpec): Promise<Mounted> {
+  const { interpretScreen } = await interpreter(
+    `?clock=manual&seed=${spec.seed}${spec.epoch === undefined ? "" : `&epoch=${spec.epoch}`}`,
+  );
+  const clock = global.__prontoClock as { advance(ms: number): number; due(): { in: number }[] };
+
+  // The Event class has to be linkedom's own: the platform's seals fields
+  // linkedom's dispatchEvent assigns.
+  const { document, Event } = parseHTML(
+    "<!doctype html><html><head></head><body><div id=shell></div></body></html>",
+  ) as unknown as {
+    document: { getElementById(id: string): El | null };
+    Event: new (type: string, init: { bubbles: boolean; cancelable?: boolean }) => object;
+  };
+  global.document = document;
+  formValidation(document, Event as new (t: string, i: object) => unknown);
+  controlProperties(document);
+  templateIsolation(document);
+  layoutBoxes(document);
+  topLayer(document, Event as new (t: string, i: object) => object);
+
+  // The interpreter answers every one of its own seams — a handler, a machine
+  // event, an after timer, a refusal, a form submit, a region refresh — with
+  // console.error and data-state="network-error". Nothing reaches the runtime
+  // as an unhandled rejection, so a stimulus returns normally, no write
+  // happens, and a test asserting only on rows passes while the screen sits
+  // dead. That one console.error is the seam they all pass through, so it is
+  // what quiet() and settle() re-raise. A test that means to drive a refusal
+  // says so with expectRefusal.
+  const escaped: unknown[] = [];
+  const onEscape = (e: { preventDefault(): void; reason?: unknown }) => {
+    e.preventDefault();
+    escaped.push(e.reason);
+  };
+  (globalThis as unknown as EventTarget).addEventListener("unhandledrejection", onEscape as EventListener);
+
+  const base = `${ORIGIN}/`;
+  global.fetch = (url: unknown) => {
+    const path = new URL(String(url), base).pathname.replace(/^\//, "");
+    const source = spec.files[path];
+    if (source === undefined) {
+      return Promise.reject(new Error(`the screen fetched ${path}, which the route does not name`));
+    }
+    return Promise.resolve(new Response(source));
+  };
+
+  let expectedRefusalLog: Error | undefined;
+  if (spec.expectRefusal !== true) {
+    collect = (err) => {
+      if (err === expectedRefusalLog) expectedRefusalLog = undefined;
+      else escaped.push(err);
+    };
+  }
+  const disarm = () => {
+    collect = null;
+    (globalThis as unknown as EventTarget).removeEventListener("unhandledrejection", onEscape as EventListener);
+  };
+
+  const store = fakeDataSync(spec.tables, spec.cluster ?? {});
+  const mount = document.getElementById("shell");
+  // A mount that never resolves hands back no stop(), so it disarms here: a
+  // seam left collecting into it would swallow every later report, and the
+  // listener would go on cancelling every later rejection.
+  let handle: Awaited<ReturnType<typeof interpretScreen>>;
+  try {
+    if (mount === null) throw new Error("the harness document has no mount");
+    handle = await interpretScreen(mount, base, spec.route, store, spec.params ?? {}, screenEnv(spec, {
+      mountUnits: spec.mountUnits ?? true,
+      mountHostDom: spec.mountHostDom ?? true,
+      messages: spec.messages,
+      locale: spec.locale,
+      // A case asserts on rendered text, so the zone is the harness's and not
+      // the machine's — see storybook.js for the same pin.
+      timeZone: spec.timeZone ?? "UTC",
+    }));
+  } catch (err) {
+    disarm();
+    throw err;
+  }
+
+  const step = spec.step ?? 100;
+  const cap = spec.cap ?? 60_000;
+
+  const raiseEscaped = () => {
+    if (escaped.length === 0) return;
+    const first = escaped[0];
+    escaped.length = 0;
+    throw first instanceof Error
+      ? first
+      : new Error(`a listener rejected and the DOM swallowed it: ${String(first)}`);
+  };
+
+  /** Regions still inside a pass. A wake delivered during the turn a drain is
+   * measuring starts a refresh that writes no row, so the store's version and
+   * its wake count both read quiet while the screen is still drawing. Waits are
+   * not counted: they come due only when settle advances the clock, and waiting
+   * on one without advancing would never end. */
+  const rendering = () =>
+    (global as { __prontoBusy?: () => { regions: number } }).__prontoBusy?.().regions ?? 0;
+
+  // Yields macrotasks until three in a row pass with nothing outstanding. Not a
+  // sleep: a promise chain the interpreter started only runs between turns, and
+  // there is nothing else to wait on.
+  //
+  // Three, because a hand-off spans three: a wake is delivered on one turn, the
+  // pass it starts reads on the next, and what that read writes lands on the
+  // third. The middle turn is the one no counter reports.
+  const quiet = async () => {
+    raiseEscaped();
+    for (let turns = 0, calm = 0; calm < 3; turns++) {
+      if (turns > 500) throw new Error("the store never went quiet: something writes on every turn");
+      const before = store.version;
+      await macrotask();
+      calm = store.pendingWakes === 0 && store.version === before && rendering() === 0 ? calm + 1 : 0;
+    }
+  };
+
+  const settle = async () => {
+    for (let spent = 0, twice = false;;) {
+      await quiet();
+      raiseEscaped();
+      if (clock.advance(0) > 0) {
+        if (spent >= cap) {
+          throw new Error(`the screen never stopped: waits still queued after ${spent}ms of table time`);
+        }
+        const next = Math.min(Math.max(step, clock.due()[0]?.in ?? 0), cap - spent);
+        clock.advance(next);
+        spent += next;
+        continue;
+      }
+      // An empty queue is not a stopped screen. A machine arms its `after`
+      // from the refresh that entered the state, so a screen whose opening act
+      // is a beat has nothing queued for the turn between the two; and the
+      // advance above fires what was due, whose writes are not drained yet.
+      // Both show up as a change across one more turn.
+      const before = store.version;
+      await macrotask();
+      // The turn that ends the drain is the one a teardown refusal lands on,
+      // and it writes no row — so the loop would exit past it and `stop` would
+      // then drop the collector with the error still in it.
+      raiseEscaped();
+      if (clock.advance(0) === 0 && store.version === before && rendering() === 0) {
+        // Settling is idempotent or it has not settled. Draining once more is
+        // what tells apart a screen that has stopped from one whose next turn
+        // was queued while this drain was measuring.
+        if (twice) return;
+        twice = true;
+        continue;
+      }
+      twice = false;
+    }
+  };
+
+  const one = (selector: string): El => {
+    const found = mount.querySelectorAll(selector);
+    if (found.length !== 1) throw new Error(`"${selector}" names ${found.length} elements, not one`);
+    return found[0];
+  };
+
+  return {
+    mount,
+    screen: mount.firstElementChild as El,
+    store,
+    rows: (table) => store.rows(table),
+    one,
+    all: (selector) => [...mount.querySelectorAll(selector)],
+    fire(target, type = "click", init) {
+      const el = typeof target === "string" ? one(target) : target;
+      const { bubbles = true, cancelable = false, ...rest } = (init ?? {}) as {
+        bubbles?: boolean;
+        cancelable?: boolean;
+        [field: string]: unknown;
+      };
+      // `key` and its neighbours belong to KeyboardEvent, which linkedom does
+      // not construct, and an Event ignores an init field it does not declare —
+      // so a binding reading event.key would see undefined without this.
+      const ev = Object.assign(new Event(type, { bubbles, cancelable }), rest) as {
+        defaultPrevented: boolean;
+      };
+      el.dispatchEvent(ev);
+      return ev;
+    },
+    refuse(region, entity, error) {
+      const deliver = (region as El & {
+        _prontoRefusal?: (entity: string, id: string | undefined, error: Error) => void;
+      })._prontoRefusal;
+      if (deliver === undefined) throw new Error("region has no refusal delivery hook");
+      expectedRefusalLog = error;
+      try {
+        deliver(entity, undefined, error);
+      } catch (err) {
+        expectedRefusalLog = undefined;
+        throw err;
+      }
+      if (expectedRefusalLog === error) {
+        expectedRefusalLog = undefined;
+        throw new Error("refusal delivery did not report its error");
+      }
+    },
+    texts: (selector) => [...mount.querySelectorAll(selector)].map(textOf),
+    byRole: (role, name) => byRole(mount, role, name),
+    set(target, prop, value) {
+      const el = typeof target === "string" ? one(target) : target;
+      (el as unknown as Record<string, unknown>)[prop] = value;
+    },
+    choose(target, value) {
+      const select = typeof target === "string" ? one(target) : target;
+      const options = [...select.querySelectorAll("option")] as El[];
+      // Either the key or the words: a reader picks what the option shows,
+      // and a test that can only name the key cannot say the two differ.
+      const wanted = options.find((o) => o.getAttribute("value") === value) ??
+        options.find((o) => textOf(o) === value);
+      if (wanted === undefined) {
+        throw new Error(`choose: no option ${JSON.stringify(value)} among ${options.length}`);
+      }
+      for (const o of options) o.removeAttribute("selected");
+      wanted.setAttribute("selected", "");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    },
+    advance: (ms) => clock.advance(ms),
+    quiet,
+    settle,
+    async stop() {
+      try {
+        // Inside, not before: a region whose teardown throws would otherwise
+        // skip the detach below. It still skips the regions after it —
+        // screen.js's `stop` walks them without a guard — so those keep their
+        // subscriptions and their timers for the life of the process.
+        handle.stop();
+        // The clock queue outlives the screen and is the file's, not this
+        // mount's: a wait left behind would come due inside the next case — and
+        // a wait is the work most likely to throw, so the traps outlive it.
+        await settle();
+      } finally {
+        // Detached even when the drain throws: the console seam is one slot for
+        // the process, and a mount that kept it holds every report until the
+        // next mount takes the slot back.
+        disarm();
+      }
+    },
+  };
+}
+
+export async function appMessages(appDir: URL): Promise<Record<string, Record<string, unknown>>> {
+  const messages: Record<string, Record<string, unknown>> = {};
+  try {
+    const dir = new URL("messages/", appDir);
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.isFile && entry.name.endsWith(".json")) {
+        const locale = entry.name.slice(0, -".json".length);
+        const text = await Deno.readTextFile(new URL(entry.name, dir));
+        messages[locale] = compileCatalog(JSON.parse(text));
+      }
+    }
+  } catch {}
+  return messages;
+}
+
+/** mountScreen against an app's emitted tree: its shell.yaml names the route,
+ * and the route names its own files. */
+export async function mountApp(
+  spec: Omit<MountSpec, "route" | "files"> & { appDir: URL; screen: string },
+): Promise<Mounted> {
+  // The shell syncs only the tables the app declares, so a write to any other
+  // fails in the browser with no collection; a table handed in here would
+  // hide that.
+  const collections = new Set(await appCollections(spec.appDir));
+  const stray = Object.keys(spec.tables).filter((t) => !collections.has(t));
+  if (stray.length > 0) {
+    throw new Error(`the app syncs no collection for ${stray.join(", ")}: a screen writing one fails in the browser`);
+  }
+  const routes = await appRoutes(spec.appDir);
+  const route = await appRoute(spec.appDir, spec.screen);
+  const declared = await appCluster(spec.appDir);
+  const discoveredMessages = await appMessages(spec.appDir);
+  const messages = { ...discoveredMessages, ...spec.messages };
+  const files = await appFiles(spec.appDir, route);
+  for (const [loc, content] of Object.entries(messages)) {
+    files[`messages/${loc}.json`] = JSON.stringify(content);
+  }
+  return mountScreen({
+    ...spec,
+    route,
+    routes,
+    i18n: await appI18n(spec.appDir),
+    files,
+    messages,
+    tables: { ...(await appSeed(spec.appDir)), ...spec.tables },
+    cluster: { ...declared, ...spec.cluster },
+    units: { ...(await appUnits(spec.appDir)), ...spec.units },
+    kinetic: spec.kinetic ?? await appKinetic(spec.appDir),
+    hostDom: { ...(await appHostDom(spec.appDir)), ...spec.hostDom },
+    schema: spec.schema ?? await appSchema(spec.appDir),
+    endowments: spec.endowments ?? await appEndowments(spec.appDir),
+  });
+}
+
+/** The manifest-granted platform endowments an app declares (shell.yaml `endowments:`). */
+export async function appEndowments(appDir: URL): Promise<Record<string, string[]> | undefined> {
+  const shell = await appShell(appDir) as {
+    endowments?: Record<string, string[]>;
+  };
+  return shell.endowments;
+}
+
+/** The entity projection an app emits (shell.yaml `schema:`), which is what a
+ * money binding resolves its column's currency and scale against. */
+export async function appSchema(appDir: URL): Promise<Schema | undefined> {
+  const shell = await appShell(appDir) as {
+    schema?: Schema;
+  };
+  return shell.schema;
+}
+
+export async function appHostDom(appDir: URL): Promise<Record<string, { src: string; note: string }>> {
+  const shell = await appShell(appDir) as {
+    hostDom?: Record<string, { src: string; note: string }>;
+  };
+  return shell.hostDom ?? {};
+}
+
+/** The vendored units an app declares (shell.yaml `units:`), which is what a
+ * `data-hatch` name resolves against. */
+export async function appUnits(appDir: URL): Promise<Record<string, Unit>> {
+  const shell = await appShell(appDir) as {
+    units?: Record<string, Unit>;
+  };
+  return shell.units ?? {};
+}
+
+/** The kinetic children an app declares (shell.yaml `kinetic:`). */
+export async function appKinetic(appDir: URL): Promise<Record<string, unknown>> {
+  const shell = await appShell(appDir) as {
+    kinetic?: Record<string, unknown>;
+  };
+  return shell.kinetic ?? {};
+}
+
+/** The rows a browser tier holds before anyone writes one (shell.yaml
+ * `seed:`), which the terminal writes into the collection it has just built.
+ * A test that states the table itself is stating a later world than the seed's
+ * and keeps it whole. */
+export async function appSeed(appDir: URL): Promise<Record<string, Row[]>> {
+  const shell = await appShell(appDir) as {
+    seed?: Record<string, Row[]>;
+  };
+  return Object.fromEntries(
+    Object.entries(shell.seed ?? {}).map(([k, rows]) => [k, rows.map((r) => ({ ...r }))]),
+  );
+}
+
+/** The cluster facts an app declares about itself: the natural keys of
+ * `uniques:` and the owner column of each owned entity in `access:`. */
+export async function appCluster(appDir: URL): Promise<Cluster> {
+  const shell = await appShell(appDir) as {
+    uniques?: Record<string, string[][]>;
+    access?: Cluster["access"];
+    keys?: Record<string, string>;
+    schema?: Schema;
+  };
+  const owners: Record<string, string> = {};
+  for (const [table, a] of Object.entries(shell.access ?? {})) {
+    if (a.owner !== undefined) owners[table] = a.owner;
+  }
+  return { uniques: shell.uniques, owners, keys: shell.keys, access: shell.access, schema: shell.schema };
+}

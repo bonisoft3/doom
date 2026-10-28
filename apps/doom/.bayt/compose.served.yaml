@@ -1,0 +1,44 @@
+# generated from bayt.cue — do not edit
+services:
+  doom-served:
+    build:
+      additional_contexts:
+        plugins_omnishell-runtime-image: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://bonitao/omnishell:0.20.2@sha256:0f7d84358244c875a76bf97f13974bf6336e15f639a2f01fa31ad3eb0ce0d8a7}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image}
+      context: ..
+      dockerfile: .bayt/Dockerfile.served
+      target: served
+      tags:
+      - bayt-doom-served:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-doom-served:latest
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-served:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    networks:
+      default:
+        aliases:
+        - served
+  doom-served_bayt:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.served
+      target: served_bayt
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-served_bayt:latest
+    scale: 0
+  doom-served_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.served
+      target: served_srcs
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-served_srcs:latest
+    scale: 0

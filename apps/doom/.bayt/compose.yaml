@@ -1,0 +1,101 @@
+# generated from bayt.cue — do not edit
+include:
+- path:
+  - ./compose.bayt.yaml
+  - ./compose.bayt.ports.yaml
+  required: false
+services:
+  browser:
+    extends:
+      file: ./compose.browser.yaml
+      service: doom-browser
+    profiles:
+    - browser
+    scale: 1
+  setup:
+    extends:
+      file: ./compose.setup.yaml
+      service: doom-setup
+    profiles:
+    - setup
+    scale: 1
+  lint:
+    extends:
+      file: ./compose.lint.yaml
+      service: doom-lint
+    profiles:
+    - lint
+  generate:
+    extends:
+      file: ./compose.generate.yaml
+      service: doom-generate
+    profiles:
+    - generate
+  build:
+    extends:
+      file: ./compose.build.yaml
+      service: doom-build
+    profiles:
+    - build
+  test:
+    extends:
+      file: ./compose.test.yaml
+      service: doom-test
+    profiles:
+    - test
+  launch:
+    extends:
+      file: ./compose.launch.yaml
+      service: doom-launch
+    profiles:
+    - launch
+    scale: 1
+  integrate:
+    extends:
+      file: ./compose.integrate.yaml
+      service: doom-integrate
+    profiles:
+    - integrate
+    scale: 1
+  ci-visual:
+    extends:
+      file: ./compose.ci-visual.yaml
+      service: doom-ci-visual
+    profiles:
+    - ci-visual
+    scale: 1
+  ci:
+    extends:
+      file: ./compose.ci.yaml
+      service: doom-ci
+    profiles:
+    - ci
+    scale: 1
+  served:
+    extends:
+      file: ./compose.served.yaml
+      service: doom-served
+    profiles:
+    - served
+    scale: 1
+  check-boot:
+    extends:
+      file: ./compose.check-boot.yaml
+      service: doom-check-boot
+    profiles:
+    - check-boot
+    scale: 1
+  ci-boot:
+    extends:
+      file: ./compose.ci-boot.yaml
+      service: doom-ci-boot
+    profiles:
+    - ci-boot
+    scale: 1
+  caddy:
+    extends:
+      file: ./compose.caddy.yaml
+      service: doom-caddy
+    profiles:
+    - caddy
+    scale: 1

@@ -1,0 +1,46 @@
+# generated from bayt.cue — do not edit
+services:
+  doom-launch:
+    build:
+      additional_contexts:
+        doom-caddy: service:doom-caddy
+      context: ..
+      dockerfile: .bayt/Dockerfile.launch
+      target: launch
+      tags:
+      - bayt-doom-launch:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-doom-launch:latest
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    depends_on:
+      doom-caddy:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test:
+      - CMD
+      - echo
+      - doom is healthy
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    image: bayt-doom-launch:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    networks:
+      default:
+        aliases:
+        - launch
+  doom-launch_bayt:
+    build:
+      additional_contexts:
+        doom-caddy_bayt: service:doom-caddy_bayt
+      context: ..
+      dockerfile: .bayt/Dockerfile.launch
+      target: launch_bayt
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-launch_bayt:latest
+    scale: 0

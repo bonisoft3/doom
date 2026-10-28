@@ -1,0 +1,214 @@
+# generated from bayt.cue — do not edit
+services:
+  doom-caddy:
+    build:
+      additional_contexts:
+        doom-served: service:doom-served
+        root: ..
+      context: ..
+      dockerfile: .bayt/Dockerfile.caddy
+      target: caddy
+      tags:
+      - bayt-doom-caddy:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-doom-caddy:latest
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    develop:
+      watch:
+      - action: sync+restart
+        path: ../docker/Caddyfile
+        target: /etc/caddy/Caddyfile
+      - action: sync+restart
+        path: ../.certs
+        target: /certs
+      - action: rebuild
+        path: ../shell/index.html
+        target: /srv/shell/index.html
+      - action: rebuild
+        path: ../shell/shell.css
+        target: /srv/shell/shell.css
+      - action: rebuild
+        path: ../shell/boot.js
+        target: /srv/shell/boot.js
+      - action: rebuild
+        path: ../offline-first-sw.js
+        target: /srv/offline-first-sw.js
+      - action: rebuild
+        path: ../shell/shell.yaml
+        target: /srv/shell/shell.yaml
+      - action: rebuild
+        path: ../shell/shell.json
+        target: /srv/shell/shell.json
+      - action: rebuild
+        path: ../shell/design.css
+        target: /srv/shell/design.css
+      - action: rebuild
+        path: ../shell/screens/arena.html
+        target: /srv/shell/screens/arena.html
+      - action: rebuild
+        path: ../shell/screens/arena.css
+        target: /srv/shell/screens/arena.css
+      - action: rebuild
+        path: ../shell/screens/lobby.html
+        target: /srv/shell/screens/lobby.html
+      - action: rebuild
+        path: ../shell/screens/lobby.css
+        target: /srv/shell/screens/lobby.css
+      - action: rebuild
+        path: ../shell/handlers/enter_arena.js
+        target: /srv/shell/handlers/enter_arena.js
+      - action: rebuild
+        path: ../shell/handlers/match_control.js
+        target: /srv/shell/handlers/match_control.js
+      - action: rebuild
+        path: ../shell/handlers/referee.js
+        target: /srv/shell/handlers/referee.js
+      - action: rebuild
+        path: ../shell/vendor/babylon/babylon.js
+        target: /srv/shell/vendor/babylon/babylon.js
+      - action: rebuild
+        path: ../shell/vendor/babylon/license.md
+        target: /srv/shell/vendor/babylon/license.md
+      - action: rebuild
+        path: ../shell/vendor/babylon/NOTICE.md
+        target: /srv/shell/vendor/babylon/NOTICE.md
+      - action: rebuild
+        path: ../shell/vendor/babylon/SOURCE.md
+        target: /srv/shell/vendor/babylon/SOURCE.md
+      - action: rebuild
+        path: ../shell/engine/actors.js
+        target: /srv/shell/engine/actors.js
+      - action: rebuild
+        path: ../shell/engine/assets.js
+        target: /srv/shell/engine/assets.js
+      - action: rebuild
+        path: ../shell/engine/audio.js
+        target: /srv/shell/engine/audio.js
+      - action: rebuild
+        path: ../shell/engine/bridge.js
+        target: /srv/shell/engine/bridge.js
+      - action: rebuild
+        path: ../shell/engine/catalog.js
+        target: /srv/shell/engine/catalog.js
+      - action: rebuild
+        path: ../shell/engine/collide.js
+        target: /srv/shell/engine/collide.js
+      - action: rebuild
+        path: ../shell/engine/combat.js
+        target: /srv/shell/engine/combat.js
+      - action: rebuild
+        path: ../shell/engine/constants.js
+        target: /srv/shell/engine/constants.js
+      - action: rebuild
+        path: ../shell/engine/level.js
+        target: /srv/shell/engine/level.js
+      - action: rebuild
+        path: ../shell/engine/monsters.js
+        target: /srv/shell/engine/monsters.js
+      - action: rebuild
+        path: ../shell/engine/monsters_table.js
+        target: /srv/shell/engine/monsters_table.js
+      - action: rebuild
+        path: ../shell/engine/movers.js
+        target: /srv/shell/engine/movers.js
+      - action: rebuild
+        path: ../shell/engine/noise.js
+        target: /srv/shell/engine/noise.js
+      - action: rebuild
+        path: ../shell/engine/player.js
+        target: /srv/shell/engine/player.js
+      - action: rebuild
+        path: ../shell/engine/projectiles.js
+        target: /srv/shell/engine/projectiles.js
+      - action: rebuild
+        path: ../shell/engine/referee.js
+        target: /srv/shell/engine/referee.js
+      - action: rebuild
+        path: ../shell/engine/renderer.js
+        target: /srv/shell/engine/renderer.js
+      - action: rebuild
+        path: ../shell/engine/sectors.js
+        target: /srv/shell/engine/sectors.js
+      - action: rebuild
+        path: ../shell/engine/simulation.js
+        target: /srv/shell/engine/simulation.js
+      - action: rebuild
+        path: ../shell/engine/sprites.js
+        target: /srv/shell/engine/sprites.js
+      - action: rebuild
+        path: ../shell/engine/trace.js
+        target: /srv/shell/engine/trace.js
+      - action: rebuild
+        path: ../shell/engine/weapons.js
+        target: /srv/shell/engine/weapons.js
+      - action: rebuild
+        path: ../shell/handlers/referee.js
+        target: /srv/shell/handlers/referee.js
+      - action: rebuild
+        path: ../showcase.html
+        target: /srv/showcase.html
+      - action: rebuild
+        path: ../brief.html
+        target: /srv/docs/brief.html
+      - action: rebuild
+        path: ../ir.html
+        target: /srv/docs/ir.html
+      - action: rebuild
+        path: ../ir/card.css
+        target: /srv/docs/ir/card.css
+      - action: rebuild
+        path: ../acceptance.md
+        target: /srv/docs/acceptance.md
+      - action: rebuild
+        path: ../DESIGN.md
+        target: /srv/docs/DESIGN.md
+      - action: rebuild
+        path: ../robots.txt
+        target: /srv/robots.txt
+      - action: rebuild
+        path: ../sitemap.xml
+        target: /srv/sitemap.xml
+    environment:
+      ELECTRIC_SECRET: ${ELECTRIC_SECRET:-dev-electric-secret}
+      ORIGIN: ${ORIGIN:-https://localhost:${CADDY_TLS_HOST_PORT:-24809}}
+    healthcheck:
+      test:
+      - CMD
+      - httpcheck
+      - http://127.0.0.1:8080/health
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+      start_interval: 500ms
+    image: bayt-doom-caddy:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    networks:
+      default:
+        aliases:
+        - caddy
+  doom-caddy_bayt:
+    build:
+      additional_contexts:
+        doom-served_bayt: service:doom-served_bayt
+      context: ..
+      dockerfile: .bayt/Dockerfile.caddy
+      target: caddy_bayt
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-caddy_bayt:latest
+    scale: 0
+  doom-caddy_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.caddy
+      target: caddy_srcs
+      args:
+        BAYT_DIR: ${MONOREPO_COMPOSE_MODE:+apps/doom}
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-doom-caddy_srcs:latest
+    scale: 0

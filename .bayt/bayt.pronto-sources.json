@@ -1,0 +1,190 @@
+{
+  "_generated_from": "bayt.cue (do not edit)",
+  "bake": {
+    "platforms": [],
+    "tags": [],
+    "args": {},
+    "cache": {
+      "from": [
+        "type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE:-unscoped}-pronto-sources",
+        "type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE_FALLBACK:-unscoped}-pronto-sources"
+      ],
+      "to": [
+        "type=registry,ref=registry.depot.dev/${DEPOT_PROJECT_ID:-f5k5087x1b}:monorepo-bake-cache-v2-${CACHE_SCOPE:-unscoped}-pronto-sources,mode=min,image-manifest=true,oci-mediatypes=true,compression=zstd,compression-level=3"
+      ]
+    }
+  },
+  "dockerfile": {
+    "preamble": [],
+    "preambleCopyContexts": [],
+    "from": null,
+    "add": [],
+    "mounts": [],
+    "secrets": {},
+    "extra_hosts": [],
+    "epilogue": [],
+    "copy": [],
+    "healthcheck": null,
+    "expose": [],
+    "entrypoint": null,
+    "incremental": false,
+    "cmd": null
+  },
+  "name": "pronto-sources",
+  "project": "workspaceroot",
+  "dir": "",
+  "activate": "",
+  "srcs": {
+    "globs": [
+      "cue.mod",
+      "apps/deno.json",
+      "apps/*/tests/deno.json",
+      "plugins/pronto",
+      "plugins/omnishell",
+      "plugins/bayt",
+      "plugins/sayt",
+      "libraries/mecha"
+    ],
+    "exclude": [
+      "**/docs/**",
+      "**/testdata/**",
+      "**/*_test.*",
+      "**/*.test.*",
+      "**/.bayt/**",
+      "**/.task/**",
+      "**/node_modules/**"
+    ]
+  },
+  "outs": {
+    "globs": [],
+    "exclude": []
+  },
+  "state": {
+    "globs": []
+  },
+  "env": {},
+  "synthetics": {
+    "bayt": {
+      "name": "pronto-sources_bayt",
+      "project": "workspaceroot",
+      "dir": "",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          ".bayt/compose.pronto-sources.yaml",
+          ".bayt/Dockerfile.pronto-sources",
+          ".bayt/bayt.pronto-sources.json",
+          ".bayt/Taskfile.yml",
+          ".bayt/Taskfile.bayt.yml"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "public",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        ".bayt/compose.pronto-sources.yaml"
+      ]
+    },
+    "outs": {
+      "name": "pronto-sources_outs",
+      "project": "workspaceroot",
+      "dir": "",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "public",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        ".bayt/compose.pronto-sources.yaml"
+      ]
+    },
+    "srcs": {
+      "name": "pronto-sources_srcs",
+      "project": "workspaceroot",
+      "dir": "",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          "cue.mod",
+          "apps/deno.json",
+          "apps/*/tests/deno.json",
+          "plugins/pronto",
+          "plugins/omnishell",
+          "plugins/bayt",
+          "plugins/sayt",
+          "libraries/mecha"
+        ],
+        "exclude": [
+          "**/docs/**",
+          "**/testdata/**",
+          "**/*_test.*",
+          "**/*.test.*",
+          "**/.bayt/**",
+          "**/.task/**",
+          "**/node_modules/**"
+        ]
+      },
+      "env": {},
+      "visibility": "public",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        ".bayt/compose.pronto-sources.yaml"
+      ]
+    }
+  },
+  "visibility": "public",
+  "emitsSrcs": true,
+  "deps": [],
+  "sameProjectDeps": [],
+  "transitiveDeps": [],
+  "transitiveCrossDeps": [],
+  "upClosure": [
+    ".bayt/compose.pronto-sources.yaml"
+  ],
+  "chainedDeps": [],
+  "cmds": [],
+  "cache": {
+    "full": false,
+    "similar": false
+  }
+}

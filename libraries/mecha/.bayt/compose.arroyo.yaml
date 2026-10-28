@@ -1,0 +1,58 @@
+# generated from bayt.cue — do not edit
+services:
+  libraries_mecha-arroyo:
+    build:
+      additional_contexts:
+        libraries_mecha-redpanda: service:libraries_mecha-redpanda
+        libraries_mecha-database: service:libraries_mecha-database
+        libraries_mecha-redis: service:libraries_mecha-redis
+      context: ..
+      dockerfile: .bayt/Dockerfile.arroyo
+      target: arroyo
+      tags:
+      - bayt-libraries_mecha-arroyo:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-libraries_mecha-arroyo:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    depends_on:
+      libraries_mecha-redpanda:
+        condition: service_healthy
+        restart: true
+      libraries_mecha-database:
+        condition: service_started
+      libraries_mecha-redis:
+        condition: service_started
+    develop:
+      watch:
+      - action: sync+restart
+        path: ../services/arroyo/queries/
+        target: /queries/
+    image: bayt-libraries_mecha-arroyo:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    networks:
+      default:
+        aliases:
+        - arroyo
+    ports:
+    - "5115"
+    restart: on-failure
+  libraries_mecha-arroyo_bayt:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.arroyo
+      target: arroyo_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-arroyo_bayt:latest
+    scale: 0
+  libraries_mecha-arroyo_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.arroyo
+      target: arroyo_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-libraries_mecha-arroyo_srcs:latest
+    scale: 0

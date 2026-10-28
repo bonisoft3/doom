@@ -1,0 +1,36 @@
+syntax = "proto3";
+package pronto.entities;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+
+message Frag {
+  optional string id = 1 [json_name = "id"];
+  optional string killer = 2 [json_name = "killer"];
+  optional string victim = 3 [json_name = "victim"];
+  optional string weapon = 4 [json_name = "weapon"];
+  optional int32 tick = 5 [json_name = "tick"];
+}
+
+message Match {
+  optional string id = 1 [json_name = "id"];
+  optional string map = 2 [json_name = "map"];
+  optional string status = 3 [json_name = "status"];
+  optional int32 frag_limit = 4 [json_name = "frag_limit"];
+  optional int32 frags_us = 5 [json_name = "frags_us"];
+  optional int32 frags_them = 6 [json_name = "frags_them"];
+  optional string winner = 7 [json_name = "winner"];
+}
+
+message Player {
+  optional string id = 1 [json_name = "id"];
+  optional string handle = 2 [json_name = "handle"];
+  optional int32 health = 3 [json_name = "health"];
+  optional int32 armor = 4 [json_name = "armor"];
+  optional int32 ammo = 5 [json_name = "ammo"];
+  optional string weapon = 6 [json_name = "weapon"];
+  optional string in_pain = 7 [json_name = "in_pain"];
+  optional string is_god = 8 [json_name = "is_god"];
+  optional string health_tier = 9 [json_name = "health_tier"];
+}

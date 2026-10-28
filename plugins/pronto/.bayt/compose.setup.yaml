@@ -1,0 +1,35 @@
+# generated from bayt.cue — do not edit
+services:
+  plugins_pronto-setup:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.setup
+      target: setup
+      tags:
+      - bayt-plugins_pronto-setup:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+      - bayt-plugins_pronto-setup:latest
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-plugins_pronto-setup:${BAYT_IMAGE_TAG:-${COMPOSE_PROJECT_NAME}}
+    scale: 0
+  plugins_pronto-setup_bayt:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.setup
+      target: setup_bayt
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-plugins_pronto-setup_bayt:latest
+    scale: 0
+  plugins_pronto-setup_srcs:
+    build:
+      context: ..
+      dockerfile: .bayt/Dockerfile.setup
+      target: setup_srcs
+      args:
+        BUILDKIT_SYNTAX: >-
+          docker/dockerfile:1.27@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+    image: bayt-plugins_pronto-setup_srcs:latest
+    scale: 0

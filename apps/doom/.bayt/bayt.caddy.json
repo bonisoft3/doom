@@ -1,0 +1,579 @@
+{
+  "_generated_from": "bayt.cue (do not edit)",
+  "compose": {
+    "up": false,
+    "manual": false,
+    "build": {
+      "additional_contexts": {
+        "root": ".."
+      },
+      "secrets": [],
+      "args": {}
+    },
+    "environment": {
+      "ELECTRIC_SECRET": "${ELECTRIC_SECRET:-dev-electric-secret}",
+      "ORIGIN": "${ORIGIN:-https://localhost:${CADDY_TLS_HOST_PORT}}"
+    },
+    "ports": [],
+    "volumes": [],
+    "depends_on": {},
+    "networks": {
+      "default": {
+        "aliases": [
+          "caddy"
+        ]
+      }
+    },
+    "healthcheck": {
+      "test": [
+        "CMD",
+        "httpcheck",
+        "http://127.0.0.1:8080/health"
+      ],
+      "interval": "5s",
+      "timeout": "5s",
+      "retries": 30,
+      "start_period": "10s",
+      "start_interval": "500ms"
+    },
+    "develop": {
+      "watch": [
+        {
+          "action": "sync+restart",
+          "path": "../docker/Caddyfile",
+          "target": "/etc/caddy/Caddyfile"
+        },
+        {
+          "action": "sync+restart",
+          "path": "../.certs",
+          "target": "/certs"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/index.html",
+          "target": "/srv/shell/index.html"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/shell.css",
+          "target": "/srv/shell/shell.css"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/boot.js",
+          "target": "/srv/shell/boot.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../offline-first-sw.js",
+          "target": "/srv/offline-first-sw.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/shell.yaml",
+          "target": "/srv/shell/shell.yaml"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/shell.json",
+          "target": "/srv/shell/shell.json"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/design.css",
+          "target": "/srv/shell/design.css"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/screens/arena.html",
+          "target": "/srv/shell/screens/arena.html"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/screens/arena.css",
+          "target": "/srv/shell/screens/arena.css"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/screens/lobby.html",
+          "target": "/srv/shell/screens/lobby.html"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/screens/lobby.css",
+          "target": "/srv/shell/screens/lobby.css"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/handlers/enter_arena.js",
+          "target": "/srv/shell/handlers/enter_arena.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/handlers/match_control.js",
+          "target": "/srv/shell/handlers/match_control.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/handlers/referee.js",
+          "target": "/srv/shell/handlers/referee.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/vendor/babylon/babylon.js",
+          "target": "/srv/shell/vendor/babylon/babylon.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/vendor/babylon/license.md",
+          "target": "/srv/shell/vendor/babylon/license.md"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/vendor/babylon/NOTICE.md",
+          "target": "/srv/shell/vendor/babylon/NOTICE.md"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/vendor/babylon/SOURCE.md",
+          "target": "/srv/shell/vendor/babylon/SOURCE.md"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/actors.js",
+          "target": "/srv/shell/engine/actors.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/assets.js",
+          "target": "/srv/shell/engine/assets.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/audio.js",
+          "target": "/srv/shell/engine/audio.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/bridge.js",
+          "target": "/srv/shell/engine/bridge.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/catalog.js",
+          "target": "/srv/shell/engine/catalog.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/collide.js",
+          "target": "/srv/shell/engine/collide.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/combat.js",
+          "target": "/srv/shell/engine/combat.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/constants.js",
+          "target": "/srv/shell/engine/constants.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/level.js",
+          "target": "/srv/shell/engine/level.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/monsters.js",
+          "target": "/srv/shell/engine/monsters.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/monsters_table.js",
+          "target": "/srv/shell/engine/monsters_table.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/movers.js",
+          "target": "/srv/shell/engine/movers.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/noise.js",
+          "target": "/srv/shell/engine/noise.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/player.js",
+          "target": "/srv/shell/engine/player.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/projectiles.js",
+          "target": "/srv/shell/engine/projectiles.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/referee.js",
+          "target": "/srv/shell/engine/referee.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/renderer.js",
+          "target": "/srv/shell/engine/renderer.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/sectors.js",
+          "target": "/srv/shell/engine/sectors.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/simulation.js",
+          "target": "/srv/shell/engine/simulation.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/sprites.js",
+          "target": "/srv/shell/engine/sprites.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/trace.js",
+          "target": "/srv/shell/engine/trace.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/engine/weapons.js",
+          "target": "/srv/shell/engine/weapons.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../shell/handlers/referee.js",
+          "target": "/srv/shell/handlers/referee.js"
+        },
+        {
+          "action": "rebuild",
+          "path": "../showcase.html",
+          "target": "/srv/showcase.html"
+        },
+        {
+          "action": "rebuild",
+          "path": "../brief.html",
+          "target": "/srv/docs/brief.html"
+        },
+        {
+          "action": "rebuild",
+          "path": "../ir.html",
+          "target": "/srv/docs/ir.html"
+        },
+        {
+          "action": "rebuild",
+          "path": "../ir/card.css",
+          "target": "/srv/docs/ir/card.css"
+        },
+        {
+          "action": "rebuild",
+          "path": "../acceptance.md",
+          "target": "/srv/docs/acceptance.md"
+        },
+        {
+          "action": "rebuild",
+          "path": "../DESIGN.md",
+          "target": "/srv/docs/DESIGN.md"
+        },
+        {
+          "action": "rebuild",
+          "path": "../robots.txt",
+          "target": "/srv/robots.txt"
+        },
+        {
+          "action": "rebuild",
+          "path": "../sitemap.xml",
+          "target": "/srv/sitemap.xml"
+        }
+      ]
+    }
+  },
+  "dockerfile": {
+    "preamble": [],
+    "preambleCopyContexts": [],
+    "from": {
+      "name": "caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f"
+    },
+    "add": [],
+    "mounts": [],
+    "secrets": {},
+    "extra_hosts": [],
+    "epilogue": [],
+    "copy": [
+      {
+        "from": {
+          "name": "tarampampam/microcheck:1@sha256:79c187c05bfa67518078bf4db117771942fa8fe107dc79a905861c75ddf28dfa"
+        },
+        "srcs": [
+          "/bin/httpcheck"
+        ],
+        "dst": "/usr/local/bin/httpcheck",
+        "chmod": "755",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      },
+      {
+        "from": null,
+        "srcs": [
+          "docker/Caddyfile"
+        ],
+        "dst": "/etc/caddy/Caddyfile",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      },
+      {
+        "from": null,
+        "srcs": [
+          ".cert[s]"
+        ],
+        "dst": "/certs/",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      },
+      {
+        "from": {
+          "ref": ":served",
+          "name": "doom-served"
+        },
+        "srcs": [
+          "/served/omnishell/"
+        ],
+        "dst": "/omnishell/",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      },
+      {
+        "from": {
+          "ref": ":served",
+          "name": "doom-served"
+        },
+        "srcs": [
+          "/served/"
+        ],
+        "dst": "/srv/",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      },
+      {
+        "from": {
+          "ref": ":served",
+          "name": "doom-served"
+        },
+        "srcs": [
+          "/served.scripts"
+        ],
+        "dst": "/etc/caddy/release-scripts",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      }
+    ],
+    "healthcheck": {
+      "test": [
+        "CMD",
+        "httpcheck",
+        "http://127.0.0.1:8080/health"
+      ],
+      "interval": "5s",
+      "timeout": "5s",
+      "retries": 30,
+      "start_period": "10s"
+    },
+    "expose": [],
+    "entrypoint": null,
+    "incremental": false,
+    "cmd": null
+  },
+  "entrypoint": {
+    "do": "case \"${ORIGIN#http://}\" in \"$ORIGIN\") h=${ORIGIN#https://};; *) h=${ORIGIN#http://};; esac; case \"$h\" in \"$ORIGIN\"|\"\"|*[!A-Za-z0-9.:-]*) echo \"ORIGIN '$ORIGIN' is no origin: set it to the scheme and host readers reach the door at, as https://app.example\" >&2; exit 1;; esac; set -e -o pipefail; roots=$(caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile | tr , '\\n' | grep -o '\"root\":\"[^\"]*\"' | cut -d'\"' -f4 | sort -u); if [ -n \"$roots\" ]; then find $roots -type f ! -name '*.etag' -exec sh -c 'set -e; q=$1; shift; for f do h=$(sha256sum < \"$f\"); printf \"$q%s$q\" \"${h%% *}\" > \"$f.etag\"; done' sh '\"' {} +; fi; PRONTO_RELEASE_SCRIPTS=$(cat /etc/caddy/release-scripts 2>/dev/null || true); export PRONTO_RELEASE_SCRIPTS; if [ -f /certs/localhost.pem ]; then export CADDY_TLS='/certs/localhost.pem /certs/localhost-key.pem'; fi; exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile",
+    "shell": "sh",
+    "env": {
+      "ELECTRIC_SECRET": "${ELECTRIC_SECRET:-dev-electric-secret}",
+      "ORIGIN": "${ORIGIN:-https://localhost:${CADDY_TLS_HOST_PORT}}"
+    },
+    "after": {},
+    "host": true
+  },
+  "expose": {
+    "door": {
+      "port": 8443,
+      "publish": {
+        "environment": "CADDY_TLS_HOST_PORT"
+      }
+    }
+  },
+  "healthcheck": {
+    "template": "http",
+    "url": "http://127.0.0.1:8080/health",
+    "authorization": null,
+    "headers": [],
+    "interval": "5s",
+    "start_interval": "500ms",
+    "timeout": "5s",
+    "retries": 30,
+    "start_period": "10s"
+  },
+  "name": "caddy",
+  "project": "doom",
+  "dir": ".",
+  "activate": "",
+  "srcs": {
+    "globs": [
+      "docker/Caddyfile"
+    ],
+    "exclude": []
+  },
+  "outs": {
+    "globs": [],
+    "exclude": []
+  },
+  "state": {
+    "globs": []
+  },
+  "env": {},
+  "synthetics": {
+    "bayt": {
+      "name": "caddy_bayt",
+      "project": "doom",
+      "dir": ".",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          ".bayt/compose.caddy.yaml",
+          ".bayt/Dockerfile.caddy",
+          ".bayt/bayt.caddy.json",
+          ".bayt/Taskfile.yml",
+          ".bayt/Taskfile.bayt.yml",
+          ".bayt/process-compose.yaml"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "./.bayt/compose.caddy.yaml",
+        "./.bayt/compose.served.yaml"
+      ]
+    },
+    "outs": {
+      "name": "caddy_outs",
+      "project": "doom",
+      "dir": ".",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "./.bayt/compose.caddy.yaml",
+        "./.bayt/compose.served.yaml"
+      ]
+    },
+    "srcs": {
+      "name": "caddy_srcs",
+      "project": "doom",
+      "dir": ".",
+      "activate": "",
+      "srcs": {
+        "globs": [],
+        "exclude": []
+      },
+      "outs": {
+        "globs": [
+          "docker/Caddyfile"
+        ],
+        "exclude": []
+      },
+      "env": {},
+      "visibility": "internal",
+      "deps": [],
+      "transitiveDeps": [
+        "served_outs_srcs"
+      ],
+      "transitiveCrossDeps": [],
+      "chainedDeps": [],
+      "cmds": [],
+      "cache": {
+        "full": false,
+        "similar": false
+      },
+      "upClosure": [
+        "./.bayt/compose.caddy.yaml",
+        "./.bayt/compose.served.yaml"
+      ]
+    }
+  },
+  "visibility": "internal",
+  "emitsSrcs": true,
+  "deps": [
+    "served_outs"
+  ],
+  "sameProjectDeps": [
+    "served_outs"
+  ],
+  "transitiveDeps": [
+    "served_outs"
+  ],
+  "transitiveCrossDeps": [],
+  "upClosure": [
+    "./.bayt/compose.caddy.yaml",
+    "./.bayt/compose.served.yaml"
+  ],
+  "chainedDeps": [
+    {
+      "name": "served_outs",
+      "project": "doom",
+      "dir": ".",
+      "outs": {
+        "globs": [],
+        "exclude": []
+      }
+    }
+  ],
+  "cmds": [],
+  "cache": {
+    "full": false,
+    "similar": false
+  }
+}
