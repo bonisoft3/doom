@@ -32,7 +32,7 @@ import (
 
 #Toolchain: {
 	...
-	tools: {"github:bonisoft3/bayt": "0.67.0", ...}
+	tools: {"github:bonisoft3/bayt": "0.68.0", ...}
 	say: say: {
 		...
 
@@ -286,6 +286,13 @@ import (
 			if t.dockerfile.from.name != _|_
 			if B._mechaContexts[t.dockerfile.from.name] != _|_ {
 				(k): compose: build: additional_contexts: (t.dockerfile.from.name): B._mechaContexts[t.dockerfile.from.name]
+			}
+		}
+		targets: {for k, t in B._mechaRuntime.targets
+			if t != null && t.dockerfile != _|_ && t.dockerfile.copy != _|_
+			for c in t.dockerfile.copy if c.from != _|_ if c.from.name != _|_
+			if B._mechaContexts[c.from.name] != _|_ {
+				(k): compose: build: additional_contexts: (c.from.name): B._mechaContexts[c.from.name]
 			}
 		}
 		targets: {

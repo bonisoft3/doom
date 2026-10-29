@@ -3,3 +3,4 @@ services:
   doom-caddy:
     ports:
     - ${CADDY_TLS_HOST_PORT:-24809}:8443
+    - ${CADDY_TLS_HOST_PORT:-24809}:8443/udp
