@@ -55,3 +55,5 @@ _irAccepts: {
 if !_deriving {
 	code: meta: tests: [Id=string]: accepts: _irAccepts[Id]
 }
+
+code: meta: ladder: ["journal/2026-10-28-cloudflare-arena.png"]

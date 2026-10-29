@@ -271,7 +271,7 @@ A repository can also pin the sayt version it expects under the `self` block:
 ```yaml
 say:
   self:
-    version: "v0.45.1"
+    version: "v0.45.2"
 ```
 
 When the invoked sayt's version differs from the pin, it re-execs itself through the colocated `saytw` wrapper with `SAYT_VERSION` set to the pinned version, so every contributor and CI run uses the same sayt regardless of what's installed. The `sayt/install` GitHub action treats this pin as the version authority.
@@ -851,3 +851,7 @@ dependencies on a very tight leash.
 `sayt release --dry-run` previews the version computed from conventional commits. Before publishing, update `VERSION` and its pinned copies, verify with `sayt lint`, and merge the changes.
 
 Release automation publishes the CUE module, binaries, source archives, and container images for the tagged version.
+
+## License
+
+[MIT](LICENSE). The repository wrapper scripts [`saytw`](saytw) and [`saytw.ps1`](saytw.ps1) are under `0BSD`.

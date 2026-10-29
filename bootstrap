@@ -33,9 +33,11 @@ install_mise() {
 
 	echo "Installing Mise version $mise_version at $mise_install_path..."
 	# Fetched whole before it runs: piped into sh, a failed download is an
-	# empty script that exits 0, and setup goes on without mise.
-	installer=$(curl -fsSL "https://mise.run") || return 1
-	printf '%s\n' "$installer" | MISE_INSTALL_PATH=$mise_install_path MISE_VERSION=$mise_version sh || return 1
+	# empty script that exits 0, and setup goes on without mise. Both the
+	# installer and the archive come from the pinned GitHub release so fan-out
+	# CI jobs do not stall on mise.run / mise.jdx.dev connection limits.
+	installer=$(curl -fsSL --retry 5 --retry-all-errors "https://github.com/jdx/mise/releases/download/$mise_version/install.sh") || return 1
+	printf '%s\n' "$installer" | MISE_INSTALL_PATH=$mise_install_path MISE_VERSION=$mise_version MISE_INSTALL_FROM_GITHUB=1 sh || return 1
 	[ -x "$mise_install_path" ] || { echo "the installer left no mise at $mise_install_path" >&2; return 1; }
 	echo "Mise installation completed."
 }

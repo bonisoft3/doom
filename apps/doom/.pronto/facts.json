@@ -71,11 +71,11 @@
   "artifact": [
     {"path":"program.cue","sha256":"33cfda580942e14786595f776d7c99c722ebaa308c8f76a0a58edbf539b0fd88","derived":false},
     {"path":"DESIGN.md","sha256":"72f819a242e0966550638e33f743f169b4143c5cac9a425edbeefe58f2aeb272","derived":false},
-    {"path":"ir.html","sha256":"78bb1520a49cfbf533fd98c9c68766e5810785282698c0ecb6f550f7bdd4e1d3","derived":false},
+    {"path":"ir.html","sha256":"42d96a29995c6d55836015d3b44babfe20b869ce2f8c5e6087b50eb143b887a2","derived":false},
     {"path":"acceptance.md","sha256":"c1ab5e4f36600b04c4bc1e5a264ce09e383cca38a4afaf9797e5d643ed0c87b1","derived":false},
     {"path":".pronto/cel.json","sha256":"767a63e494df7a1c3df013977a20044cfc52f42a36de1d9da02e5317311cb047","derived":true},
     {"path":"program_cel.cue","sha256":"8c7551ced354d851d57cbad68bd5deee852844ff5d9f61ac76fe87480013f4c9","derived":true},
-    {"path":"program_derived.cue","sha256":"29b72d270e24c0378062fb6f00af5a914fecac53319736e757aae52ba3834b2f","derived":true},
+    {"path":"program_derived.cue","sha256":"f6df956f68378a63ec454df7256f81e2a0701101081d16fd5ef17addc0177b37","derived":true},
     {"path":"shell/screens/arena.css","sha256":"6633dd6c05e25c4268c7f2da172d6fe9ba04243bbbbffe47a892865491dc827e","derived":false},
     {"path":"shell/screens/lobby.css","sha256":"9ebd0c4e90c50491dcec6bdcc635455f0976bb46bc1b45b909026fbaac8eb35e","derived":false},
     {"path":"shell/design.css","sha256":"ea67cc13f4d1a2dc23ea8efae58db2c5ca3f3f3a75b94cf716cb9dc6fe773215","derived":true}
@@ -2094,11 +2094,12 @@
     {"file":"shell/assets/things/troou.png","target":"/srv/shell/assets/things/troou.png"},
     {"file":"shell/assets/things/ykeya.png","target":"/srv/shell/assets/things/ykeya.png"},
     {"file":"shell/assets/things/ykeyb.png","target":"/srv/shell/assets/things/ykeyb.png"},
-    {"file":"brief.html","target":"/srv/docs/brief.html"},
+    {"file":"journal.html","target":"/srv/docs/journal.html"},
     {"file":"ir.html","target":"/srv/docs/ir.html"},
     {"file":"ir/card.css","target":"/srv/docs/ir/card.css"},
     {"file":"acceptance.md","target":"/srv/docs/acceptance.md"},
     {"file":"DESIGN.md","target":"/srv/docs/DESIGN.md"},
+    {"file":"journal/2026-10-28-cloudflare-arena.png","target":"/srv/docs/journal/2026-10-28-cloudflare-arena.png"},
     {"file":"robots.txt","target":"/srv/robots.txt"},
     {"file":"sitemap.xml","target":"/srv/sitemap.xml"}
   ],

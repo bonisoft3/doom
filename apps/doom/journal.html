@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Doom — Journal</title>
+<style>
+  body { margin:0; background:#101719; color:#edf0ee; font:18px/1.6 system-ui, sans-serif; }
+  main { max-width:1100px; margin:auto; padding:48px 24px; display:grid; gap:36px; }
+  h1 { font-size:48px; line-height:1.1; margin:8px 0; }
+  h2 { margin:12px 0 8px; }
+  h3 { margin:14px 0 6px; }
+  p, ul { max-width:800px; }
+  article { border-top:1px solid #475356; padding-top:24px; }
+  time, .eyebrow { color:#9ed9b9; font-size:13px; text-transform:uppercase; letter-spacing:.12em; font-weight:700; display:block; }
+  img { max-width:100%; height:auto; border:1px solid #475356; border-radius:8px; }
+  figure { margin:24px 0; }
+  figcaption { font-size:14px; color:#b5bfbc; margin-top:6px; }
+  a { color:#9ed9b9; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="eyebrow">Phobos Deathmatch · Project journal</span>
+    <h1>Phobos Deathmatch — 90s Multiplayer Arena on Pronto</h1>
+    <p>A 90s first-person deathmatch arena set on the UAC Phobos base: enter your callsign, drop into a 3D raycast/Babylon corridor arena with bots or live players, pick up shotguns and armor shards, and race to the frag limit with a classic status-bar HUD. <a href="#initial-brief">Latest product brief ↓</a></p>
+  </header>
+
+  <article id="turn-2026-10-28">
+    <time datetime="2026-10-28">2026-10-28 · Cloudflare Release</time>
+    <h2>The arena reaches the edge</h2>
+    <p>Before this turn, Doom declared no release target. Its vendored game modules prevented a single-file Pages build, while the Cloudflare builder required a database. The static Worker path now serves the same addressed game assets without introducing an unused database.</p>
+    <figure><img src="journal/2026-10-28-cloudflare-arena.png" alt="Doom running an active match in the textured 3D arena with its status HUD"><figcaption>Actual local release in Chromium, after starting a match. The scene contains 734 meshes and reports no page errors.</figcaption></figure>
+    <p>The release work exposed a missing renderer dependency and Trusted Types and viewport issues. Babylon is now pinned and local, with a documented compatibility adaptation for the terminal's SES environment. The integration and post-release verification journeys start the real game and check that the active scene renders.</p>
+  </article>
+
+  <article id="initial-brief">
+    <time datetime="2026-10-01">2026-10-01 · Initial Brief</time>
+    <h2>Doom Arena — 90s Deathmatch on Phobos</h2>
+    <p>Step into the UAC Phobos installation. Grab a shotgun, pick up armor, strafe around corners, and frag opponents in high-speed arena combat. The game runs identically in an offline browser tab against simulated bots or connected over WebTransport to edge arena shards.</p>
+    <h3>Data</h3>
+    <ul>
+      <li><code>Match</code> — one match session: map name, frag limit, time limit, elapsed ticks, current phase (<code>warmup</code>, <code>active</code>, <code>over</code>), and winner handle.</li>
+      <li><code>Player</code> — one marine in the arena: handle, shirt color, health (0–100), armor (0–100), active weapon, ammo inventory, score (frags), and ping.</li>
+      <li><code>Frag</code> — a registered kill event: match id, killer id, victim id, weapon used, and tick timestamp.</li>
+      <li><code>Item</code> — an arena pickup entity: type (health, armor, ammo, shotgun, chaingun, rocket), position (x, y, z), and respawn cooldown ticks.</li>
+      <li><code>Tick</code> — the monotonic 35Hz simulation step counter.</li>
+    </ul>
+    <h3>Screens</h3>
+    <ul>
+      <li><strong>The Arena (<code>/</code>)</strong> — Hardware-accelerated 3D world rendering the <code>e1m1.gltf</code> facility with dynamic sector lighting, billboard sprite actors, top-right frag feed, bottom status HUD (ammo, health, Doomguy face mugshot, armor, arms matrix), and match intermission overlay.</li>
+      <li><strong>The Lobby (<code>/lobby</code>)</strong> — Pre-match staging screen with player handle input, marine armor tint selector, frag limit, and time limit options.</li>
+    </ul>
+  </article>
+</main>
+</body>
+</html>

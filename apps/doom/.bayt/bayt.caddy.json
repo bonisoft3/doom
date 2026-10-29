@@ -260,8 +260,8 @@
         },
         {
           "action": "rebuild",
-          "path": "../brief.html",
-          "target": "/srv/docs/brief.html"
+          "path": "../journal.html",
+          "target": "/srv/docs/journal.html"
         },
         {
           "action": "rebuild",
@@ -282,6 +282,11 @@
           "action": "rebuild",
           "path": "../DESIGN.md",
           "target": "/srv/docs/DESIGN.md"
+        },
+        {
+          "action": "rebuild",
+          "path": "../journal/2026-10-28-cloudflare-arena.png",
+          "target": "/srv/docs/journal/2026-10-28-cloudflare-arena.png"
         },
         {
           "action": "rebuild",
