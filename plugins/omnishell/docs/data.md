@@ -50,6 +50,11 @@ asked for:
   `toArrayWhenReady` answers on the first row, which renders half a list as the
   list. A read holds the view while it waits, so a region released mid-load
   (a Back press) still gets its answer and its refresh ends.
+- **Until then a read answers from elsewhere, whole.** A load is a chain of
+  trips, so a first read asks the server once, racing the view, and the view
+  takes over when it settles. Its last answer or a carried read serves the same
+  way. A table the tab has written waits for the view, whose rows include what
+  the server may not have yet.
 - **A failed subset is charged to the views that were loading it, and only
   those.** mecha's client tells each failure as it happens and keeps none,
   since a failure kept on the collection would fail every later view of the
@@ -143,8 +148,9 @@ several regions reads its world from `state.rows`, not `state.items`.
 The command goes in the return. `then` is not an effect but the next event,
 delivered to the same reduce after the writes land: after `delay` on the
 terminal's clock, so `?clock=manual` holds it; with a draw when it says
-`seed: true`, since the compartment has no randomness and `?seed=` replays the
-draw; with `with` carried across. A value can be recorded and a promise
+`seed: true`, or a whole version-4 key when it says `uuid: true`, since the
+compartment has no randomness and `?seed=` replays the draw; with `with` carried
+across. A value can be recorded and a promise
 cannot, so a reduce returning one throws.
 
 Under `?seed=` each reduce draws from a stream of its own, seeded from the

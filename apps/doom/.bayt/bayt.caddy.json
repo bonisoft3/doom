@@ -260,6 +260,16 @@
         },
         {
           "action": "rebuild",
+          "path": "../brief.md",
+          "target": "/srv/docs/brief.md"
+        },
+        {
+          "action": "rebuild",
+          "path": "../brief.html",
+          "target": "/srv/docs/brief.html"
+        },
+        {
+          "action": "rebuild",
           "path": "../journal.html",
           "target": "/srv/docs/journal.html"
         },
@@ -282,6 +292,21 @@
           "action": "rebuild",
           "path": "../DESIGN.md",
           "target": "/srv/docs/DESIGN.md"
+        },
+        {
+          "action": "rebuild",
+          "path": "../ir/neighbourhood-app.svg",
+          "target": "/srv/docs/ir/neighbourhood-app.svg"
+        },
+        {
+          "action": "rebuild",
+          "path": "../ir/neighbourhood-arena.svg",
+          "target": "/srv/docs/ir/neighbourhood-arena.svg"
+        },
+        {
+          "action": "rebuild",
+          "path": "../ir/neighbourhood-lobby.svg",
+          "target": "/srv/docs/ir/neighbourhood-lobby.svg"
         },
         {
           "action": "rebuild",

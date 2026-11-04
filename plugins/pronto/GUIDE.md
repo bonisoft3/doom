@@ -32,8 +32,8 @@ An app is one directory. What you author:
 
 | File | What it is |
 |---|---|
-| `brief.md` | the product-altitude source |
-| `journal.html`, `journal/*` | the living browser presentation and reverse-chronological turn log (starting with the initial brief entry; dated entries and assets in `journal/`, periodically refreshed with a new brief snapshot and garbage-collected) |
+| `brief.md` | the product-altitude source: what the app is today and the next sprint's turns; rewritten at the sprint wrap, edited by people at any time (`brief.html`, a fixed emitted page, renders it in the browser) |
+| `journal.html`, `journal/*` | the reverse-chronological turn log, authored by turns and read by people and models (dated entries and assets in `journal/`, collected at the sprint wrap) |
 | `ir.html`, `ir/*.html` | the engineering design doc, pinned per compile (optionally composed from `ir/*.html` fragments) |
 | `acceptance.md` | the flat checklist whose `{#accept-…}` ids every test and path cites |
 | `DESIGN.md` | the design block in its frontmatter, the argument in its body |
@@ -281,7 +281,7 @@ An entity is a durable identity — a Cap'n Proto type id, with ordinals for its
 fields — and no model mints it:
 
 ```bash
-deno run --allow-read --allow-write plugins/pronto/identity.ts mint apps/<name>
+deno run --allow-read --allow-write --allow-run plugins/pronto/identity.ts mint apps/<name>
 ```
 
 stamps every entity and field that has none and grows `.pronto/identity.json`;

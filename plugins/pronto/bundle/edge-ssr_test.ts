@@ -82,12 +82,19 @@ Deno.test('the Cron Trigger follows the Worker that holds the object', async () 
     await Deno.writeTextFile(path.join(out, 'public/shell/shell.json'), JSON.stringify({ routes: [], tables: [], schema: {} }))
     await securityHeaders(out)
     const triggers = { crons: ['0 * * * *'] }
+    const r2_buckets = [{ binding: 'BLOB_OBJECTS', bucket_name: 'objects' }]
+    const vars = { BLOB_URL: 'https://app.example/blobs/mecha-objects' }
     for (const mode of ['existing', 'separate'] as const) {
-      await Deno.writeTextFile(path.join(out, 'wrangler.jsonc'), JSON.stringify({ assets: { directory: './public' }, triggers }))
+      await Deno.writeTextFile(path.join(out, 'wrangler.jsonc'), JSON.stringify({ assets: { directory: './public' }, triggers, r2_buckets, vars }))
       await writeEdgeSsr(out, omnishell, mecha, 'app', 'https://app.example', [], mode)
       const entry = JSON.parse(await Deno.readTextFile(path.join(out, 'wrangler.jsonc')))
       assert.deepEqual(entry.triggers, mode === 'existing' ? triggers : undefined)
-      if (mode === 'separate') assert.deepEqual(JSON.parse(await Deno.readTextFile(path.join(out, 'database.jsonc'))).triggers, triggers)
+      if (mode === 'separate') {
+        const database = JSON.parse(await Deno.readTextFile(path.join(out, 'database.jsonc')))
+        assert.deepEqual(database.triggers, triggers)
+        // The object writes an effect's bytes, and without these only production would notice.
+        assert.deepEqual([database.r2_buckets, database.vars], [r2_buckets, vars])
+      }
       const entrySource = await Deno.readTextFile(path.join(out, 'src/index.ts'))
       const databaseSource = await Deno.readTextFile(path.join(out, 'src/database.ts'))
       if (mode === 'existing') {
@@ -326,11 +333,19 @@ Deno.test('edge SSR caches 200 renders, serves fresh hits with pronto-reads, and
     assert.match(refreshedHtml, /Render 3/)
     assert.match(refreshedHtml, /id="pronto-reads"/)
 
-    // A public write marker in caches.default invalidates the cached SSR HTML.
-    store.set('https://edge-cache.invalid/v1/0/writes/public', new Response('1700000000000'))
+    // A write makes a document stale rather than absent: it moved the key once, so one visitor's
+    // write cost the next reader of every page a render of seconds, with nothing on screen.
+    await new Promise(resolve => setTimeout(resolve, 2))
+    store.set('https://edge-cache.invalid/v1/0/writes/public', new Response(String(Date.now())))
+    await new Promise(resolve => setTimeout(resolve, 2))
     const afterWrite = await worker.fetch(new Request('https://app.example/'), env, ctx)
-    assert.equal(afterWrite.headers.get('x-edge-cache'), 'miss')
+    assert.equal(afterWrite.headers.get('x-edge-cache'), 'stale')
+    assert.doesNotMatch(await afterWrite.text(), /id="pronto-reads"/)
+    await Promise.all(background.splice(0))
     assert.equal(renders, 4)
+    const afterRender = await worker.fetch(new Request('https://app.example/'), env, ctx)
+    assert.equal(afterRender.headers.get('x-edge-cache'), 'hit')
+    await afterRender.text()
 
     // A private / SPA route skips RENDERER + CLUSTER.render and serves the SPA entry with Link hints on GET and HEAD.
     const spa = await worker.fetch(new Request('https://app.example/gerenciar', { headers: { accept: 'text/html' } }), env, ctx)
@@ -485,7 +500,7 @@ Deno.test('SSR retains native images and origin-bound assets in both database mo
     await securityHeaders(out)
     const bindings = {
       images: { binding: 'IMAGES' },
-      r2_buckets: [{ binding: 'IMAGE_OBJECTS', bucket_name: 'public-images' }],
+      r2_buckets: [{ binding: 'BLOB_OBJECTS', bucket_name: 'public-images' }],
       vars: { IMAGE_SOURCE_BUCKET: 'original-bucket' },
     }
     for (const mode of ['existing', 'separate'] as const) {
@@ -497,16 +512,16 @@ Deno.test('SSR retains native images and origin-bound assets in both database mo
       const imageImport = source.match(/^import \{ edgeImage \} from '([^']+)'$/m)
       assert.ok(imageImport)
       assert.ok((await Deno.stat(path.resolve(out, 'src', imageImport[1]))).isFile)
-      const worker = new Function('edgeImage', 'originAssets', 'edgeWorker', 'acceptedLanguages', 'routeAt', 'hints', 'edgeHints', 'caches', source
+      const worker = new Function('edgeImage', 'IMAGE_WIDTHS', 'originAssets', 'edgeWorker', 'acceptedLanguages', 'routeAt', 'hints', 'edgeHints', 'caches', source
         .replace(/^import .+$/gm, '').replace(/^export \{.+$/gm, '').replace('export default', 'return'))(
-          edgeImage, originAssets, { fetch: () => new Response('api') }, () => [], () => null, {}, () => null,
+          edgeImage, [320, 640, 960], originAssets, { fetch: () => new Response('api') }, () => [], () => null, {}, () => null,
           { default: { match: () => Promise.resolve(undefined), put: () => Promise.resolve() } },
         )
       let transforms = 0
       const env = {
         ...bindings.vars,
         ASSETS: { fetch: () => Promise.resolve(new Response('{{- $o := placeholder "http.vars.origin" -}}\n<url>https://pronto-origin.invalid/en</url>', { headers: { 'content-type': 'application/xml' } })) },
-        IMAGE_OBJECTS: {
+        BLOB_OBJECTS: {
           get: async (key: string) => { assert.equal(key, 'card.png'); return { etag: 'source', body: new Blob(['png']).stream() } },
           head: async () => ({ etag: 'source' }),
         },

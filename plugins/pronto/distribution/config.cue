@@ -6,8 +6,8 @@ import (
 	saycfg "bonisoft.org/plugins/sayt:say"
 )
 
-#Version:     "1.0.2"
-#SaytVersion: "0.45.2"
+#Version:     "1.0.9"
+#SaytVersion: "0.45.3"
 
 // Test-only modules: an app's tests import the hybrid oracle harnesses by URL,
 // and the portable types are refreshed from the checkout's mecha client. An

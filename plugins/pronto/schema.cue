@@ -1590,23 +1590,34 @@ import (
 		// Switches the cluster's blob plane on (#emit): rclone-s3 object store
 		// and imgproxy behind the caddy /blobs and /img routes.
 		blobs: *false | bool
-		// A public read-only edge image plane backed by an R2 bucket.
+		// The edge's image service, the layer above blob storage (R2 there,
+		// docs/release-targets.md#cloudflare): /img transforms what the bucket holds.
 		edgeImages?: {
-			bucket:       =~"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
-			sourceBucket: =~"^[a-z0-9][a-z0-9.-]*[a-z0-9]$"
+			// A bucket name rows written before mecha-objects still spell.
+			sourceBucket?: =~"^[a-z0-9][a-z0-9.-]*[a-z0-9]$"
+			// "paid" when this account has a card behind Cloudflare Images: the
+			// release refuses a screen's data-image-src without it.
+			plan: *"free" | "paid"
 		}
-		// A static set the blob plane carries from the start: every
+		if edgeImages != _|_ {blobs: true}
+		// Files that are part of the app, as its code is: named by their sha256,
+		// served at /seed-assets/<file> and read by code, never by a row. Every
 		// { file, sha256 } the app-relative manifest names, fetched from the
-		// public origin and refused unless its bytes hash to its sha256. The
-		// edge release ships it as immutable assets under /blobs/mecha-objects.
-		blobSeed?: {
+		// public origin and refused unless its bytes hash to its sha256. In a
+		// cluster the door routes them to the app's own target `assets` on 8787.
+		seedAssets?: {
 			manifest: string
 			origin:   =~"^https://[^/]+(/.*[^/])?$"
 		}
-		if blobSeed != _|_ {blobs: true}
+		// Objects that are part of the data, as seed rows are: the files in this
+		// app-relative directory, named by their sha256, go to blob storage at
+		// seed/<file> on every target, where a row names them as it names any
+		// other object. Pages has no blob storage, and inlines them.
+		seedBlobs?: dir: string
+		if seedBlobs != _|_ {blobs: true}
 		// First-class 3-tier AI model architecture (`browser`, `cheap`, `heavy`)
 		// with per-tier and per-release-target model overrides. Backend tiers
-		// (`cheap`, `heavy`) route through mecha's bifrost AI gateway; the
+		// (`cheap`, `heavy`) route through mecha's tsbifrost AI gateway; the
 		// `browser` tier runs in an `agent` worker unit via `capabilities.vendored`.
 		ai?: {
 			text?:    *["browser", "cheap", "heavy"] | ([...mecha.#AiTier] & list.UniqueItems())
@@ -1877,6 +1888,15 @@ import (
 			}
 		})
 	}}
+	// The column each chart owns, by entity name (a chart names its entity by
+	// name or by table) and then field: its initial state and its states, read
+	// once here for every column's lookup (#machineColumn). A machine reads the
+	// App, so a lookup handed the machines themselves copies the App each time.
+	_machineColumns: {if A.state.machines != _|_ for _, m in A.state.machines if m.field != _|_ if m.initial != _|_
+		for en, e in A.state.entities if m.entity == en || m.entity == e.table {
+			(en): (m.field): {initial: m.initial, states: [for n, _ in m.states {n}]}
+		}
+	}
 	state: machines: [mn=string]: {
 		let m = A.state.machines[mn]
 		for en, e in A.state.entities if m.entity == en || m.entity == e.table {
@@ -1975,6 +1995,25 @@ import (
 		},
 	]) {v}]
 	_cortexRefusal: [if len(_cortexViolations) == 0 {true}, _cortexViolations[0]][0] & true
+	// A signal names where a Mecha machine went: `signal:<table>.<state>`, a
+	// state of the machine on that table's entity. One naming no such state is
+	// an arrow nothing ever fires, which a walk of the chart would still cover.
+	_cortexNodes: [if A.state.cortex != _|_ for cName, c in A.state.cortex for sName, st in c.config.states
+		for at, node in {
+			(sName): st
+			if st.states != _|_ for n1, s1 in st.states {
+				"\(sName).\(n1)": s1
+				if s1.states != _|_ for n2, s2 in s1.states {"\(sName).\(n1).\(n2)": s2}
+			}
+		} {chart: cName, state: at, on: [if node.on != _|_ {node.on}, {}][0]}]
+	_cortexSignalViolations: [for n in _cortexNodes for k, _ in n.on if strings.HasPrefix(k, "signal:")
+		let parts = strings.SplitN(strings.TrimPrefix(k, "signal:"), ".", 2)
+		let entity = [if len(parts) == 2 if A._entityByTable[parts[0]] != _|_ {A._entityByTable[parts[0]]}, ""][0]
+		let states = [if A.state.machines != _|_ for _, m in A.state.machines if m.entity == entity {m.states}]
+		if len(parts) != 2 || entity == "" || len(states) == 0 || states[0][parts[len(parts)-1]] == _|_ {
+			"\(n.chart).\(n.state): \(k) names no state of a Mecha machine on its table"
+		}]
+	_cortexSignalRefusal: [if len(_cortexSignalViolations) == 0 {true}, _cortexSignalViolations[0]][0] & true
 	// The XState a Mecha machine cannot run is refused rather than read as
 	// something else: its step is its reducer's, so it invokes nothing, and an
 	// event names one transition.

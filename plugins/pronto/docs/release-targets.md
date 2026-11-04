@@ -135,6 +135,9 @@ relays when available.
 
 ## pages
 
+A page is one file with no blob storage behind it, so a `seedBlobs` object's URL
+becomes its bytes in the scripts it carries: the file is that tier's storage.
+
 `sayt release@pages` runs [`bundle.ts`](../bundle/bundle.ts), which writes
 `dist/browser/index.html`: the interpreter and mecha's browser cluster as one
 `deno bundle` module written inline, the files `shell.json` serves in a base64
@@ -264,18 +267,32 @@ in the page fills `MonthStat` or `CategoryMonthStat`.
 
 ## cloudflare
 
-`code.capabilities.edgeImages` binds a dedicated public-image R2 `bucket` and
-Cloudflare Images. Its `sourceBucket` preserves existing image paths:
-`/img/insecure/plain/s3://<sourceBucket>/<key>` reads `<key>` from R2 and returns
-WebP. All objects in this bucket are public through that route; it must not
-contain private uploads. Provision the bucket and copy originals before
-switching stored image URLs. The release does not copy external objects.
+Blob storage is R2 here, the bucket `<app>-mecha-objects`, which `capabilities.blobs`
+binds and the release does not create: it holds what a row names, generated and
+imported pictures and `seedBlobs` alike, and `/blobs/mecha-objects/<key>` answers it
+raw, read-only. R2 may ask for a card on the account.
 
-The adapter accepts GET and HEAD, rejects transformation parameters and other
-source buckets, and caches transformed responses by object ETag for one hour.
-This covers plain imgproxy URLs, not the full imgproxy transformation language.
+`code.capabilities.edgeImages` adds the image service above it, Cloudflare Images:
+`/img/insecure/plain/s3://mecha-objects/<key>` reads `<key>` and returns WebP.
+`mecha-objects` is the plane's logical name on every target, so a row's URL does not
+depend on where it was written; `sourceBucket` keeps a physical name older rows
+spelled. All objects in this bucket are public through those routes; it must not
+contain private uploads.
+
+The adapter accepts GET and HEAD, rejects other source buckets, and caches
+transformed responses by object ETag and size for one hour. Besides plain
+imgproxy URLs it answers `rs:fit:<w>:<w>` at the widths a screen's
+[`data-image-src`](../../omnishell/REFERENCE.md#responsive-images) offers, and
+refuses every other transformation: each size of each picture is a paid
+transformation.
+
+A screen's `data-image-src` is the only thing that asks for those sizes, and the
+release refuses it unless `edgeImages` declares `plan: "paid"`, so an app that
+never uses the attribute needs no card for it. Free is no card anywhere; paid is at
+least one service needing one. A card alone may not move Cloudflare Images off its
+free allowance, past which a new transformation answers `9422`: subscribe under
+Media → Images → Plans. The plain route needs no plan and has the same allowance.
 The scoped Cache API leaves dynamic page and authentication caching unchanged.
-
 
 `sayt release@cloudflare` runs [`edge.ts`](../bundle/edge.ts), which writes
 `dist/cloudflare/`. The terminal modules and declared public files live in
@@ -340,13 +357,18 @@ The integrated deployment has been exercised on Paid; Free enforcement,
 including the documented per-object storage limit discrepancy, requires
 verification on a Free account before claiming a free deployment.
 
-A program that declares `capabilities.blobSeed` (a manifest of `{file, sha256}`
-and the public origin the files come from) ships that set as static assets
-under `public/blobs/mecha-objects/`, the URLs the blob plane answers in compose:
-each file is fetched from the origin and refused unless it hashes to its sha256
-([`edge-blobs.ts`](../bundle/edge-blobs.ts)), and `_headers` marks `/blobs/*`
-immutable. Blobs written at run time, such as uploads, have no store at the
-edge yet; a seed is the set known at release.
+Two kinds of seeded file, by who refers to them. `capabilities.seedAssets` (a manifest
+of `{file, sha256}` and the public origin they come from) is part of the app, read by
+its code: the release ships it as static files under `public/seed-assets/`, each fetched
+from the origin and refused unless it hashes to its sha256
+([`edge-blobs.ts`](../bundle/edge-blobs.ts)), and `_headers` marks `/seed-assets/*`
+immutable. `capabilities.seedBlobs` (a directory in the app) is part of the data, what
+a row names: each file, named by its sha256, goes to blob storage at `seed/<file>`, by
+the publish here and by a one-shot `seed-blobs` target in a cluster, and is then an
+object like any other. Pages has no blob storage, and inlines them
+([pages](#pages)). An effect's answered bytes are written at run time to the same
+bucket ([the airlock's blobs](../../../libraries/mecha/services/airlock/README.md#a-handler));
+uploads have no store at the edge yet.
 
 The release also contains PGlite for workerd in `pglite/`, baked from mecha's pinned sources
 ([pglite-workerd](../../../libraries/mecha/packages/pglite-workerd/README.md));

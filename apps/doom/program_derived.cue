@@ -56,4 +56,4 @@ if !_deriving {
 	code: meta: tests: [Id=string]: accepts: _irAccepts[Id]
 }
 
-code: meta: ladder: ["journal/2026-10-28-cloudflare-arena.png"]
+code: meta: ladder: ["ir/neighbourhood-app.svg","ir/neighbourhood-arena.svg","ir/neighbourhood-lobby.svg","journal/2026-10-28-cloudflare-arena.png"]

@@ -61,7 +61,13 @@ function electric(server, schema) {
       const id = url.searchParams.get("id")?.slice(3);
       const rows = server[table];
       const current = rows.find((r) => r.id === id);
-      if (!init.method || init.method === "GET") return Response.json(current ? [current] : []);
+      if (!init.method || init.method === "GET") {
+        // It states only keys, joining nothing, and any other answer would pass for the server's.
+        const keyed = url.searchParams.get("id")?.startsWith("eq.") && !url.searchParams.get("select")?.includes("(") &&
+          [...url.searchParams.keys()].every((k) => k === "id" || k === "select");
+        if (!keyed) return new Response("{}", { status: 503 });
+        return Response.json(current ? [current] : []);
+      }
       const expected = url.searchParams.get("txid")?.slice(3);
       if (expected !== undefined && current?.txid !== expected) return Response.json([]);
       const txid = ++transaction;
@@ -463,7 +469,7 @@ const lazy = (name, fn, options = {}) =>
       const online = Object.getOwnPropertyDescriptor(navigator, "onLine");
       Object.defineProperty(navigator, "onLine", { value: true, configurable: true });
       try {
-        await withBrowser({ fetch: fake.fetcher }, (createStore) => fn({ fake, store: createStore(fake.base, options.config ?? config()) }));
+        await withBrowser({ fetch: options.fetcher?.(fake) ?? fake.fetcher }, (createStore) => fn({ fake, store: createStore(fake.base, options.config ?? config()) }));
       } finally {
         if (online) Object.defineProperty(navigator, "onLine", online);
         else delete navigator.onLine;
@@ -590,6 +596,102 @@ lazy("a joined player index is recreated after on-demand collection cleanup", as
   const repeatedPlayerSubsets = fake.subsets.filter(subset => subset.table === "player").slice(initialPlayerSubsets.length);
   checkPlayerSubsets(repeatedPlayerSubsets, "the repeated read stays scoped to referenced IDs");
 }, { server: goalWorld(), electricSchema: goalSchema, config: goalConfig });
+
+// A view's load is a chain of trips, and a first read waited on all of it with
+// the screen hidden, so an unvisited deck took seconds to open.
+const trips = [];
+lazy("a first read of a lazy table answers from one trip, and the view takes over", async ({ fake, store }) => {
+  const release = fake.hold("player_game");
+  const opts = { filter: "game_id=eq.g1" };
+  const wakes = [];
+  const stop = store.subscribe("player_game", (changes) => wakes.push(changes), opts);
+  const rows = await store.query("player_game", null, opts);
+  assert(trips.length === 1, `one trip, got ${trips.length}`);
+  assert(JSON.stringify(rows.map((r) => r.id).sort()) === JSON.stringify(["pg1", "pg2"]), `the server's rows: ${JSON.stringify(rows)}`);
+  assert(![...globalThis.__prontoViews.values()][0].complete(), "answered with the view still loading");
+  // A fold acts on what it is given, and a server answer is as current as one gets.
+  const current = await store.query("player_game", null, { ...opts, current: true });
+  assert(current.length === 2, `a current read answers too: ${JSON.stringify(current)}`);
+  release();
+  await until(() => wakes.length > 0, "the load's end woke the reader the trip answered");
+  stop();
+}, {
+  fetcher: (fake) => (input, init) => {
+    const url = new URL(String(input));
+    if (!url.pathname.endsWith("/crud/player_game") || (init?.method && init.method !== "GET")) return fake.fetcher(input, init);
+    trips.push(url.search);
+    return Promise.resolve(Response.json(world().player_game.filter((r) => r.game_id === "g1")));
+  },
+});
+
+const rereads = [];
+lazy("reads of a loading view share one trip, and the view still finishes with no subscriber", async ({ fake, store }) => {
+  // A fold's read has no subscription, so answering it early let go of the view: each wake rebuilt
+  // it, found it loading and asked the server again, some two hundred requests to reopen a deck.
+  const release = fake.hold("player_game");
+  const opts = { filter: "game_id=eq.g1", current: true };
+  for (let i = 0; i < 4; i++) {
+    assert((await store.query("player_game", null, opts)).length === 2, "the trip answered");
+    await tick(5);
+  }
+  assert(rereads.length === 1, `one trip for one load, got ${rereads.length}`);
+  const subsets = fake.subsets.filter((s) => s.table === "player_game").length;
+  assert(subsets === 1, `one subset for one load, got ${subsets}`);
+  const [view] = [...globalThis.__prontoViews.values()];
+  assert(view !== undefined && !view.complete(), "the view outlived the reads it answered");
+  release();
+  // The trip lets go only once the view has settled, so one still loading stays here.
+  await until(() => globalThis.__prontoViews.size === 0, "the view finished and the trip let go");
+}, {
+  fetcher: (fake) => (input, init) => {
+    const url = new URL(String(input));
+    if (!url.pathname.endsWith("/crud/player_game") || (init?.method && init.method !== "GET")) return fake.fetcher(input, init);
+    rereads.push(url.search);
+    return Promise.resolve(Response.json(world().player_game.filter((r) => r.game_id === "g1")));
+  },
+});
+
+const perRow = [];
+lazy("a read stamped per row leaves its load to the batched subset", async ({ store }) => {
+  // A home screen's deck covers are a read per deck, and a trip each sent two hundred requests
+  // where the store's subset loads batch them into one.
+  const opts = { filter: "game_id=eq.g1", perRow: true };
+  const stop = store.subscribe("player_game", () => {}, opts);
+  assert((await store.query("player_game", null, opts)).length === 2, "the view answered");
+  assert(perRow.length === 0, `no trip, got ${perRow.length}`);
+  stop();
+}, {
+  fetcher: (fake) => (input, init) => {
+    if (/\/crud\/player_game\?/.test(String(input)) && (!init?.method || init.method === "GET")) perRow.push(String(input));
+    return fake.fetcher(input, init);
+  },
+});
+
+lazy("a per-row list fills in behind the screen, and is woken when its load ends", async ({ fake, store }) => {
+  // A reader waited on every row's read to see any of the screen: a deck's thumbnails held the whole page.
+  const release = fake.hold("player_game");
+  const opts = { filter: "game_id=eq.g1", perRow: true, fillsIn: true };
+  let woke = false;
+  const stop = store.subscribe("player_game", () => { woke = true; }, opts);
+  assert((await store.query("player_game", null, opts)).length === 0, "nothing yet, without waiting");
+  assert(!woke, "not woken while loading");
+  release();
+  await until(() => woke, "the load's end woke the reader");
+  assert((await store.query("player_game", null, opts)).length === 2, "and it fills in");
+  stop();
+});
+
+lazy("a stalled trip leaves a lazy read to its view", async ({ fake, store }) => {
+  const opts = { filter: "game_id=eq.g1" };
+  const stop = store.subscribe("player_game", () => {}, opts);
+  const rows = await store.query("player_game", null, opts);
+  assert(rows.length === 2, `the view answered: ${JSON.stringify(rows)}`);
+  assert(fake.subsets.length > 0, "from its subset");
+  stop();
+}, {
+  fetcher: (fake) => (input, init) =>
+    /\/crud\/player_game\?/.test(String(input)) && (!init?.method || init.method === "GET") ? new Promise(() => {}) : fake.fetcher(input, init),
+});
 
 lazy("a typed column's equality is one literal of its type, and no `or`", async ({ fake, store }) => {
   const opts = { filter: "round=eq.3" };

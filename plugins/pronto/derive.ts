@@ -934,6 +934,9 @@ export async function derive(appDir: string): Promise<void> {
       "journal.html: no such file — the cluster serves it from the build context, so it must exist in the app (most often the review ladder's journal.html, authored per SPEC's journal.html section)",
     );
   }
+  if (exp.statics.some((s) => s.file === "brief.md") && !(await exists(`${appDir}/brief.md`))) {
+    problems.push("brief.md: no such file — author brief.md per SPEC's brief.md section; the emitted brief.html renders it");
+  }
 
   // The palette's one declaration: the shared layer owns a token, a screen may
   // only consume it. Read here rather than at lint so the rule is a join.
@@ -975,7 +978,13 @@ export async function derive(appDir: string): Promise<void> {
   };
   await walkJournal("journal");
   journalFiles.sort();
-  const ladder = [...new Set([...irFragments, ...journalFiles])].sort();
+  // The screen images ir-render writes beside the ir and the ir embeds; a
+  // release serves the ladder alone, so a page that embeds them owes them here.
+  const irImages: string[] = [];
+  for (const entry of await entries(`${appDir}/ir`, [])) {
+    if (entry.isFile && entry.name.endsWith(".svg")) irImages.push(`ir/${entry.name}`);
+  }
+  const ladder = [...new Set([...irFragments, ...irImages, ...journalFiles])].sort();
 
   await Deno.writeTextFile(`${appDir}/program_derived.cue`, renderDerived(pkg, screens, available, notes, accepts, ladder));
   const scanned = appCss.map(({ path, css }) => ({ path, ...scanStylesheet(css) }));

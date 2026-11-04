@@ -24,6 +24,7 @@ import {
   routeHref,
   routeParams,
   Unanswered,
+  IMAGE_WIDTHS,
 } from "./fragment.js";
 import { evaluateRole } from "./jessie.js";
 import { hostDomScreen } from "./host-dom.js";
@@ -153,6 +154,13 @@ const screenFile = (url) => {
   return pending;
 };
 
+/** A release's moved files, by pathname: a screen mounted later fetches them anew. */
+export function forgetFiles(pathnames) {
+  for (const held of [kept, prefetched]) {
+    for (const href of [...held.keys()]) if (pathnames.includes(new URL(href).pathname)) held.delete(href);
+  }
+}
+
 /** Starts a route's markup and stylesheet loading before the mount that reads
  * them exists. The stylesheet is installed the moment it lands, so the shared
  * sheets it @imports load beside the data plane rather than after it. */
@@ -188,6 +196,35 @@ export function prefetchScreen(appBase, route) {
     pending.catch(() => {});
     if (!kept.has(url.href)) prefetched.set(url.href, pending);
   }
+  return ahead[0][1];
+}
+
+// A page being left takes its requests with it: what fails then failed because
+// the document is going, and is not said.
+let leaving = false;
+globalThis.addEventListener?.("pagehide", () => { leaving = true; });
+globalThis.addEventListener?.("pageshow", () => { leaving = false; });
+const report = (err) => {
+  if (!leaving) console.error(err);
+};
+
+/** The reads a screen's markup declares that its address alone decides, as its regions will ask
+ * them. A region in a row's template, or reading anything but the params, waits for its mount. */
+export function addressedReads(text, params) {
+  const ctx = { params };
+  const reads = [];
+  for (const region of parseMarkup(document, text).querySelectorAll("[data-live]")) {
+    const { live: table, filter, order, select } = region.dataset;
+    if ([...(filter ?? "").matchAll(PLACEHOLDERS)].some(([, expr]) => !expr.startsWith("param."))) continue;
+    const parsed = order === undefined || order === "" ? undefined : parseOrder(order, table);
+    if (parsed !== undefined && parsed.literal === undefined) continue;
+    const opts = {};
+    if (filter) opts.filter = interpolateFilter(filter, ctx);
+    if (select) opts.select = select;
+    if (parsed !== undefined) opts.order = parsed.literal;
+    reads.push({ table, order: opts.order, opts });
+  }
+  return reads;
 }
 
 // A slot read that matched more than one row. Its own type so the outage
@@ -270,6 +307,11 @@ const streams = new Map();
 let drawn = 0;
 // The reduce each draw is made for, by the name the markup calls it.
 const actorOf = new WeakMap();
+const lateReduce = (handlers, name) => {
+  const reduce = (...args) => handlers.get(name)(...args);
+  actorOf.set(reduce, name);
+  return reduce;
+};
 if (MANUAL) {
   globalThis.__prontoClock = {
     // Returns how many waits are still outstanding, so a caller can tell a
@@ -351,12 +393,11 @@ const draw = (actor = "") => {
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
   return (t ^ (t >>> 14)) >>> 0;
 };
-// A key the terminal mints for a row or a blob. Seeded, it is four draws laid
-// out as a version-4 uuid, so a replayed create writes the same key; unseeded,
-// it is the platform's own.
-const mintUuid = () => {
-  if (seeded === null) return crypto.randomUUID();
-  const hex = [draw(), draw(), draw(), draw()].map((n) => n.toString(16).padStart(8, "0")).join("");
+// A key the terminal mints for a row, a blob or a reduce: four draws laid out
+// as a version-4 uuid, so a replayed create writes the same key. Its draws are
+// the seed's or getRandomValues, which unlike randomUUID needs no secure context.
+const mintUuid = (actor) => {
+  const hex = [draw(actor), draw(actor), draw(actor), draw(actor)].map((n) => n.toString(16).padStart(8, "0")).join("");
   const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20)}`;
 };
@@ -618,6 +659,39 @@ const BOOL_ATTRS = new Set([
   "disabled", "checked", "readonly", "required", "selected", "hidden", "open", "multiple",
 ]);
 const BLANK_PIXEL = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+const IMAGE_FALLBACK_WIDTH = 640;
+const IMAGE_PLAIN = "/img/insecure/plain/";
+
+/** Markup that would waste data-image-src, refused wherever it renders. Each of these still
+ * draws a picture, or nothing, so nothing else says: without sizes a browser assumes the whole
+ * viewport, and auto only counts on a lazy image. */
+function checkImageSrc(el, template) {
+  if (el.localName !== "img") throw new Error(`data-image-src on <${el.localName}>; it binds an <img>`);
+  if (!PLACEHOLDER.test(template)) throw new Error(`data-image-src="${template}" binds a column; a literal picture is a plain src`);
+  const sizes = el.getAttribute("sizes");
+  if (!sizes) throw new Error(`data-image-src="${template}" needs sizes`);
+  if (/^\s*auto\b/i.test(sizes) && el.getAttribute("loading") !== "lazy") {
+    throw new Error(`data-image-src="${template}" has sizes="${sizes}", and auto needs loading="lazy"`);
+  }
+}
+
+/** A blob plane picture offered at each width, for the browser to choose by the
+ * space it has. Anything else has no size to ask for: a seeded `data:` picture
+ * stays itself, and a blank is the same deliberate blank a bound src is. */
+function bindImageSrc(el, value) {
+  // srcset splits its candidates on spaces and commas, which a src keeps as written.
+  const key = value.slice(IMAGE_PLAIN.length).replace(/[\s,]/g, encodeURIComponent);
+  const fitted = (w) => `/img/insecure/rs:fit:${w}:${w}/plain/${key}`;
+  const sized = value.startsWith(IMAGE_PLAIN);
+  const srcset = sized ? IMAGE_WIDTHS.map((w) => `${fitted(w)} ${w}w`).join(", ") : null;
+  const src = sized ? fitted(IMAGE_FALLBACK_WIDTH) : value || BLANK_PIXEL;
+  // Setting either again makes the browser choose again, and a region re-binds often.
+  if (el.getAttribute("srcset") !== srcset) {
+    if (srcset === null) el.removeAttribute("srcset");
+    else el.setAttribute("srcset", srcset);
+  }
+  if (el.getAttribute("src") !== src) el.setAttribute("src", src);
+}
 
 
 /** The language a screen is rendering in, from the most explicit thing its
@@ -629,6 +703,10 @@ const BLANK_PIXEL = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABA
 function localeOf(ctx) {
   return ctx?.params?.locale || ctx?.locale || ctx?.row?.locale || ctx?.i18n?.default;
 }
+
+// A binding the row does not carry: its own type so a row's message can tell
+// it from every other failure, which still stops the screen.
+class MissingBinding extends Error {}
 
 // {msg.x} and {msg[col]} read the catalogue; everything else is `binding`'s.
 function lookup(expr, ctx) {
@@ -673,7 +751,17 @@ function lookup(expr, ctx) {
       if (rowMsg !== null) return key;
       throw new Error(`unknown message {${expr}}`);
     }
-    if (Array.isArray(val)) return evaluateAst(val, ctx, activeLocale);
+    if (Array.isArray(val)) {
+      if (rowMsg === null) return evaluateAst(val, ctx, activeLocale);
+      // A row's message whose taken arms bind a column the row lacks is data
+      // too: the key surfaces for check-i18n instead of taking the screen down.
+      try {
+        return evaluateAst(val, ctx, activeLocale);
+      } catch (err) {
+        if (err instanceof MissingBinding) return key;
+        throw err;
+      }
+    }
     return val;
   }
   const v = binding(expr, row, params);
@@ -683,7 +771,7 @@ function lookup(expr, ctx) {
   // columns materialize when the synced row arrives. Bind blank instead of
   // crashing the screen out from under the pending row.
   if (r.$synced === false) return undefined;
-  throw new Error(`binding {${expr}} not in row [${Object.keys(r)}]`);
+  throw new MissingBinding(`binding {${expr}} not in row [${Object.keys(r)}]`);
 }
 
 /**
@@ -1458,6 +1546,7 @@ function bindElementAttributes(el, ctx, insideWalk = false) {
       if (parent.hasAttribute("data-text-format")) return;
     }
   }
+  if (el.hasAttribute?.("data-image-src")) checkImageSrc(el, el.getAttribute("data-image-src"));
   // setAttribute would consume the placeholder template; persistent regions
   // (singletons) re-bind on every refresh, so originals are stashed.
   let stash = el._prontoAttrs;
@@ -1489,7 +1578,7 @@ function bindElementAttributes(el, ctx, insideWalk = false) {
     const attr = { name, value: template };
     // The fixture adapter: an interpolated img src would fire a real request
     // the moment it is set; a transparent pixel keeps the layout box instead.
-    if (ctx.inert && el.localName === "img" && attr.name === "src") {
+    if (ctx.inert && el.localName === "img" && (attr.name === "src" || attr.name === "data-image-src")) {
       el.setAttribute("src", BLANK_PIXEL);
       continue;
     }
@@ -1511,11 +1600,9 @@ function bindElementAttributes(el, ctx, insideWalk = false) {
       // machine that clears the column must clear the control. Only focus
       // holds it, so a rebind never moves the caret under the reader.
       const machined = el.closest("[data-machine]") !== null;
-      const tabCompleted = Boolean(el._prontoTabCompleted);
-      if (tabCompleted) el._prontoTabCompleted = false;
-      if (machined && el === document.activeElement && !tabCompleted) continue;
+      if (machined && el === document.activeElement) continue;
       if (!machined && el.type !== "checkbox" && !submitsOnChange(el.closest("form"))) {
-        if ((el._prontoDirty || el === document.activeElement) && !tabCompleted) continue;
+        if (el._prontoDirty || el === document.activeElement) continue;
         guardEdits(el);
       }
       if (el.type === "checkbox") {
@@ -1552,6 +1639,10 @@ function bindElementAttributes(el, ctx, insideWalk = false) {
       }
     }
     const value = interpolate(template, ctx);
+    if (attr.name === "data-image-src") {
+      bindImageSrc(el, value);
+      continue;
+    }
     if (BOOL_ATTRS.has(attr.name)) {
       const present = value !== "" && value !== "false";
       if (present) el.setAttribute(attr.name, value);
@@ -1668,6 +1759,20 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   const folds = new Map();
   const work = new Set();
   const mutationWrites = new Set();
+  // A fold reads its named reads afresh on every wake, and with nothing holding
+  // their views between wakes each read was a new load whose rows woke the fold
+  // again. They are held while the screen is on show, and answer locally.
+  const namedHolds = new Map();
+  const holdNamedRead = (read, readOpts) => {
+    if (opts.mountUnits === false || held !== "shown") return;
+    const { current: _current, ...view } = readOpts;
+    const key = JSON.stringify([read.table, view]);
+    if (!namedHolds.has(key)) namedHolds.set(key, store.subscribe(read.table, () => {}, view));
+  };
+  const releaseNamedReads = () => {
+    for (const stop of namedHolds.values()) stop();
+    namedHolds.clear();
+  };
   screenOpts.registerMutationDrain?.(() => Promise.allSettled([...mutationWrites]));
   const derived = new Map();
   const dirty = new Set();
@@ -2286,7 +2391,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       // refusal's own rollback triggers exactly such a refresh, which would
       // clobber the state within milliseconds.
       const refused = (err) => {
-        console.error(err);
+        report(err);
         // With a mutation reduce mounted on the form's region, the refusal is
         // the reduce's event (see wireEvents' deliver) — the reduce writes the
         // words as a row, so the .store-error side channel stays untouched.
@@ -2393,7 +2498,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           const result = reduce(state, { type: "move", fromId, toId });
           await apply(result.updates ?? [], deliver);
         } catch (err) {
-          console.error(err);
+          report(err);
           setState("network-error");
         }
       });
@@ -2453,6 +2558,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           const opts = { current: true };
           if (r.filter !== undefined) opts.filter = interpolateFilter(r.filter, ctx);
           if (r.order !== undefined) opts.order = r.order;
+          holdNamedRead(r, opts);
           const rows = await store.query(r.table, r.order ?? null, opts);
           return [r.name, r.order === undefined ? sortByPk(r.table, rows) : rows];
         }),
@@ -2460,7 +2566,12 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       return Object.fromEntries(entries);
     };
 
-    const rowsReduce = region.dataset.onMutation && handlers.get(region.dataset.onMutation);
+    // Looked up as it is called, so a release's handler takes the region's next wake.
+    const rowsName = region.dataset.onMutation;
+    let rowsReduce = rowsName && handlers.get(rowsName);
+    if (rowsReduce) {
+      rowsReduce = lateReduce(handlers, rowsName);
+    }
     // Assigned by the machine block below when the machine declares "refused";
     // a refusal is then the machine's onError before it is anything else.
     const machineRefused = [];
@@ -2496,7 +2607,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       return fired;
     };
     const deliver = (entity, id, err) => {
-      console.error(err);
+      report(err);
       const fired = refusal(entity, id, err);
       if (machineRefused.length > 0) {
         for (const hear of machineRefused) hear(fired);
@@ -2508,7 +2619,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       region._prontoMachineRow = undefined;
       if (rowsReduce) {
         step(rowsReduce, fired, 0).catch((e) => {
-          console.error(e);
+          report(e);
           setState("network-error");
         });
         return;
@@ -2541,6 +2652,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       if (u.ifTxid !== undefined && (u.op !== "patch" || typeof u.ifTxid !== "string" || !/^[1-9][0-9]*$/.test(u.ifTxid) || BigInt(u.ifTxid) > 9223372036854775807n)) throw new Error("ifTxid requires a patch and a positive int64 decimal string");
       if (u.id === undefined) throw new Error(`a ${u.op} names no id — ${SHAPES}`);
       if (u.op !== "delete" && u.row === undefined) throw new Error(`a ${u.op} carries no row — ${SHAPES}`);
+      if (u.absent !== undefined && u.op !== "put") throw new Error(`absent columns fill a put's insert, not a ${u.op}`);
       return u.op;
     };
     /** Answers false when a refusal ended the batch, so a caller knows the
@@ -2573,7 +2685,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         const run = updates.slice(at, upto);
         try {
           if (op === "put") {
-            await submitMutation(store.write(entity, run.map((x) => ({ key: x.id, row: x.row })), (err) => deliver(entity, id, err)), active);
+            await submitMutation(store.write(entity, run.map((x) => ({ key: x.id, row: x.row, ...(x.absent === undefined ? {} : { absent: x.absent }) })), (err) => deliver(entity, id, err)), active);
           } else if (op === "delete") {
             await submitMutation(store.drop(entity, run.map((x) => x.id), (err) => deliver(entity, id, err)), active);
           } else {
@@ -2679,6 +2791,9 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       if (next.delay > 0) {
         pause?.();
         await rest(next.delay / TEMPO, { kind: "then", type: next.type });
+        // What a delay hands to the future is no part of what the screen waits for: begun before
+        // the screen is on show, settle would track its writes and keep the screen hidden.
+        await screenOpts.presented;
       }
       const carried = { type: next.type };
       // A draw the reduce asked for. It has no randomness of its own — the
@@ -2686,10 +2801,11 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       // again with it, the same way it says it wants to wait. The terminal
       // owning the draw is also what lets a screen be replayed: with ?seed= it
       // draws from that instead, and the same run comes back.
-      if (next.seed === true) {
+      if (next.seed === true || next.uuid === true) {
         const actor = actorOf.get(reduce);
         if (actor === undefined) throw new Error(`a draw asked for by a reduce no name was registered for, at "${next.type}"`);
-        carried.seed = draw(actor);
+        if (next.seed === true) carried.seed = draw(actor);
+        if (next.uuid === true) carried.uuid = mintUuid(actor);
       }
       if (next.with !== undefined) carried.with = next.with;
       if (carried.type === "intent:navigate") {
@@ -2721,67 +2837,6 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           const reduce = handlers.get(el.getAttribute(`data-on-${event}`));
           if (!reduce) return;
           try {
-            if (event === "click" && el.classList?.contains("field-combobox")) {
-              const wrap = el.closest(".studio-combobox-wrap");
-              if (wrap) {
-                for (const other of document.querySelectorAll(".studio-combobox-wrap[data-combo-open='true']")) {
-                  if (other !== wrap) other.removeAttribute("data-combo-open");
-                }
-                wrap.setAttribute("data-combo-open", "true");
-              }
-              return;
-            }
-            if (event === "click" && el.classList?.contains("combobox-chevron-btn")) {
-              e.preventDefault();
-              e.stopPropagation();
-              const wrap = el.closest(".studio-combobox-wrap");
-              if (wrap) {
-                const isOpen = wrap.getAttribute("data-combo-open") === "true";
-                for (const other of document.querySelectorAll(".studio-combobox-wrap[data-combo-open='true']")) {
-                  other.removeAttribute("data-combo-open");
-                }
-                if (!isOpen) {
-                  wrap.setAttribute("data-combo-open", "true");
-                  const inp = wrap.querySelector("input");
-                  inp?.focus();
-                }
-              }
-              return;
-            }
-            if (event === "click" && el.classList?.contains("combobox-option")) {
-              e.preventDefault();
-              e.stopPropagation();
-              const wrap = el.closest(".studio-combobox-wrap");
-              const inp = wrap?.querySelector("input");
-              const val = el.getAttribute("data-combo-value") ?? el.textContent?.trim() ?? "";
-              if (wrap) wrap.removeAttribute("data-combo-open");
-              if (inp && val) {
-                inp.value = val;
-                inp._prontoTabCompleted = true;
-                if (inp.id === "locale-input") {
-                  await step(reduce, { type: "change", from: "locale-input", value: val }, 0);
-                }
-              }
-              el.blur?.();
-              return;
-            }
-            if (event === "click" && el.id === "btn-create") {
-              const sc = el.closest(".studio-container");
-              if (sc) {
-                sc.setAttribute("data-status", "generating");
-                sc.setAttribute("data-state", "generating");
-              }
-              const prevBox = document.getElementById("preview-card-container");
-              if (prevBox) {
-                prevBox.setAttribute("data-tier-emoji", "⏳");
-                if (!String(prevBox.getAttribute("data-set-id") || "").startsWith("set-")) {
-                  prevBox.setAttribute("data-set-id", "set-pending");
-                }
-              }
-              for (const item of document.querySelectorAll(".press-ledger-item")) {
-                item.setAttribute("data-tier-emoji", "⏳");
-              }
-            }
             const fired = { type: event };
             if (id !== undefined) fired.id = id;
             // Which element fired, by the name it already has. A region binds
@@ -2802,27 +2857,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             }
             if (event === "keydown" && typeof e?.key === "string") {
               fired.key = e.key;
-              if (e.key === "Escape" || e.key === "Tab") {
-                const wrap = el.closest?.(".studio-combobox-wrap");
-                if (wrap) wrap.removeAttribute("data-combo-open");
-              }
-              if (
-                e.key === "Tab" &&
-                !e.shiftKey &&
-                !e.altKey &&
-                !e.ctrlKey &&
-                !e.metaKey &&
-                typeof el.value === "string" &&
-                el.value.trim() === ""
-              ) {
-                e.preventDefault();
-                el._prontoTabCompleted = true;
-                const ghost = el.parentElement?.querySelector?.(".field-ghost-value")?.textContent?.trim();
-                if (ghost && !el.hasAttribute("data-value")) {
-                  el.value = ghost;
-                  fired.value = ghost;
-                }
-              }
+              fired.modified = Boolean(e.shiftKey || e.altKey || e.ctrlKey || e.metaKey);
             }
             // Which animation ended, when one did. A screen runs more than one
             // clock — the terminal's own item arrivals among them — and they
@@ -2838,7 +2873,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             if (e?.detail !== null && typeof e?.detail === "object") fired.detail = e.detail;
             await step(reduce, fired, 0);
           } catch (err) {
-            console.error(err);
+            report(err);
             setState("network-error");
           }
         });
@@ -2850,17 +2885,6 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // the next [data-live], which binds its own.
     const bindTree = (root, id) => {
       if (handlers.size === 0) return;
-      if (typeof document !== "undefined" && !document._prontoComboOutsideWired) {
-        document._prontoComboOutsideWired = true;
-        document.addEventListener("click", (e) => {
-          const target = e.target;
-          for (const openWrap of document.querySelectorAll(".studio-combobox-wrap[data-combo-open='true']")) {
-            if (!target?.closest || target.closest(".studio-combobox-wrap") !== openWrap) {
-              openWrap.removeAttribute("data-combo-open");
-            }
-          }
-        });
-      }
       bind(root, id);
       for (const el of root.querySelectorAll("*")) {
         if (!ownedBy(el, root)) continue;
@@ -3172,6 +3196,21 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           }
         }
 
+        // Debug seam, like __prontoViews: which arrow fired, where it landed,
+        // and the region that fired it. Nothing is pushed unless something
+        // armed the array. Before the cascade its landing starts, so a replay reads them in order.
+        globalThis.__prontoMachineTrace?.push({
+          region,
+          // Which chart drew it. Two charts on one region share the element, so
+          // a walk filtering by region alone would read its sibling's arrows as
+          // its own — and the field is what tells them apart everywhere else.
+          field: machine.field,
+          state: chosen.origin,
+          key: chosen.key,
+          index: chosen.index,
+          to: arrowTarget ??
+            (Object.hasOwn(patch, machine.field) ? patch[machine.field] : row[machine.field]),
+        });
         // 4. onDone and always cascade
         let cascadeSteps = 0;
         while (targetState !== undefined && cascadeSteps < 10) {
@@ -3296,26 +3335,18 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           if (!progressed) break;
         }
 
-        // Debug seam, like __prontoViews: which arrow fired, where it landed,
-        // and the region that fired it. Nothing is pushed unless something
-        // armed the array.
-        globalThis.__prontoMachineTrace?.push({
-          region,
-          // Which chart drew it. Two charts on one region share the element, so
-          // a walk filtering by region alone would read its sibling's arrows as
-          // its own — and the field is what tells them apart everywhere else.
-          field: machine.field,
-          state: chosen.origin,
-          key: chosen.key,
-          index: chosen.index,
-          to: arrowTarget ??
-            (Object.hasOwn(patch, machine.field) ? patch[machine.field] : row[machine.field]),
-        });
         const out = { updates: [] };
         if (targetState !== undefined || Object.keys(patch).length > 0) {
-          const stated = { ...(row === region._prontoFallbackRow ? row : { id: row.id, [machine.field]: row[machine.field] }), ...patch };
+          // A write concluding from the fallback states the fallback's columns for
+          // an absent row only: a handler's write may have landed in the store
+          // before this slot refreshed, and stating them over it reverted it (an
+          // audience a reader chose became the default as they typed a topic).
+          const fromFallback = row === region._prontoFallbackRow;
+          // The fallback's own state is one of its columns: an arrow that names no
+          // target leaves a landed row's state as it is.
+          const stated = { id: row.id, ...(fromFallback ? {} : { [machine.field]: row[machine.field] }), ...patch };
           if (targetState !== undefined) stated[machine.field] = targetState;
-          out.updates = [{ op: "put", id: stated.id, row: stated }];
+          out.updates = [{ op: "put", id: stated.id, row: stated, ...(fromFallback ? { absent: row } : {}) }];
           // The chain's own view of the row: a raise delivered after this
           // write must conclude from it, not from the slot's last refresh —
           // the store's wake is asynchronous and the chain is not.
@@ -3395,7 +3426,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             if (region[mine("afterGen")] !== gen) return;
             await runMachine(timerReduce, { type: `after:${key}` });
           })().catch((err) => {
-            console.error(err);
+            report(err);
             setState("network-error");
           });
         }
@@ -3425,7 +3456,10 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             if (typeof ctl?.valueAsNumber === "number" && !Number.isNaN(ctl.valueAsNumber)) {
               fired.valueAsNumber = ctl.valueAsNumber;
             }
-            if (typeof e.key === "string") fired.key = e.key;
+            if (typeof e.key === "string") {
+              fired.key = e.key;
+              fired.modified = Boolean(e.shiftKey || e.altKey || e.ctrlKey || e.metaKey);
+            }
             // Only where the chart reads it (fragment.js POINTER_FIELDS).
             if (shape.pointer) Object.assign(fired, pointerIn(e, src ?? ctl));
             // The ARROW declares the gesture, not the type: one narrowed to an
@@ -3446,7 +3480,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             }
             await runMachine(machineReduce, fired);
           } catch (err) {
-            console.error(err);
+            report(err);
             setState("network-error");
           }
         });
@@ -3454,7 +3488,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       if (shape.handled.includes("refused")) {
         machineRefused.push((fired) => {
           runMachine(machineReduce, fired).catch((err) => {
-            console.error(err);
+            report(err);
             setState("network-error");
           });
         });
@@ -3467,7 +3501,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       if (shape.handled.includes("sync_ack")) {
         machineAck.push((fired) => {
           runMachine(machineReduce, fired).catch((err) => {
-            console.error(err);
+            report(err);
             setState("network-error");
           });
         });
@@ -3476,14 +3510,20 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       // them — re-arms on the refresh it causes; the entered flag covers the
       // machine's own moves.
       const current = (region._prontoMachineRow ?? getRows()[0])?.[machine.field];
-      if (current !== undefined && region[mine("armed")] !== current) {
-        armAfter(current);
+      if (current !== undefined) {
+        if (region[mine("armed")] !== current) armAfter(current);
+        // On every refresh, not only a new state: a fold's foreign fact arrives as a column,
+        // and this is the chart reading it.
         const node = resolveStateNode(current);
         if (node?.always !== undefined) {
           const alwaysList = machineCandidates(node.always).map((c, index) => ({ c, key: "always", index, origin: current }));
-          runMachine((state, event) => apply(machineRow(state), event, alwaysList), { type: "always" }).catch((err) => {
+          const standing = region._prontoMachineRow ?? getRows()[0];
+          // Asked of the row in hand first: a step reads the region's whole world, on every refresh.
+          // Held to the state it was asked in, which a gesture may have left by the time it runs,
+          // and a raise it chains is an ordinary event.
+          if (evalCandidates(alwaysList, { items: [standing] }, { type: "always" }) !== undefined) runMachine((state, event) => event.type === "always" ? apply(machineRow(state), event, alwaysList, current) : machineReduce(state, event), { type: "always" }).catch((err) => {
             failed(err);
-            console.error(err);
+            report(err);
           });
         }
       }
@@ -3538,7 +3578,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             .catch((err) => {
               rejected = true;
               failed(err);
-              console.error(err);
+              report(err);
               setState("network-error");
             })
             .finally(() => {
@@ -3673,6 +3713,12 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       opts.filter = fromEnclosing(() => interpolateFilter(region.dataset.filter, ctx), table, "data-filter");
     }
     if (region.dataset.select) opts.select = region.dataset.select;
+    // One read per row, which a trip each would flood the server with. A list of them with nothing
+    // to say while empty fills in behind the screen, whose reader waited on all of them to see any.
+    if (screenOpts.mountUnits !== false && region.parentElement?.closest("[data-id]")) {
+      opts.perRow = true;
+      if (region.dataset.empty === undefined && region.querySelector(":scope > template[data-item]") !== null) opts.fillsIn = true;
+    }
     // Carried in opts as well as passed to query, because the store keys a
     // maintained view on the whole read — order included — and subscribe is
     // handed nothing but opts.
@@ -3973,20 +4019,18 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // markup is one form — a row of per-label file buttons, a per-row action —
     // is not inside itself, and querySelectorAll alone would leave it unwired,
     // clicking into silence.
+    let drawn = null;
     const stamp = (entry, tmpl) => {
       // A row already drawn under this key — a served document's, or one
       // written into the markup — is the row's node from here on, and the
       // binding below brings it to the row as it is now. One an older template
-      // drew is first morphed to this one's item (adoptTree).
+      // drew is first morphed to this one's item (adoptTree). One map for the
+      // pass: scanning the children per row kept a served list of thousands of
+      // rows on the main thread for half a second, with the page looking ready.
       let node = null;
       if (first) {
-        const key = String(entry.ctx.row.id);
-        for (const child of region.children) {
-          if (child.dataset?.id === key) {
-            node = child;
-            break;
-          }
-        }
+        drawn ??= new Map([...region.children].reverse().map((child) => [child.dataset?.id, child]));
+        node = drawn.get(String(entry.ctx.row.id)) ?? null;
       }
       if (node) {
         const item = tmpl.content.firstElementChild.cloneNode(true);
@@ -4030,10 +4074,20 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // that a failure is told apart as the read's rather than the render's.
     let reading = false;
     const refresh = async (changes) => {
+      drawn = null;
       reading = true;
       const stored = await store.query(table, opts.order, opts);
       reading = false;
       if (stopped) return;
+      // A tab's own table with nothing in it has not been derived yet, which
+      // says nothing of the rows a served document drew from the server's: the
+      // adoption wiped them, and a deck's title blinked out for a second.
+      if (first && served !== undefined && templates.length > 0 && stored.length === 0 && region.children.length > 0 &&
+          cfg.schema?.[table]?.durability === "tab" && (await store.query(table, null, {})).length === 0) {
+        if (stopped) return;
+        finishOwn();
+        return;
+      }
       currentRows = stored;
       const rows = projected(stored);
       // Which rows this pass has to reconsider. null means all of them: a
@@ -4209,8 +4263,10 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             const nodes = fresh.map((f) => f.node);
             for (const f of fresh) if (f.tmpl._prontoHasKeys) wireKeysIn(f.node);
             const { deliver, apply } = wireEvents(region, nodes, () => currentRows, handlers, ctx);
-            const reduce = handlers.get(region.dataset.handler);
-            if (reduce && dragging) wireDrag(region, nodes, () => currentRows, reduce, deliver, apply);
+            const dragName = region.dataset.handler;
+            if (handlers.has(dragName) && dragging) {
+              wireDrag(region, nodes, () => currentRows, lateReduce(handlers, dragName), deliver, apply);
+            }
             for (const f of fresh) f.wired = true;
             first = false;
           };
@@ -4451,7 +4507,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           paint?.reject(err);
           throw err;
         }
-        console.error(err);
+        report(err);
         if (top || (reading && !shown)) {
           outages.add(guarded);
           setState("network-error");
@@ -4651,6 +4707,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   // waiting on the newer template's modules meets either when it resumes.
   const stopScreen = () => {
     held = "stopped";
+    releaseNamedReads();
     const errors = [];
     for (const stop of [...regions.map(r => () => r.stop()), ...cleanups.splice(0)]) {
       try { stop(); } catch (error) { errors.push(error); }
@@ -4737,6 +4794,18 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     updateStyle: async (css) => {
       await installStyle(styleId, css, isMountActive);
     },
+    // A release's handlers, by pathname. A chain already running ends on the one it began on.
+    updateHandlers: async (paths) => {
+      const moved = [...handlers.keys()].flatMap((name) => {
+        const file = route.files.handlers?.find((p) => p.split("/").pop() === `${name}.js`);
+        return file !== undefined && paths.includes(new URL(file, appBase).pathname) ? [[name, file]] : [];
+      });
+      const taken = await Promise.all(moved.map(async ([name, file]) => [name, await loadModule(appBase, file, "handler", endowmentsMap)]));
+      for (const [name, module] of taken) {
+        actorOf.set(module, name);
+        handlers.set(name, module);
+      }
+    },
     // Which template this screen was drawn from (templateHash).
     cas,
     get links() {
@@ -4753,6 +4822,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       if (held !== "shown") return;
       held = "paused";
       for (const r of regions) r.pause();
+      releaseNamedReads();
       return Promise.allSettled([...mutationWrites]);
     },
     resume: async () => {
@@ -4916,19 +4986,26 @@ function morphTree(live, target, { slots }) {
     if (own(name) || (PLACEHOLDER.test(value) && !regionAttr(name))) continue;
     if (live.getAttribute(name) !== value) live.setAttribute(name, value);
   }
+  // What data-image-src bound is no template's to state, so its absence there says nothing.
+  // The template decides: one moving to a plain src takes the srcset away with it.
+  const imageBinding = (name) => name === "src" || name === "srcset";
   for (const { name } of [...live.attributes]) {
-    if (!own(name) && !target.hasAttribute(name)) live.removeAttribute(name);
+    if (own(name) || target.hasAttribute(name)) continue;
+    if (!(imageBinding(name) && target.hasAttribute("data-image-src"))) live.removeAttribute(name);
   }
+  const imageTemplated = new WeakSet();
   const halted = new WeakSet();
   morphlex.morphInner(live, target, {
     preserveChanges: true,
     beforeNodeVisited: (from, to) => {
+      if (to.nodeType === 1 && to.hasAttribute("data-image-src")) imageTemplated.add(from);
       if (to.nodeType === 1 && to.hasAttribute("data-live") && (!slots || listRegion(to))) halted.add(from);
       return true;
     },
     beforeChildrenVisited: (from) =>
       from.nodeType !== 1 || !(halted.has(from) || from.hasAttribute("data-hatch") || from.hasAttribute("data-text")),
-    beforeAttributeUpdated: (_el, name, value) => value === null || !PLACEHOLDER.test(value) || regionAttr(name),
+    beforeAttributeUpdated: (el, name, value) =>
+      value === null ? !(imageBinding(name) && imageTemplated.has(el)) : !PLACEHOLDER.test(value) || regionAttr(name),
   });
 }
 

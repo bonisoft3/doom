@@ -30,6 +30,12 @@ the terminal's navigation; nested states track multi-machine coordination.
 machine without a lease, a sync child over a machine without a join, and a sync
 child whose screen's route does not carry its `instance`.
 
+A signal names where a Mecha machine went: `signal:<table>.<state>` is a state
+of the machine on that table's entity, and `#App` refuses one naming no such
+state, an arrow nothing would ever fire. `.pronto/check-inputs.json` carries
+each chart and the machines, so a test can replay a machine's paths as the
+signals they send and hold the chart to hearing each one.
+
 ## Affordances, Commands, and Intents
 
 To prevent overlap with [[../../omnishell/docs/machines#Omnishell machines|Omnishell machines]],
@@ -127,7 +133,7 @@ replays like any other screen:
 
 - its state is a row the module writes, at the durability the app declares;
 - a pause is a `then` delay on the terminal's clock;
-- entropy is the terminal's draw (`then: {seed: true}`), recorded on a row and
+- entropy is the terminal's draw (`then: {seed: true}` or `{uuid: true}`), recorded on a row and
   expanded purely — never ambient randomness or the wall clock, which the cage
   refuses anyway;
 - a gesture writes an intent row, and the fold the app seats with

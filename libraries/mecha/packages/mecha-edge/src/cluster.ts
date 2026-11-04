@@ -15,9 +15,11 @@ import {
 } from '@simplewebauthn/server'
 import { createRestHandler, planRead, ReadQueryError, type ReadSchema } from '@mecha/postgrest-js'
 import { shapeWhere, signJwt, verifyJwt } from '../../../services/auth/jwt.ts'
+import { prepareAuthTables, sealAuthTables } from '../../../services/auth/schema.ts'
 import { createDrains, type Drain, type Drains } from '../../mecha-browser/drains.ts'
 import { createShapes } from '../../mecha-browser/shapes.ts'
 import { publicSnapshot, PublicSnapshotCapacity, type PublicSnapshot } from './public-snapshot.ts'
+import { lanes } from './lanes.ts'
 
 export interface EdgeClusterConfig {
   db: PGlite
@@ -77,33 +79,11 @@ const now = () => Math.floor(Date.now() / 1000)
 
 export async function createEdgeCluster(cfg: EdgeClusterConfig): Promise<EdgeCluster> {
   const { db, secret, log } = cfg
-  // PGlite is one connection: interactive renders and API reads/writes take
-  // the high lane ahead of background shape tokens, subset snapshots, and
-  // prefetches, with 1 low turn after every 4 consecutive high turns.
-  let running = false
-  let highStreak = 0
-  const high: Array<() => void> = []
-  const low: Array<() => void> = []
-  function pump() {
-    if (running) return
-    const takeLow = low.length > 0 && (high.length === 0 || highStreak >= 4)
-    const next = takeLow ? low.shift() : high.shift()
-    if (!next) return
-    highStreak = takeLow ? 0 : highStreak + 1
-    running = true
-    next()
-  }
-  function serialize<T>(fn: () => Promise<T>, priority: 'high' | 'low' = 'high'): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      ;(priority === 'high' ? high : low).push(() => {
-        Promise.resolve().then(fn).then(resolve, reject).finally(() => {
-          running = false
-          pump()
-        })
-      })
-      pump()
-    })
-  }
+  const lane = lanes()
+  // Interactive API work takes the api lane; background shape tokens, subset snapshots and
+  // prefetches take the low one.
+  const serialize = <T>(fn: () => Promise<T>, priority: 'high' | 'low' = 'high'): Promise<T> =>
+    lane(fn, priority === 'high' ? 'api' : 'low')
   const serializeLow = <T>(fn: () => Promise<T>): Promise<T> => serialize(fn, 'low')
   let shapes: Awaited<ReturnType<typeof createShapes>>
   let shapesReady: Promise<void> | undefined
@@ -151,30 +131,27 @@ export async function createEdgeCluster(cfg: EdgeClusterConfig): Promise<EdgeClu
     for (const row of rows) publicCache.set(row.name, row.p)
   }
   let authTablesReady: Promise<void> | undefined
+  // The passkeys live in mecha_auth, as the host auth service keeps them
+  // (services/auth/schema.ts); the REST handler serves public alone.
   const createAuthTables = async () => {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS webauthn_credential (
-        id text primary key,
-        user_id uuid not null references app_user(id) on delete cascade,
-        public_key bytea not null,
-        counter bigint not null default 0
-      );
-      ALTER TABLE webauthn_credential ENABLE ROW LEVEL SECURITY;
-      REVOKE ALL ON webauthn_credential FROM PUBLIC;
-      DO $$
-      DECLARE
-        r text;
-      BEGIN
-        FOR r IN SELECT rolname FROM pg_roles WHERE rolname IN ('app_user', 'service', 'anon') LOOP
-          EXECUTE format('REVOKE ALL ON webauthn_credential FROM %I', r);
-        END LOOP;
-      END $$;
-    `)
+    await db.transaction(async (tx) => {
+      await tx.exec(prepareAuthTables(['webauthn_credential']))
+      await tx.exec(sealAuthTables(['webauthn_credential']))
+    })
   }
   const ensureAuthTables = () => authTablesReady ??= serialize(createAuthTables).catch((e) => {
     authTablesReady = undefined
     throw e
   })
+  // Before the cluster answers anything: an earlier release's table in public
+  // moves, and the grants are taken back, where the cluster keeps passkeys.
+  // One that has none makes its tables at the first ceremony.
+  {
+    const { rows: [held] } = await db.query<{ passkeys: boolean }>(
+      `SELECT to_regclass('public.webauthn_credential') IS NOT NULL OR to_regnamespace('mecha_auth') IS NOT NULL AS passkeys`,
+    )
+    if (held.passkeys) await ensureAuthTables()
+  }
 
   // Anonymous rendering needs no change stream. Install its triggers before
   // the first API request can write, on the high-priority database lane.
@@ -290,9 +267,9 @@ export async function createEdgeCluster(cfg: EdgeClusterConfig): Promise<EdgeClu
     if (st.promote === true) {
       const added = await serialize(() =>
         db.query(
-          `INSERT INTO webauthn_credential (id, user_id, public_key, counter)
+          `INSERT INTO mecha_auth.webauthn_credential (id, user_id, public_key, counter)
            SELECT $1, $2, $3, $4
-           WHERE NOT EXISTS (SELECT 1 FROM webauthn_credential WHERE user_id = $2)`,
+           WHERE NOT EXISTS (SELECT 1 FROM mecha_auth.webauthn_credential WHERE user_id = $2)`,
           [credentialID, userId, credentialPublicKey, counter],
         ),
       )
@@ -309,7 +286,7 @@ export async function createEdgeCluster(cfg: EdgeClusterConfig): Promise<EdgeClu
           try {
             await db.query('INSERT INTO app_user (id, handle) VALUES ($1, $2)', [userId, handle])
             await db.query(
-              'INSERT INTO webauthn_credential (id, user_id, public_key, counter) VALUES ($1, $2, $3, $4)',
+              'INSERT INTO mecha_auth.webauthn_credential (id, user_id, public_key, counter) VALUES ($1, $2, $3, $4)',
               [credentialID, userId, credentialPublicKey, counter],
             )
             await db.query('COMMIT')
@@ -359,7 +336,7 @@ export async function createEdgeCluster(cfg: EdgeClusterConfig): Promise<EdgeClu
     const { rows: creds } = await serialize(() =>
       db.query<{ id: string; public_key: Uint8Array; counter: number | bigint; user_id: string; handle: string }>(
         `SELECT c.id, c.public_key, c.counter, c.user_id, u.handle
-         FROM webauthn_credential c JOIN app_user u ON u.id = c.user_id
+         FROM mecha_auth.webauthn_credential c JOIN app_user u ON u.id = c.user_id
          WHERE c.id = $1`,
         [response.id],
       ),
@@ -388,7 +365,7 @@ export async function createEdgeCluster(cfg: EdgeClusterConfig): Promise<EdgeClu
     }
     if (!verification.verified) return json(401, { error: 'authentication verification failed' })
     await serialize(() =>
-      db.query('UPDATE webauthn_credential SET counter = $1 WHERE id = $2', [
+      db.query('UPDATE mecha_auth.webauthn_credential SET counter = $1 WHERE id = $2', [
         verification.authenticationInfo.newCounter,
         cred.id,
       ]),
@@ -520,7 +497,7 @@ export async function createEdgeCluster(cfg: EdgeClusterConfig): Promise<EdgeClu
       pendingSnapshots[priority]++
       try {
         await drains()
-        return await serialize(() => publicSnapshot(db, generation, use, cfg.schema), priority)
+        return await lane(() => publicSnapshot(db, generation, use, cfg.schema), priority === 'high' ? 'render' : 'low')
       }
       finally { pendingSnapshots[priority]-- }
     },
