@@ -43,6 +43,10 @@ jobs:
           version: v0.48.0
       - run: sayt setup
         working-directory: apps/doom
+      - run: |
+          mise install
+          mise exec -- pnpm run bundle:mecha-client
+        working-directory: plugins/omnishell
       - name: Check deployment credentials
         run: |
           : "${CLOUDFLARE_API_TOKEN:?Set CLOUDFLARE_API_TOKEN}"
