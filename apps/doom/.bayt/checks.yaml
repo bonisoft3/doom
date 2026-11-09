@@ -91,7 +91,7 @@ say:
             --config ($pronto | path join bundle deno.json) ($pronto | path join bundle edge.ts) .
             --omnishell (run-mise where github:bonisoft3/omnishell | str trim) --mecha
             (run-mise where github:bonisoft3/mecha | str trim) --out dist/cloudflare ...$data
-            --ice-servers '[{"urls":"stun:stun.cloudflare.com:3478"}]'
+            --ice-servers '[{"urls":"stun:stun.cloudflare.com:3478"}]' --domain doom.bonisoft3.com
         - do: >-
             if ($env.SAY_RELEASE_ARGS_SNAPSHOT? | is-empty) { release --skip=validate
             --clean } else { release --snapshot --skip=validate --clean }
@@ -223,9 +223,10 @@ say:
             use tools.nu [run-mise]; let pronto = (run-mise where github:bonisoft3/pronto |
             str trim); run-mise exec -- deno run -A --config ($pronto | path join deno.json)
             ($pronto | path join verify verify.ts) . --platform cloudflare --mecha (run-mise
-            where github:bonisoft3/mecha | str trim) ...(if ($env.SAY_VERIFY_ARGS_TARGET? |
-            is-empty) { [] } else { ['--target', $env.SAY_VERIFY_ARGS_TARGET] }) ...(if
-            ($env.SAY_VERIFY_ARGS_TIER? | is-empty) { [] } else { ['--tier',
-            $env.SAY_VERIFY_ARGS_TIER] }) ...(if ($env.SAY_VERIFY_ARGS_HEADLESS? | is-empty) { [] } else {
-            ['--headless', $env.SAY_VERIFY_ARGS_HEADLESS] }) ...(if ($env.SAY_VERIFY_ARGS_SESSION? |
-            is-empty) { [] } else { ['--session', $env.SAY_VERIFY_ARGS_SESSION] })
+            where github:bonisoft3/mecha | str trim) --default-domain doom.bonisoft3.com
+            ...(if ($env.SAY_VERIFY_ARGS_TARGET? | is-empty) { [] } else { ['--target',
+            $env.SAY_VERIFY_ARGS_TARGET] }) ...(if ($env.SAY_VERIFY_ARGS_TIER? | is-empty) { [] }
+            else { ['--tier', $env.SAY_VERIFY_ARGS_TIER] }) ...(if
+            ($env.SAY_VERIFY_ARGS_HEADLESS? | is-empty) { [] } else { ['--headless', $env.SAY_VERIFY_ARGS_HEADLESS] })
+            ...(if ($env.SAY_VERIFY_ARGS_SESSION? | is-empty) { [] } else { ['--session',
+            $env.SAY_VERIFY_ARGS_SESSION] })

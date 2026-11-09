@@ -251,6 +251,7 @@ code: pronto.#App & {
 
 	meta: {
 		name: "doom"
+		domain: "doom.bonisoft3.com"
 		description: "Doom multiplayer deathmatch arena in Pronto"
 		ir: {sha256: "55f0cf36fcc662cf769f51100fe092bdd20f65bab82ed67f8fa1979fd33eb72e"}
 		targets: ["cloudflare"]
