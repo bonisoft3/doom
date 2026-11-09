@@ -1,7 +1,6 @@
-// Pure Jessie handler for the arena's match controls. Iniciar starts a match in
-// warmup and Outra Partida resets one; the engine follows the match row through
-// boot.js's store sync, so the row is all this writes. Any other event, or
-// Iniciar on a match already under way, has no move here.
+// Pure Jessie handler for the arena's match controls. START starts a match in
+// warmup and PLAY AGAIN resets one; the engine follows the match row through
+// boot.js's store sync, so the row is all this writes.
 (state, event) => {
   const match = state.rows?.match?.[0] ?? state.items?.[0];
   if (!match) throw new Error("match_control: match row is required");

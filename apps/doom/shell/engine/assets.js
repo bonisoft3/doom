@@ -2,10 +2,19 @@
 // indices the renderer reads, and every level of the episode (the engine
 // moves to the next level on its own, so all are registered up front).
 
+import { assetURL } from "/omnishell/interpreter/preloads.js";
 import { registerEpisode, registerLevel } from "./level.js";
 
+export function resolveDoomAsset(path) {
+  if (typeof globalThis.document?.getElementById === "function") {
+    return assetURL(path, globalThis.document).href;
+  }
+  return path;
+}
+
 async function json(url) {
-  const res = await fetch(url);
+  const resolved = resolveDoomAsset(url);
+  const res = await fetch(resolved);
   if (!res.ok) throw new Error(`assets: ${url} answered ${res.status}`);
   return res.json();
 }

@@ -256,7 +256,7 @@
           "type": "string",
           "pk": false,
           "required": true,
-          "cel": "this in ['e1m1', 'e1m2']"
+          "cel": "this in ['e1m1', 'e1m2', 'e1m3', 'e1m4', 'e1m5', 'e1m6', 'e1m7', 'e1m8', 'e1m9']"
         },
         {
           "name": "status",
@@ -339,7 +339,14 @@
         "enums": {
           "map": [
             "e1m1",
-            "e1m2"
+            "e1m2",
+            "e1m3",
+            "e1m4",
+            "e1m5",
+            "e1m6",
+            "e1m7",
+            "e1m8",
+            "e1m9"
           ],
           "status": [
             "warmup",
@@ -427,7 +434,7 @@
           "type": "string",
           "pk": false,
           "required": true,
-          "cel": "this in ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket']"
+          "cel": "this in ['fist', 'chainsaw', 'pistol', 'shotgun', 'chaingun', 'rocket', 'rocketlauncher', 'plasmarifle', 'bfg']"
         },
         {
           "name": "in_pain",
@@ -479,10 +486,14 @@
         "enums": {
           "weapon": [
             "fist",
+            "chainsaw",
             "pistol",
             "shotgun",
             "chaingun",
-            "rocket"
+            "rocket",
+            "rocketlauncher",
+            "plasmarifle",
+            "bfg"
           ],
           "in_pain": [
             "true",
@@ -546,7 +557,7 @@
           "type": "string",
           "pk": false,
           "required": true,
-          "cel": "this.size() <= 16"
+          "cel": "this.size() <= 32"
         },
         {
           "name": "victim",
@@ -555,7 +566,7 @@
           "type": "string",
           "pk": false,
           "required": true,
-          "cel": "this.size() <= 16"
+          "cel": "this.size() <= 32"
         },
         {
           "name": "weapon",
@@ -564,7 +575,7 @@
           "type": "string",
           "pk": false,
           "required": true,
-          "cel": "this.size() <= 16"
+          "cel": "this.size() <= 32"
         },
         {
           "name": "tick",
@@ -589,13 +600,13 @@
             "sizeMax": 64
           },
           "killer": {
-            "sizeMax": 16
+            "sizeMax": 32
           },
           "victim": {
-            "sizeMax": 16
+            "sizeMax": 32
           },
           "weapon": {
-            "sizeMax": 16
+            "sizeMax": 32
           },
           "tick": {
             "intMin": 0

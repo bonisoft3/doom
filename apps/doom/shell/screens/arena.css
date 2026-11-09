@@ -54,6 +54,82 @@ body:has(.screen[data-screen="arena"]:not([hidden])) > #app {
   display: block;
 }
 
+.doom-damage-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: transparent;
+  transition: background 80ms ease;
+  z-index: 18;
+}
+
+.doom-msg-banner {
+  position: absolute;
+  inset-block-start: var(--sp-md);
+  inset-inline-start: 50%;
+  translate: -50% 0;
+  font-size: var(--type-label);
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: var(--size-1) var(--sp-md);
+  background: color-mix(in oklch, var(--neutral) 82%, transparent);
+  border: var(--border-size-1) solid var(--accent);
+  border-radius: var(--r-sm);
+  pointer-events: none;
+  z-index: 24;
+  box-shadow: var(--shadow-2);
+}
+
+.doom-crosshair {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  translate: -50% -50%;
+  color: color-mix(in oklch, var(--accent) 55%, transparent);
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  z-index: 16;
+}
+
+.doom-weapon-container {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: 50%;
+  inline-size: 0;
+  block-size: 0;
+  pointer-events: none;
+  z-index: 14;
+}
+
+.doom-weapon-stage {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: 0;
+  inline-size: 0;
+  block-size: 0;
+  will-change: transform;
+}
+
+#doom-weapon-img {
+  position: absolute;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+  will-change: transform;
+}
+
+#doom-flash-img {
+  position: absolute;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  pointer-events: none;
+  z-index: 15;
+}
+
 /* CRT Scanline Overlay */
 .viewport-box::after {
   content: "";
@@ -80,6 +156,7 @@ body:has(.screen[data-screen="arena"]:not([hidden])) > #app {
   flex-direction: column;
   gap: 6px;
   z-index: 20;
+  pointer-events: none;
 }
 
 .frag-entry {
@@ -92,12 +169,21 @@ body:has(.screen[data-screen="arena"]:not([hidden])) > #app {
   align-items: center;
   gap: var(--sp-sm);
   box-shadow: var(--shadow-2);
-  animation: fragIn 200ms ease-out;
+  animation: fragIn 200ms ease-out, fragOut 350ms ease-in 2.5s forwards;
+}
+
+.frag-entry:nth-child(n + 2) {
+  display: none;
 }
 
 @keyframes fragIn {
   from { opacity: 0; translate: var(--size-4) 0; }
   to { opacity: 1; translate: 0 0; }
+}
+
+@keyframes fragOut {
+  from { opacity: 1; }
+  to { opacity: 0; visibility: hidden; }
 }
 
 .frag-entry .killer {
@@ -313,6 +399,17 @@ body:has(.screen[data-screen="arena"]:not([hidden])) > #app {
   background: var(--secondary);
 }
 
+.doom-face-img {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  z-index: var(--layer-2);
+}
+
 /* Arms Matrix */
 .arms-grid {
   display: grid;
@@ -325,6 +422,11 @@ body:has(.screen[data-screen="arena"]:not([hidden])) > #app {
   font-size: 0.6875rem;
   font-weight: 700;
   color: var(--secondary);
+  cursor: pointer;
+}
+
+.arm-slot.owned {
+  color: var(--primary);
 }
 
 .arm-slot.active {

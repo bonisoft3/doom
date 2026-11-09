@@ -187,11 +187,12 @@ export function createDoomBridge({
         const nextMatch = referee(stagedMatch, { type: "FRAG", killer });
         stagedMatch = { ...stagedMatch, ...nextMatch };
         const fragNum = fragCounter + frags.length + 1;
+        const feedEntry = world.feed?.[0];
         frags.push({
           id: `frag_${String(world.tick + currentEpochTick).padStart(6, "0")}_${String(fragNum).padStart(3, "0")}`,
-          killer: killer === "us" ? playerState.handle : "Imp",
-          victim: killer === "us" ? "Imp" : playerState.handle,
-          weapon: killer === "us" ? playerState.weapon : "claws",
+          killer: killer === "us" ? playerState.handle : (feedEntry?.killer || "Imp"),
+          victim: killer === "us" ? (feedEntry?.victim || "Imp") : playerState.handle,
+          weapon: killer === "us" ? playerState.weapon : (feedEntry?.weapon || "claws"),
           tick: world.tick + currentEpochTick
         });
       }

@@ -14,6 +14,15 @@ _arenaMarkup: #"""
   <div class="arena-frame">
     <div class="viewport-box">
       <canvas id="renderCanvas" aria-label="Arena 3D Viewport"></canvas>
+      <div id="doom-damage-flash" class="doom-damage-flash" aria-hidden="true"></div>
+      <div id="doom-msg-banner" class="doom-msg-banner" hidden></div>
+      <div class="doom-crosshair" aria-hidden="true">+</div>
+      <div id="doom-weapon-container" class="doom-weapon-container" aria-hidden="true">
+        <div id="doom-weapon-stage" class="doom-weapon-stage">
+          <img id="doom-weapon-img" src="/shell/assets/things/pisga.png" alt="">
+          <img id="doom-flash-img" hidden alt="">
+        </div>
+      </div>
       
       <ul class="frag-feed" data-live="frag" data-order="tick.desc" aria-live="polite">
         <template data-item>
@@ -27,25 +36,25 @@ _arenaMarkup: #"""
 
       <div class="match-notice" data-live="match" data-filter="id=eq.match-01" data-status="{status}" data-empty-row='{"id":"match-01","map":"e1m1","status":"warmup","frag_limit":10,"frags_us":0,"frags_them":0,"winner":""}'>
         <span class="status-pill" data-text="{status}">WARMUP</span>
-        <span class="score-pill">NÓS: <b data-text="{frags_us}">0</b> · ELES: <b data-text="{frags_them}">0</b></span>
-        <button type="button" id="btn-start" class="act" data-on-click="match_control">Iniciar</button>
+        <span class="score-pill">FRAGS: <b data-text="{frags_us}">0</b> · DEATHS: <b data-text="{frags_them}">0</b></span>
+        <button type="button" id="btn-start" class="act" data-on-click="match_control">START</button>
       </div>
 
       <div class="overlay-game-over" data-live="match" data-filter="id=eq.match-01" data-empty-row='{"id":"match-01","map":"e1m1","status":"warmup","frag_limit":10,"frags_us":0,"frags_them":0,"winner":""}'>
-        <h2 class="title-over">FIM DE COMBATE</h2>
-        <p class="winner-text">Vencedor: <b data-text="{winner}">NÓS</b></p>
-        <button type="button" id="btn-rematch" class="act hot" data-on-click="match_control">Outra Partida</button>
+        <h2 class="title-over">MATCH OVER</h2>
+        <p class="winner-text">Winner: <b data-text="{winner}">US</b></p>
+        <button type="button" id="btn-rematch" class="act hot" data-on-click="match_control">PLAY AGAIN</button>
       </div>
     </div>
 
     <footer class="doom-hud" data-live="player" data-filter="id=eq.player-local" data-reads="match" data-empty-row='{"id":"player-local","handle":"Doomguy","health":100,"armor":50,"ammo":50,"weapon":"shotgun","in_pain":"false","is_god":"false","health_tier":"healthy"}'>
       <div class="hud-block ammo-block">
-        <span class="hud-label">MUNIÇÃO</span>
+        <span class="hud-label">AMMO</span>
         <span class="hud-value digital" data-text="{ammo}">50</span>
       </div>
 
       <div class="hud-block health-block" data-tier="{health_tier}">
-        <span class="hud-label">VIDA</span>
+        <span class="hud-label">HEALTH</span>
         <span class="hud-value digital" data-text="{health}">100%</span>
       </div>
 
@@ -57,16 +66,17 @@ _arenaMarkup: #"""
           <div class="face-eye left"></div>
           <div class="face-eye right"></div>
           <div class="face-mouth"></div>
+          <img id="doom-face-img" class="doom-face-img" src="/shell/assets/sprites/face_normal.png" alt="Doomguy">
         </div>
       </div>
 
       <div class="hud-block armor-block">
-        <span class="hud-label">ARMADURA</span>
+        <span class="hud-label">ARMOR</span>
         <span class="hud-value digital" data-text="{armor}">50%</span>
       </div>
 
       <div class="hud-block arms-block">
-        <span class="hud-label">ARMAS</span>
+        <span class="hud-label">ARMS</span>
         <div class="arms-grid">
           <span class="arm-slot active" data-has="2">2</span>
           <span class="arm-slot active" data-has="3">3</span>
@@ -78,7 +88,7 @@ _arenaMarkup: #"""
       </div>
 
       <div class="hud-actions">
-        <a class="act ghost" data-route="lobby">Configurar</a>
+        <a class="act ghost" data-route="lobby">LOBBY</a>
       </div>
     </footer>
   </div>
@@ -89,21 +99,21 @@ _lobbyMarkup: #"""
 <div class="screen" data-screen="lobby" data-theme="terminal" data-live="match" data-filter="id=eq.match-01">
   <div class="lobby-card">
     <h1 class="lobby-title">UAC PHOBOS ARENA</h1>
-    <p class="lobby-desc">Configuração do Fuzileiro & Parâmetros de Combate</p>
+    <p class="lobby-desc">Marine Loadout & Combat Parameters</p>
 
     <div class="lobby-form">
       <div class="form-field">
-        <label for="input-handle">Nome do Fuzileiro</label>
+        <label for="input-handle">Marine Handle</label>
         <input type="text" id="input-handle" name="handle" value="Doomguy" maxlength="16" readonly>
       </div>
 
       <div class="form-field">
-        <label for="select-frags">Limite de Frags</label>
-        <input type="text" id="select-frags" value="10 Frags (Padrão)" readonly>
+        <label for="select-frags">Frag Limit</label>
+        <input type="text" id="select-frags" value="10 Frags (Standard)" readonly>
       </div>
 
       <div class="lobby-actions">
-        <a class="act hot" data-route="arena" data-on-click="enter_arena">Entrar na Arena</a>
+        <a class="act hot" data-route="arena" data-on-click="enter_arena">ENTER ARENA</a>
       </div>
     </div>
   </div>
@@ -128,7 +138,7 @@ code: pronto.#App & {
 				}]
 				fields: [
 					{ordinal: 1, name: "id", type: "string", pk: true, cel: "this.size() <= 64"},
-					{ordinal: 2, name: "map", type: "string", cel: "this in ['e1m1', 'e1m2']"},
+					{ordinal: 2, name: "map", type: "string", cel: "this in ['e1m1', 'e1m2', 'e1m3', 'e1m4', 'e1m5', 'e1m6', 'e1m7', 'e1m8', 'e1m9']"},
 					{ordinal: 3, name: "status", type: "string", cel: "this in ['warmup', 'active', 'over']"},
 					{ordinal: 4, name: "frag_limit", type: "int32", cel: "this >= 1 && this <= 100"},
 					{ordinal: 5, name: "frags_us", type: "int32", cel: "this >= 0"},
@@ -157,7 +167,7 @@ code: pronto.#App & {
 					{ordinal: 3, name: "health", type: "int32", cel: "this >= 0 && this <= 200"},
 					{ordinal: 4, name: "armor", type: "int32", cel: "this >= 0 && this <= 200"},
 					{ordinal: 5, name: "ammo", type: "int32", cel: "this >= 0 && this <= 999"},
-					{ordinal: 6, name: "weapon", type: "string", cel: "this in ['fist', 'pistol', 'shotgun', 'chaingun', 'rocket']"},
+					{ordinal: 6, name: "weapon", type: "string", cel: "this in ['fist', 'chainsaw', 'pistol', 'shotgun', 'chaingun', 'rocket', 'rocketlauncher', 'plasmarifle', 'bfg']"},
 					{ordinal: 7, name: "in_pain", type: "string", cel: "this in ['true', 'false']"},
 					{ordinal: 8, name: "is_god", type: "string", cel: "this in ['true', 'false']"},
 					{ordinal: 9, name: "health_tier", type: "string", cel: "this in ['healthy', 'scratched', 'bloody', 'critical', 'dead']"}
@@ -169,9 +179,9 @@ code: pronto.#App & {
 				durability: "tab"
 				fields: [
 					{ordinal: 1, name: "id", type: "string", pk: true, cel: "this.size() <= 64"},
-					{ordinal: 2, name: "killer", type: "string", cel: "this.size() <= 16"},
-					{ordinal: 3, name: "victim", type: "string", cel: "this.size() <= 16"},
-					{ordinal: 4, name: "weapon", type: "string", cel: "this.size() <= 16"},
+					{ordinal: 2, name: "killer", type: "string", cel: "this.size() <= 32"},
+					{ordinal: 3, name: "victim", type: "string", cel: "this.size() <= 32"},
+					{ordinal: 4, name: "weapon", type: "string", cel: "this.size() <= 32"},
 					{ordinal: 5, name: "tick", type: "int32", cel: "this >= 0"}
 				]
 			}

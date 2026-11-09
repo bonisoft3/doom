@@ -17,7 +17,7 @@ code: state: entities: {
 	Match: {
 		seed: [...{
 			id?: strings.MaxRunes(64)
-			map?: ("e1m1" | "e1m2")
+			map?: ("e1m1" | "e1m2" | "e1m3" | "e1m4" | "e1m5" | "e1m6" | "e1m7" | "e1m8" | "e1m9")
 			status?: ("warmup" | "active" | "over")
 			frag_limit?: >=1 & <=100
 			frags_us?: >=0
@@ -26,7 +26,7 @@ code: state: entities: {
 		}]
 		cel: {
 			enums: {
-				map: ["e1m1","e1m2"]
+				map: ["e1m1","e1m2","e1m3","e1m4","e1m5","e1m6","e1m7","e1m8","e1m9"]
 				status: ["warmup","active","over"]
 			}
 			bounds: {
@@ -45,14 +45,14 @@ code: state: entities: {
 			health?: >=0 & <=200
 			armor?: >=0 & <=200
 			ammo?: >=0 & <=999
-			weapon?: ("fist" | "pistol" | "shotgun" | "chaingun" | "rocket")
+			weapon?: ("fist" | "chainsaw" | "pistol" | "shotgun" | "chaingun" | "rocket" | "rocketlauncher" | "plasmarifle" | "bfg")
 			in_pain?: ("true" | "false")
 			is_god?: ("true" | "false")
 			health_tier?: ("healthy" | "scratched" | "bloody" | "critical" | "dead")
 		}]
 		cel: {
 			enums: {
-				weapon: ["fist","pistol","shotgun","chaingun","rocket"]
+				weapon: ["fist","chainsaw","pistol","shotgun","chaingun","rocket","rocketlauncher","plasmarifle","bfg"]
 				in_pain: ["true","false"]
 				is_god: ["true","false"]
 				health_tier: ["healthy","scratched","bloody","critical","dead"]
@@ -69,17 +69,17 @@ code: state: entities: {
 	Frag: {
 		seed: [...{
 			id?: strings.MaxRunes(64)
-			killer?: strings.MaxRunes(16)
-			victim?: strings.MaxRunes(16)
-			weapon?: strings.MaxRunes(16)
+			killer?: strings.MaxRunes(32)
+			victim?: strings.MaxRunes(32)
+			weapon?: strings.MaxRunes(32)
 			tick?: >=0
 		}]
 		cel: {
 			bounds: {
 				id: {sizeMax: 64}
-				killer: {sizeMax: 16}
-				victim: {sizeMax: 16}
-				weapon: {sizeMax: 16}
+				killer: {sizeMax: 32}
+				victim: {sizeMax: 32}
+				weapon: {sizeMax: 32}
 				tick: {intMin: 0}
 			}
 		}

@@ -4,6 +4,7 @@
 // keep their own meshes and follow the world's sector heights.
 
 import { LINE_FLAGS, LINE_SPECIALS, SECTOR_SPECIALS, THING_TYPES } from "./catalog.js";
+import { resolveDoomAsset } from "./assets.js";
 import { getLevel, levelIndex, sectorAt } from "./level.js";
 import { ceilOf, floorOf, sectorProp } from "./sectors.js";
 import { EFFECT_FRAMES, MISSILE_FRAMES, MONSTER_FRAMES } from "./sprites.js";
@@ -73,11 +74,12 @@ function dynamicSectors(level) {
 }
 
 class LevelView {
-  constructor(B, scene, level, assets) {
+  constructor(B, scene, level, assets, onTextureLoad = null) {
     this.B = B;
     this.scene = scene;
     this.level = level;
     this.assets = assets;
+    this.onTextureLoad = onTextureLoad;
     this.meshes = [];
     this.materials = new Map();
     this.textures = new Map();
@@ -98,11 +100,15 @@ class LevelView {
     let t = this.textures.get(key);
     if (!t) {
       const mode = kind === "things" ? this.B.Texture.NEAREST_SAMPLINGMODE : this.B.Texture.BILINEAR_SAMPLINGMODE;
-      t = new this.B.Texture(`${this.assets.basePath}${kind}/${name.toLowerCase()}.png`, this.scene, false, true, mode);
+      const url = resolveDoomAsset(`${this.assets.basePath}${kind}/${name.toLowerCase()}.png`);
+      t = new this.B.Texture(url, this.scene, false, true, mode);
       if (kind !== "things") {
         t.anisotropicFilteringLevel = 4;
       }
       t.hasAlpha = alpha;
+      if (t.onLoadObservable && this.onTextureLoad) {
+        t.onLoadObservable.addOnce(this.onTextureLoad);
+      }
       this.textures.set(key, t);
     }
     return t;
@@ -461,10 +467,16 @@ export class DoomBabylonRenderer {
     this.camera.fov = Math.PI / 2;
     this.camera.minZ = 0.05;
     this.camera.maxZ = 400;
-    this.sky = new B.Layer("sky", `${assets.basePath}textures/${assets.graphics.sky.texture}.png`, this.scene, true);
+    const skyUrl = resolveDoomAsset(`${assets.basePath}textures/${assets.graphics.sky.texture}.png`);
+    this.sky = new B.Layer("sky", skyUrl, this.scene, true);
+    if (this.sky.texture?.onLoadObservable) {
+      this.sky.texture.onLoadObservable.addOnce(() => this.queueRepaint());
+    }
     this.view = null;
     this.pool = [];
     this.spriteMaterials = new Map();
+    this.lastWorld = null;
+    this.repaintQueued = false;
 
     // Selective glow for bright energy projectiles and muzzle flashes
     if (B.GlowLayer) {
@@ -536,6 +548,25 @@ export class DoomBabylonRenderer {
 
   resize() {
     this.engine.resize();
+    if (this.lastWorld) {
+      this.scene.render();
+    }
+  }
+
+  queueRepaint() {
+    if (this.repaintQueued) return;
+    this.repaintQueued = true;
+    const paint = () => {
+      this.repaintQueued = false;
+      if (this.lastWorld && this.scene) {
+        this.scene.render();
+      }
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(paint);
+    } else {
+      queueMicrotask(paint);
+    }
   }
 
   spriteMaterial(frame, light, ghost) {
@@ -561,13 +592,17 @@ export class DoomBabylonRenderer {
   }
 
   render(world, opts = {}) {
+    this.lastWorld = world;
     const B = this.B;
     const level = getLevel(world.mapName);
     if (!this.view || this.view.level !== level) {
       if (this.view) this.view.dispose();
       for (const m of this.spriteMaterials.values()) m.dispose();
       this.spriteMaterials.clear();
-      this.view = new LevelView(B, this.scene, level, this.assets);
+      this.view = new LevelView(B, this.scene, level, this.assets, () => this.queueRepaint());
+      if (typeof this.scene.executeWhenReady === "function") {
+        this.scene.executeWhenReady(() => this.queueRepaint());
+      }
     }
     const tick = world.tick;
     this.view.update(world, tick);

@@ -77,6 +77,13 @@ schema:
       - enum:
           - e1m1
           - e1m2
+          - e1m3
+          - e1m4
+          - e1m5
+          - e1m6
+          - e1m7
+          - e1m8
+          - e1m9
         name: map
         type: string
         required: true
@@ -142,10 +149,14 @@ schema:
         required: true
       - enum:
           - fist
+          - chainsaw
           - pistol
           - shotgun
           - chaingun
           - rocket
+          - rocketlauncher
+          - plasmarifle
+          - bfg
         name: weapon
         type: string
         required: true
@@ -180,17 +191,17 @@ schema:
         type: string
         required: true
       - bounds:
-          sizeMax: 16
+          sizeMax: 32
         name: killer
         type: string
         required: true
       - bounds:
-          sizeMax: 16
+          sizeMax: 32
         name: victim
         type: string
         required: true
       - bounds:
-          sizeMax: 16
+          sizeMax: 32
         name: weapon
         type: string
         required: true

@@ -93,7 +93,7 @@ Deno.test("accept-match-over: game over overlay displays winner and rematch affo
 
   const rematchBtn = document.getElementById("btn-rematch");
   assert(rematchBtn !== null, "Rematch button must exist");
-  assertEquals(rematchBtn.textContent, "Outra Partida");
+  assertEquals(rematchBtn.textContent, "PLAY AGAIN");
 });
 
 Deno.test("accept-offline: service worker script caches static assets and screen contains no unmanaged scripts", () => {
