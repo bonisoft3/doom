@@ -43,6 +43,8 @@ jobs:
           version: v0.48.0
       - run: sayt setup
         working-directory: apps/doom
+      - run: mise install
+        working-directory: libraries/mecha/packages/pglite-workerd
       - run: |
           mise install
           mise exec -- pnpm run bundle:mecha-client
