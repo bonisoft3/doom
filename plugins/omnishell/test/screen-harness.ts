@@ -20,6 +20,7 @@ import "../interpreter/vendor/ses.umd.min.js";
 import { ensureSes } from "../interpreter/jessie.js";
 import { controlProperties } from "../server/linkedom-controls.ts";
 import { compileCatalog } from "../src/messages.ts";
+import type { Shape } from "../interpreter/lint.ts";
 
 
 // The Jessie tier's lockdown, taken once at load: the ses pin is imported
@@ -241,7 +242,7 @@ export type El = {
  * a `data-hatch` name against. */
 export type Unit = {
   isolation: string;
-  ports: { reads: string[]; raises: string[] };
+  ports: { reads: string[]; raises: Record<string, Shape> };
   /** An agent's memo as the terminal performs it: the table, the key and the
    * columns an answer fills. */
   memo?: { table: string; key: string[]; columns: string[] };
@@ -387,6 +388,7 @@ export type MountSpec = {
    * minor-unit scale off the column. mountApp reads it from the app's own
    * shell.yaml. */
   schema?: Schema;
+  cortex?: { actors?: Record<string, unknown> };
   endowments?: Record<string, string[]>;
 };
 
@@ -855,7 +857,18 @@ export async function mountApp(
     hostDom: { ...(await appHostDom(spec.appDir)), ...spec.hostDom },
     schema: spec.schema ?? await appSchema(spec.appDir),
     endowments: spec.endowments ?? await appEndowments(spec.appDir),
+    cortex: spec.cortex ?? { actors: await appChartBindings(spec.appDir) },
   });
+}
+
+export async function appChartBindings(appDir: URL): Promise<Record<string, unknown>> {
+  const shell = await appShell(appDir) as { cortex?: { actors?: Record<string, unknown> } };
+  return shell.cortex?.actors ?? {};
+}
+
+export async function appActors(appDir: URL): Promise<Record<string, { via?: string; event?: string; suffix?: boolean; missing?: string; field?: string }>> {
+  const shell = await appShell(appDir) as { actors?: Record<string, { via?: string; event?: string; suffix?: boolean; missing?: string; field?: string }> };
+  return shell.actors ?? {};
 }
 
 /** The manifest-granted platform endowments an app declares (shell.yaml `endowments:`). */

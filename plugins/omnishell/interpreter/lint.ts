@@ -1,3 +1,4 @@
+import { referencedChart } from "./row-attachments.js";
 // The terminal's markup rules: what a screen's data-* vocabulary may say,
 // stated beside the vocabulary itself (fragment.js) so the plugin that
 // publishes the grammar also publishes its rules. pronto's derive.ts
@@ -16,8 +17,7 @@ import {
   parseSelect,
   PLACEHOLDER,
   PLACEHOLDERS,
-  routeOf,
-} from "./fragment.js";
+  routeOf, optionalSegment } from "./fragment.js";
 
 type Unique = { name: string; cols: string[]; where?: string };
 export type Entity = {
@@ -51,11 +51,24 @@ const strip = (html: string) => html.replace(SCRIPT, "").replace(STYLE, "").repl
 // Both authored quoting styles, matching what the DOM parser hands the
 // interpreter — a single-quoted attribute must not be visible to one checker
 // and invisible to another.
-const ATTR = /\s(data-[a-z][a-z_-]*)=(?:"([^"]*)"|'([^']*)')/g;
+const ATTR = /\s(data-[a-z][a-z0-9_-]*)=(?:"([^"]*)"|'([^']*)')/g;
 
 const decode = (v: string) =>
   v.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+
+export function resolveMachineMarkup(html: string, bindings: Record<string, unknown> = {}, screen = ""): string {
+  return html.replace(new RegExp(`${COMMENT.source}|${SCRIPT.source}|${STYLE.source}|${ANY_TAG.source}`, "gi"), (tag, closing, _name, attrText) => {
+    if (closing === undefined || closing) return tag;
+    const attrs = attrMap(attrText);
+    if (!attrs.has("data-machine-ref")) return tag;
+    if (!attrs.has("data-live")) throw new Error("data-machine-ref on a tag with no data-live");
+    if (attrs.has("data-machine")) throw new Error("data-machine-ref and data-machine cannot share a region");
+    const chart = referencedChart(bindings, attrs.get("data-cortex"), attrs.get("data-machine-ref"), screen);
+    const json = JSON.stringify(chart).replace(/&/g, "&amp;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return tag.replace(QATTR("data-machine-ref"), () => ` data-machine='${json}'`);
+  });
+}
 
 /** Tables read, handler modules bound, and filter fragments authored by one
  * screen's markup. A filter's table is the tag's own anchor: `data-live` on a
@@ -317,7 +330,8 @@ export function paramPlans(
   const wanted = new Map<string, { route: string; param: string }>();
   for (const route of routes) {
     for (const seg of route.path.split("/")) {
-      if (!seg.startsWith(":")) continue;
+      // An optional segment's values are its entries', never a row's.
+      if (!seg.startsWith(":") || seg.endsWith("?")) continue;
       const param = seg.slice(1);
       const key = `${route.path} ${param}`;
       wanted.set(key, { route: route.path, param });
@@ -367,7 +381,7 @@ export function paramPlans(
           const enclosing = stack.findLast((frame) => frame.table !== undefined);
           const column = attrs.get(`data-param-${param}`)?.match(/^\{([\w]+)\}$/)?.[1];
           if (tag === "a" && attrs.get("data-route") === route.screen && column && enclosing?.table && enclosing.filter !== undefined) {
-            const others = route.path.split("/").filter((part) => part.startsWith(":") && part.slice(1) !== param).map((part) => part.slice(1));
+            const others = route.path.split("/").filter((part) => part.startsWith(":") && !part.endsWith("?") && part.slice(1) !== param).map((part) => part.slice(1));
             const bound = others.every((other) => {
               const field = attrs.get(`data-param-${other}`)?.match(/^\{([\w]+)\}$/)?.[1];
               return field !== undefined && enclosing.filter!.split("&").includes(`${field}=eq.{param.${other}}`);
@@ -902,7 +916,7 @@ const label = (tag: string, attr: (name: string) => string | undefined) => {
  * `<select>`, a bare checkbox and a native invoker (`popovertarget`,
  * `commandfor`) are the platform's own affordances and reach the interpreter
  * through nothing, so none of them is a control this rule judges. */
-export function unwitnessedControls(html: string): string[] {
+export function unwitnessedControls(html: string, selectedHostDom: Set<string> = new Set()): string[] {
   const out: string[] = [];
   type Cover = {
     live: boolean;
@@ -981,7 +995,12 @@ export function unwitnessedControls(html: string): string[] {
     // `popovertarget`. Neither writes anything, which is exactly why neither
     // is a handler this rule could otherwise find.
     const invoker = has("popovertarget") || attr("commandfor") !== undefined;
-    if (!invoker && (tag === "button" || (tag === "input" && type !== undefined && CONTROL_INPUT.has(type)))) {
+    const control = tag === "button" || (tag === "input" && type !== undefined && CONTROL_INPUT.has(type));
+    const hostDom = attr("data-host-dom");
+    if (has("data-host-dom") && (!control || !hostDom || !selectedHostDom.has(hostDom))) {
+      out.push(`${label(tag, attr)} data-host-dom must name a declared hatch selected on this screen's routes, on the control itself`);
+    }
+    if (!invoker && control && !(hostDom && selectedHostDom.has(hostDom))) {
       // A button's default type is submit; type="button" and type="reset"
       // reach no submit listener however deep in a form they sit.
       const own: Own = {
@@ -1039,8 +1058,17 @@ export function hatchSites(html: string): HatchSite[] {
   return out;
 }
 
+/** A payload's shape, mecha's #Shape: what a raised event's detail is rebuilt
+ * from at the seat. */
+export type Shape =
+  | { type: "string"; maxLength: number; values?: string[] }
+  | { type: "integer"; min: number; max: number }
+  | { type: "boolean" }
+  | { type: "array"; maxItems: number; items: Shape }
+  | { type: "object"; fields: Record<string, Shape> };
+
 /** A vendored unit as shell.yaml `units:` declares it to the terminal. */
-export type UnitPorts = { ports: { reads: string[]; raises: string[] }; memo?: { table: string; key: string[]; columns: string[] } };
+export type UnitPorts = { ports: { reads: string[]; raises: Record<string, Shape> }; memo?: { table: string; key: string[]; columns: string[] } };
 
 /** The reasons one screen's mounts disagree with their units' ports: a unit
  * nobody declared, a mount fed a region's row the unit does not read, a
@@ -1063,7 +1091,7 @@ export function hatchLint(sites: HatchSite[], units: Record<string, UnitPorts>):
       out.push(`data-hatch="${s.unit}" is fed the row of "${s.table}", which its ports do not read (reads: ${unit.ports.reads.join(", ") || "nothing"})`);
     }
     for (const ev of s.handles) {
-      if (!unit.ports.raises.includes(ev)) out.push(`data-hatch="${s.unit}" handles "${ev}", which its ports do not raise (raises: ${unit.ports.raises.join(", ") || "nothing"})`);
+      if (!Object.hasOwn(unit.ports.raises, ev)) out.push(`data-hatch="${s.unit}" handles "${ev}", which its ports do not raise (raises: ${Object.keys(unit.ports.raises).join(", ") || "nothing"})`);
     }
     if (unit.memo === undefined) continue;
     for (const k of unit.memo.key) {
@@ -1081,7 +1109,7 @@ export function hatchLint(sites: HatchSite[], units: Record<string, UnitPorts>):
 export function unhandledRaises(sites: HatchSite[], units: Record<string, UnitPorts>): string[] {
   const out: string[] = [];
   for (const [name, unit] of Object.entries(units)) {
-    for (const ev of unit.ports.raises) {
+    for (const ev of Object.keys(unit.ports.raises)) {
       if (!sites.some((s) => s.unit === name && s.handles.includes(ev))) {
         out.push(`unit "${name}" raises "${ev}", which no data-hatch mount handles`);
       }
@@ -1190,7 +1218,7 @@ export function unwitnessedSlot(filter: string | undefined, e: Entity, select?: 
 // the authority (cue vet runs at generate) — this mirror is what lets the
 // rule report structure findings from the same pass that checks references,
 // unit-testable with no cue spawn.
-const TRANSITION_KEYS = new Set(["guard", "target", "assign", "effect", "raise", "actions"]);
+const TRANSITION_KEYS = new Set(["guard", "target", "assign", "effect", "raise", "actions", "reenter"]);
 const ACTION_KEYS = new Set(["assign", "effect", "raise"]);
 const REF_KEYS = new Set(["type", "params"]);
 const EFFECT_KEYS = new Set(["op", "entity", "token", "filter", "values"]);
@@ -1206,7 +1234,8 @@ export const DURABILITY_EFFECT_LEVEL: Record<string, string> = {
 };
 /** Where a chart's writes land: the region's table for an effect naming no
  * entity, and the durability of any table the emitted schema declares. */
-export type Reach = { table: string; durabilityOf: (table: string) => string | undefined };
+export type ObservationBinding = { via: string; table: string; field?: string; suffix?: boolean; match: Record<string, string>; require?: string[] };
+export type Reach = { table: string; durabilityOf: (table: string) => string | undefined; actors?: Record<string, ObservationBinding>; columnsOf?: (table: string) => string[] | undefined };
 
 /** The reason an object in a value position is not a well-formed {type,
  * params} reference (XState's spelling), or null. Strings and literals are not this rule's —
@@ -1272,6 +1301,7 @@ type StateNode = {
   after?: Record<string, unknown>;
   entry?: unknown;
   exit?: unknown;
+  invoke?: unknown;
   states?: Record<string, StateNode>;
 };
 
@@ -1285,6 +1315,7 @@ type Machine = {
   after?: Record<string, unknown>;
   entry?: unknown;
   exit?: unknown;
+  invoke?: unknown;
   states: Record<string, StateNode>;
 };
 
@@ -1339,6 +1370,7 @@ export function machineLint(machine: Machine, available: Set<string>, reach: Rea
       if (unknown.length > 0) {
         return `transition carries ${unknown.map((k) => `"${k}"`).join(", ")} — outside the #Machine subset`;
       }
+      if ("reenter" in c && typeof c.reenter !== "boolean") return "reenter must be boolean";
       const cand = c as { guard?: unknown; assign?: Record<string, unknown>; effect?: unknown; actions?: unknown };
       for (const r of [cand.guard, ...Object.values(cand.assign ?? {})]) {
         const why = badRef(r);
@@ -1373,6 +1405,27 @@ export function machineLint(machine: Machine, available: Set<string>, reach: Rea
     if (why !== null) return why;
   }
   const shape = machineShape(machine) as ReturnType<typeof machineShape> & { effects?: { entity?: string }[] };
+  for (const { state, spec } of shape.invokes) {
+    if (spec === null || typeof spec !== "object" || typeof spec.src !== "string" ||
+        (spec.id !== undefined && typeof spec.id !== "string") || Object.keys(spec).some((key) => !["id", "src"].includes(key))) {
+      return `invoke in "${state || "root"}" supports only named src and id`;
+    }
+    if (reach.actors !== undefined) {
+      const binding = reach.actors[spec.src];
+      if (!binding) return `invoke names undeclared actor "${spec.src}"`;
+      if (binding.via !== "observe") return `invoke actor "${spec.src}" uses unsupported adapter "${binding.via}"`;
+      if (binding.suffix !== undefined && typeof binding.suffix !== "boolean") return `invoke actor "${spec.src}" suffix must be a boolean`;
+      const source = reach.columnsOf?.(binding.table);
+      const target = reach.columnsOf?.(reach.table);
+      if (reach.columnsOf && !source) return `invoke actor "${spec.src}" reads undeclared table "${binding.table}"`;
+      for (const field of [...Object.keys(binding.match), ...(binding.field ? [binding.field] : [])]) {
+        if (source && !source.includes(field)) return `invoke actor "${spec.src}" reads undeclared field "${binding.table}.${field}"`;
+      }
+      for (const field of [...Object.values(binding.match), ...(binding.require ?? [])]) {
+        if (target && !target.includes(field)) return `invoke actor "${spec.src}" binds undeclared field "${reach.table}.${field}"`;
+      }
+    }
+  }
   for (const eff of shape.effects ?? []) {
     const table = eff.entity ?? reach.table;
     const durability = reach.durabilityOf(table);
@@ -1488,9 +1541,10 @@ export function writeLint(writes: Write[], e: Entity): string | null {
  * pattern its `:param` holes are read off. */
 export type LinkRoute = { screen: string; path: string };
 
-/** The `:param` holes of a pattern, in order. */
-const holesOf = (pattern: string): string[] =>
-  pattern.split("/").filter((s) => s.startsWith(":")).map((s) => s.slice(1));
+/** The `:param` holes of a pattern, in order; a trailing `:name?` is a hole a
+ * link may leave empty, and `required` leaves it out. */
+const holesOf = (pattern: string, { required = false } = {}): string[] =>
+  pattern.split("/").filter((s) => s.startsWith(":") && !(required && optionalSegment(s))).map((s) => s.replace(/^:|\?$/g, ""));
 
 /**
  * An internal link says which ROUTE it goes to, never which path.
@@ -1538,7 +1592,8 @@ export function linkLint(html: string, routes: LinkRoute[]): string[] {
       out.push(`data-route="${screen}" names no route in shell.yaml`);
       continue;
     }
-    const holes = holesOf(route.path);
+    const holes = holesOf(route.path, { required: true });
+    const named = holesOf(route.path);
     const given = new Set<string>();
     for (const [, name] of ` ${attrText}`.matchAll(ATTR)) {
       if (name.startsWith("data-param-")) given.add(name.slice("data-param-".length));
@@ -1553,7 +1608,7 @@ export function linkLint(html: string, routes: LinkRoute[]): string[] {
       if (!given.has(hole)) out.push(`data-route="${screen}" fills no :${hole} of "${route.path}"`);
     }
     for (const name of given) {
-      if (holes.includes(name)) continue;
+      if (named.includes(name)) continue;
       out.push(`data-param-${name} on data-route="${screen}" names no :param of "${route.path}"`);
     }
   }

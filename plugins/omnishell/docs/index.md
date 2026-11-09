@@ -18,12 +18,11 @@
 * [Kinetic host](kinetic.md) - concept: Fixed-step tick engine, snapshot ring buffer, and time-travel controller for high-frequency interactive simulations.
 * [Visual lint](visual-lint.md) - concept: The Playwright DOM checks and vision review over a rendered app — what each check needs to be sound, where it runs, and how shared checks change.
 * [Automated tests](automated-tests-battery.md) - concept: Every handler and validation module an app ships is tested automatically, with no test written by hand, for confinement, termination through fuel, and purity.
-* [Native hosts](native-hosts.md) - concept: How a pronto app runs on Android and iOS — a headless JS engine behind native bridges, a DivKit SDUI renderer, and realworld's parity check against the web screens.
+* [Native hosts](native-hosts.md) - concept: How a pronto app runs on Android, iOS, and Desktop — a headless JS/Rust engine behind native bridges, deterministic DivKit and winio projection from Omnishell screen markup, and native 3D + audio presenters.
 * [Native capabilities](native-capabilities.md) - concept: Why standard HTML5 primitives and W3C APG patterns replace ad-hoc framework attributes, and how the platform owns what script used to simulate.
 
 # Harnesses and fixtures
 
-* [[native-worker-ssr|Native Worker SSR]] - reference: Fresh public database snapshots, the opt-in Cloudflare release renderer, and revision-cache experiments.
-* [Reconciliation spike harnesses](reconciliation-spike/README.md) - howto: How to re-run the measurements behind screen updates.
-* [daisyUI theme coverage](../test/design-tokens.md) - metric: The finding design-tokens.test.ts prints when its reading of daisyUI's themes and its pin disagree.
+* [[native-worker-ssr|Native Worker SSR]] - reference: Fresh public database snapshots and the opt-in Cloudflare release renderer.
+* [[archive/2026-10-13-native-worker-ssr-experiments|Native Worker SSR experiments]] - record: The deployment, Lighthouse, freshness-protocol, live-database and archive-storage measurements behind the renderer.
 * [Visibility fixtures](../test/fixtures/visibility/README.md) - reference: Frozen copies of app stylesheets and markup that visibility.test.ts reads, each mirroring its source under apps/.

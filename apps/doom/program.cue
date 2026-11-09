@@ -184,7 +184,7 @@ code: pronto.#App & {
 		vendored: {
 			upscaler: {
 				isolation: "compartment"
-				ports: {reads: [], raises: []}
+				ports: {reads: [], raises: {}}
 				src: "shell/units/upscaler/xbrz.js"
 				files: [
 					"shell/units/upscaler/xbrz.js",

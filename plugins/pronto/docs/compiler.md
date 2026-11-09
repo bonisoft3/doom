@@ -90,6 +90,13 @@ in the program, so nothing executable lives at the rung a person reads.
 that has since changed. `tests/pairs.yaml`, which the emitter writes from the
 program's tests, has no runner.
 
+After drawing generated IR cards and diagrams, the writer refreshes only IR
+claims, nesting, acceptance and diagram facts, artifact hashes, and the served
+IR image list. It retains application facts from the settled derivation rather
+than evaluating CUE and scanning application markup again. If rendering changes
+authored decision notes, test citations, or the fragment list, generation fails
+instead of accepting a changed compiler input under the previous evaluation.
+
 ## The bijection
 
 `objects.ts` names the ids each rung defines and `check-facts` compares the
@@ -104,7 +111,7 @@ two sets, over the kinds and by the rule [SPEC](../SPEC.md#programcue) states.
 | `objects.ts`, `facts.ts`, `check-facts.ts`, `invariants.sql`, `acceptance.ts` | the bijection, the fact store, and the invariants two rungs owe each other |
 | `cel.ts`, `derive-cel.ts`, `cel-emit.ts`, `bounds.ts` | one parse of every `cel:` into `.pronto/cel.json`, and every reading of it |
 | `jessie.ts`, `validations.ts` | what a Jessie module references; what a validation compiles to |
-| `mecha-*.ts`, `hybrid-runtime.js`, `check-hybrids.ts` | Mecha machines: their SQL, runtime and surface, and the lint over their [contracts](decisions/2026-10-15-machine-contracts.md) |
+| `mecha-*.ts`, `mecha-runtime.js`, `check-mecha.ts` | Mecha machines: their SQL, runtime and surface, and the lint over their [contracts](decisions/2026-10-15-machine-contracts.md) |
 | `identity.ts`, `type-*.ts`, `types.cue` | [types and identity](types-and-identity.md) |
 | `check-sql.ts`, `check-proto.ts`, `check-replay.ts`, `pgroll.cue` | [schema changes](schema-change-admission.md) |
 | `scales.ts`, `scales/`, `styles.ts` | [the design scale](design-scale.md) |
@@ -182,7 +189,8 @@ mise's tools from the runtime's trees, and `MONOREPO_COMPOSE_MODE`, under which
 each image builds mecha's and omnishell's from those trees instead of pulling
 the pins, and takes the checkout's layout (bayt's `imageDir`) so the views of
 the trees it copies land where `mise.local.toml` names them. A mirror has no
-such file and runs the releases it pins; its release gate validates them.
+such file and runs the releases it pins; its release gate validates them
+([monorepo mode](monorepo.md)).
 
 Each brings what the others cannot. sayt bootstraps the rest and carries the
 cross-platform concern, which is why it alone ships per-platform binaries;
@@ -233,3 +241,5 @@ distribution running the same program.
 - **Bun as the local runtime** — no permission model, so a checker's
   `--allow-read=.` has no equivalent and purity rests on SES alone; its Node
   compatibility surface diverges from the browser APIs Deno mirrors.
+
+For the development configuration and direct source transport, see [[pronto-hmr]].

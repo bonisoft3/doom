@@ -8,5 +8,8 @@ include:
   - ../../../libraries/mecha/.bayt/compose.database-image.yaml
   - ../../../libraries/mecha/.bayt/compose.mesh-image.yaml
   - ../../../libraries/mecha/.bayt/compose.ticker-image.yaml
+  - ../../../libraries/mecha/.bayt/compose.extensions-image.yaml
+  - ../../../libraries/mecha/.bayt/compose.activepieces-image.yaml
+  - ../../../libraries/mecha/.bayt/compose.extensions-build.yaml
   - ../../../plugins/omnishell/.bayt/compose.runtime-image.yaml
   - ../../../.bayt/compose.pronto-sources.yaml

@@ -2,7 +2,7 @@ package schema
 
 // #Environment defines the infrastructure profile for target clusters.
 #Environment: {
-	name:             "kind" | "eks" | "aks"
+	name:             "kind" | "eks" | "aks" | "gke"
 	registry:         string
 	gatewayClassName: string
 	storageClass:     string
@@ -43,6 +43,11 @@ package schema
 		tokenRoles: [...string]
 	}
 
+	// The container hatches caddy's door routes to, by app id (the app's
+	// .pronto/cluster.json; the release fills it). Their own workloads are not
+	// deployed here.
+	doors: *[] | [...=~"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"]
+
 	// Present where the app's compose project has a migrate service: the
 	// environment compose gives it beyond its DATABASE_URL (REQUIRED_TABLES),
 	// filled by the release from that project.
@@ -59,11 +64,22 @@ package schema
 		oidcSecretDigest: *"" | =~"^[0-9a-f]{64}$"
 	}
 
+	runtime: [string]: {
+		env: [string]: string
+		databaseEnvironment: [..."DATABASE_URL" | "FELDERA_DATABASE_URL"]
+		serviceToken: bool
+		jwtSecret:    *false | bool
+	}
+	runtimeStorage: *"10Gi" | string
+	runtimeResources: {
+		requests: {cpu: *"500m" | string, memory: *"1Gi" | string}
+		limits: {cpu: *"4" | string, memory: *"8Gi" | string}
+	}
+
 	render: {
 		enabled: bool | *false
 		port:    int | *8090
 	}
-
 
 	resources: {
 		requests: {
@@ -90,3 +106,15 @@ package schema
 	}
 }
 
+#GKE: {
+	context: string & !=""
+	environment: #Environment & {
+		name:             "gke"
+		registry:         string & !=""
+		gatewayClassName: *"eg" | string
+		storageClass:     *"standard-rwo" | string
+		imagePullPolicy:  "Always"
+		domainSuffix:     string & !=""
+		platform:         "linux/amd64"
+	}
+}

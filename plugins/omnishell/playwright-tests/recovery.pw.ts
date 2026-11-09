@@ -29,7 +29,8 @@ async function importClosure(roots: string[]): Promise<string[]> {
 // The door as it serves a release (server/release-addresses.ts): each
 // deployment's tree addressed, every address any deployment wrote still
 // answered, and the current entry at every route.
-async function serve(authenticated = false, automaticGuest = false, promoteTo?: string, retarget = false, mutationDrain = false, transition: { gate?: Promise<void>; fail?: number; hatches?: boolean; locales?: boolean; coldBoot?: boolean; delayedThen?: boolean } = {}) {
+async function serve(authenticated = false, automaticGuest = false, promoteTo?: string, retarget = false, mutationDrain = false, transition: { gate?: Promise<void>; fail?: number; hatches?: boolean; locales?: boolean; coldBoot?: boolean; progressive?: boolean; delayedThen?: boolean; listRedirect?: boolean; chainRedirect?: boolean; chainDelay?: boolean; cortex?: boolean; cortexRows?: boolean; cortexTimer?: boolean; cortexRetain?: boolean; homeMutation?: boolean } = {}) {
+
   const screen = (name: string) => `<section class="screen" data-screen="${name}"><h1>Release</h1><input name="draft" id="draft"><input name="answer" type="radio" value="no"><input name="answer" type="radio" value="yes"><div data-live="probe"><template data-item><p data-text="{id}"></p></template></div></section>`
   const files = new Map<string, string>([
     ["shell/index.html", `<!doctype html><html><head><base href="/shell/"><link rel="stylesheet" href="shell.css"></head><body><div id="app"><div class="shell-screen" data-served>${screen("home")}</div></div><script type="module" src="boot.js"></script></body></html>`],
@@ -38,7 +39,7 @@ async function serve(authenticated = false, automaticGuest = false, promoteTo?: 
     ["shell/boot.js", `import { createShell } from "/omnishell/interpreter/shell.js";
       navigator.serviceWorker.register("/offline-first-sw.js");
       createShell({config:"./shell.json",mount:document.getElementById("app")})
-        .then(app => { window.appReady = !!app.store; window.navigate = app.navigate; });`],
+        .then(app => { window.appReady = !!app.store; window.navigate = app.navigate; window.cortex = app.cortex; });`],
     ["shell/shell.json", JSON.stringify({ app: "release", tables: automaticGuest ? ["unused"] : [], read: { unused: "lazy" }, ...(authenticated ? { auth: { required: true, service: "/auth", promote: !!promoteTo } } : {}), local: { probe: "tab" }, carriers: FIXTURE_CARRIERS, routes: [
       { path: "/", screen: "home", nav: { label: "Home" }, files: { html: "shell/screens/home.html", css: "shell/screens/home.css", handlers: [] } },
       { path: "/other", screen: "other", nav: { label: "Other" }, files: { html: "shell/screens/other.html", css: "shell/screens/other.css", handlers: [] } },
@@ -63,9 +64,32 @@ async function serve(authenticated = false, automaticGuest = false, promoteTo?: 
     files.set("shell/messages/en.json", "{}")
     files.set("shell/messages/es.json", "{")
   }
+  if (transition.progressive) {
+    const config = JSON.parse(files.get("shell/shell.json")!)
+    config.local.detail = "tab"
+    config.local.marker = "tab"
+    config.seed = { probe: [{ id: "parent" }], detail: [{ id: "child", value: "Child ready" }] }
+    config.routes.find((route: { screen: string }) => route.screen === "other").files.handlers = ["shell/handlers/detail.js"]
+    files.set("shell/handlers/detail.js", '() => ({ updates: [{ op: "put", entity: "marker", id: "derived", row: { id: "derived", value: "ready" } }] })')
+    files.set("shell/shell.json", JSON.stringify(config))
+    files.set("shell/screens/other.html", `<section class="screen" data-screen="other"><div data-live="probe" data-empty-row='{"id":"parent"}'><template data-item><article><h1>Parent ready</h1><form data-action="update" data-entity="probe"><input name="draft"><select name="choice"><optgroup class="detail" data-live="detail" data-on-mutation="detail" data-empty=""><template data-item><option value="{id}" data-text="{value}"></option></template></optgroup></select><button type="submit">Save</button></form></article></template></div></section>`)
+  }
+  if (transition.homeMutation) {
+    const config = JSON.parse(files.get("shell/shell.json")!)
+    config.local = { probe: "tab", trigger: "tab", result: "tab" }
+    config.schema = Object.fromEntries(Object.keys(config.local).map(table => [table, { fields: [{ name: "id", type: "string" }, { name: "value", type: "string" }] }]))
+    config.routes[0].files.handlers = ["shell/handlers/home.js"]
+    files.set("shell/shell.json", JSON.stringify(config))
+    const region = '<div data-live="trigger" data-on-mutation="home"><template data-item><span data-text="{id}"></span></template></div>'
+    files.set("shell/screens/home.html", screen("home").replace("</section>", `${region}</section>`))
+    files.set("shell/index.html", files.get("shell/index.html")!.replace(screen("home"), screen("home").replace("</section>", `${region}</section>`)))
+    files.set("shell/handlers/home.js", `(state) => ({ updates: state.items.map(row => ({ op: "put", entity: "result", id: row.id, row: { id: row.id, value: row.value } })) })`)
+
+  }
   if (transition.coldBoot) {
     files.set("shell/index.html", files.get("shell/index.html")!.replace(`<div class="shell-screen" data-served>${screen("home")}</div>`, ""))
     files.set("shell/shell.css", ".shell-screen[data-entering] { opacity: 0 }")
+    files.set("shell/screens/home.css", ".screen { --cold-boot-style: applied }")
     files.set("shell/screens/home.html", screen("home").replace("</section>", '<div data-live="probe"><template data-item><p data-text="{id}"></p></template></div></section>'))
   }
   if (mutationDrain) {
@@ -114,10 +138,65 @@ async function serve(authenticated = false, automaticGuest = false, promoteTo?: 
   if (transition.gate) {
     const config = JSON.parse(files.get("shell/shell.json")!)
     config.routes.push({ path: "/resolver", screen: "resolver", nav: { strip: false }, files: { html: "shell/screens/resolver.html", css: "shell/screens/resolver.css", handlers: ["shell/handlers/redirect.js"] } })
+    if (transition.chainRedirect || transition.chainDelay) {
+      config.local.marker = "tab"
+      config.local.later = "tab"
+      config.seed = { probe: [{ id: "route", value: "initial" }], marker: [{ id: "marker" }] }
+    }
+    if (transition.listRedirect) {
+      config.local.detail = "tab"
+      config.seed = { probe: [{ id: "route" }], detail: [{ id: "nested" }] }
+    }
     files.set("shell/shell.json", JSON.stringify(config))
-    files.set("shell/screens/resolver.html", `<section class="screen" data-screen="resolver"><p>Resolving destination</p><div data-live="probe" data-empty-row='{"id":"route"}' data-on-mutation="redirect"><span data-text="{id}"></span></div></section>`)
+    files.set("shell/screens/resolver.html", transition.listRedirect
+      ? `<section class="screen" data-screen="resolver"><p>Resolving destination</p><div data-live="probe" data-on-mutation="redirect"><template data-item><div><span data-text="{id}"></span><div data-live="detail" data-empty=""><template data-item><i data-text="{id}"></i></template></div></div></template></div></section>`
+      : `<section class="screen" data-screen="resolver"><p>Resolving destination</p><div data-live="probe" data-empty-row='{"id":"route"}' data-on-mutation="redirect"><span data-text="{id}"></span></div></section>`)
     files.set("shell/screens/resolver.css", "")
-    files.set("shell/handlers/redirect.js", `() => ({ updates: [{ op: "put", entity: "probe", id: "route", row: { id: "route" } }], then: { type: "intent:navigate", with: { route: "other", replace: true } } })`)
+    if (transition.chainRedirect || transition.chainDelay) {
+      files.set("shell/screens/resolver.html", `<section class="screen" data-screen="resolver"><p>Resolving destination</p><div data-live="probe" data-filter="id=eq.route" data-on-mutation="redirect" data-read-marker="marker?limit=1"><span data-text="{id}"></span></div></section>`)
+      const next = transition.chainDelay ? '{ type: "later", delay: 0.1 }' : '{ type: "intent:navigate", with: { route: "other", replace: true } }'
+      files.set("shell/handlers/redirect.js", `(world, event) => event.type === "later" ? { updates: [{ op: "put", entity: "later", id: "result", row: { id: "result" } }] } : world.items[0]?.value === "ready" ? { then: ${next} } : { updates: [{ op: "put", entity: "probe", id: "route", row: { id: "route", value: "ready" } }] }`)
+    } else files.set("shell/handlers/redirect.js", `() => ({ updates: [{ op: "put", entity: "probe", id: "route", row: { id: "route" } }], then: { type: "intent:navigate", with: { route: "other", replace: true } } })`)
+  }
+  if (transition.cortex) {
+    const config = JSON.parse(files.get("shell/shell.json")!)
+    const states: Record<string, unknown> = { routing: {} }
+    const on: Record<string, unknown> = {}
+    for (const { screen } of config.routes) {
+      states[screen] = { initial: "loading", states: {
+        loading: { invoke: { src: "navigate", onDone: "ready", onError: "failed" } }, ready: {}, failed: {},
+      } }
+      on[`route:${screen}`] = { target: `.${screen}`, reenter: true }
+    }
+    const actors: Record<string, unknown> = { navigate: { via: "navigation" } }
+    if (transition.cortexRows) {
+      const chart = { field: "status", initial: "idle", states: {
+        idle: { on: { click: "selected" } }, selected: transition.cortexTimer ? { after: { 300: "idle" }, on: { click: "idle" } } : { on: { click: "idle" } },
+      } }
+      actors.homeRows = { via: "rows", screen: "home", lifetime: "attachment", charts: { toggle: chart } }
+      if (transition.cortexTimer) (states.home as any).states.ready.invoke = [{ src: "homeRows" }]
+      else (states.home as any).invoke = [{ src: "homeRows" }]
+      config.schema = { probe: { fields: [{ name: "id", type: "string", pk: true }, { name: "status", type: "string" }] } }
+      const control = `<button id="cortex-control" data-live="probe" data-filter="id=eq.toggle" data-empty-row='{"id":"toggle","status":"idle"}' data-status="{status}" data-cortex="homeRows" data-machine='${JSON.stringify(chart)}'>Toggle</button>`
+      files.set("shell/screens/home.html", screen("home").replace("</section>", `${control}</section>`))
+      files.set("shell/index.html", files.get("shell/index.html")!.replace(screen("home"), screen("home").replace("</section>", `${control}</section>`)))
+    }
+    if (transition.cortexRetain) {
+      const chart = { field: "status", initial: "idle", states: {
+        idle: { always: { guard: "isReady", target: "done" }, after: { 30: { guard: "isReady", target: "done" } } }, done: {},
+      } }
+      actors.cardRows = { via: "rows", screen: "card", lifetime: "attachment", charts: { state: chart } }
+      ;(states.card as any).invoke = [{ src: "cardRows" }]
+      const card = config.routes.find((route: { screen: string }) => route.screen === "card")
+      card.keep = 2
+      card.files.handlers = ["shell/handlers/isReady.js"]
+      config.local.flag = "tab"
+      config.schema = { flag: { fields: [{ name: "id", type: "string", pk: true }, { name: "status", type: "string" }, { name: "trigger", type: "string" }] } }
+      files.set("shell/handlers/isReady.js", `(state) => state.items[0]?.trigger === "yes"`)
+      files.set("shell/screens/card.html", files.get("shell/screens/card.html")!.replace(' data-retarget-params="card"', "").replace("</section>", `<div data-lease data-live="flag" data-filter="id=eq.{param.card}" data-status="{status}" data-cortex="cardRows" data-machine='${JSON.stringify(chart)}'></div></section>`))
+    }
+    config.cortex = { config: { initial: "routing", states, on }, actors }
+    files.set("shell/shell.json", JSON.stringify(config))
   }
   // The modules the page reaches other than by an import naming them; what
   // they import follows, as the release's addressing requires of every
@@ -574,6 +653,156 @@ it("retains the presented screen through a resolving route", async () => {
   } finally { release(); await server.close() }
 })
 
+for (const listRedirect of [false, true]) it(`never reveals a ${listRedirect ? "list" : "slot"} redirect while its write or destination is pending`, async () => {
+  let releaseDestination!: () => void
+  const gate = new Promise<void>(resolve => { releaseDestination = resolve })
+  const server = await serve(false, false, undefined, false, false, { gate, listRedirect })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate((listRedirect) => {
+        const state = window as any
+        const store = state.__prontoStore
+        const query = store.query.bind(store)
+        const nested = new Promise<void>(resolve => { state.releaseNested = resolve })
+        store.query = async (...args: any[]) => {
+          if (listRedirect && args[0] === "detail") { state.nestedBlocked = true; await nested }
+          return query(...args)
+        }
+        const write = store.write.bind(store)
+        state.holdRedirect = () => {
+          state.redirectBlocked = false
+          state.redirectGate = new Promise<void>(resolve => { state.releaseRedirect = resolve })
+        }
+        state.holdRedirect()
+        store.write = async (...args: any[]) => {
+          if (args[0] === "probe" && args[1]?.some((item: any) => item.key === "route")) {
+            state.redirectBlocked = true
+            await state.redirectGate
+          }
+          return write(...args)
+        }
+        state.revealedScreens = []
+        const observer = new MutationObserver(records => {
+          for (const record of records) {
+            if (record.type !== "attributes" || record.attributeName !== "hidden" || record.oldValue === null) continue
+            const mount = record.target as Element
+            if (!mount.classList.contains("shell-screen") || mount.hasAttribute("hidden")) continue
+            const screen = mount.querySelector("[data-screen]")?.getAttribute("data-screen")
+            if (screen) state.revealedScreens.push(screen)
+          }
+        })
+        observer.observe(document.querySelector("#app")!, { subtree: true, attributes: true, attributeFilter: ["hidden"], attributeOldValue: true })
+        state.visibilityObserver = observer
+        state.navigate("/resolver").finished.catch((error: Error) => {
+          if (error.name !== "AbortError") state.navigationError = error.message
+        })
+      }, listRedirect)
+      if (listRedirect) {
+        await page.waitForFunction(() => (window as any).nestedBlocked)
+        await page.waitForTimeout(100)
+        expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+        expect(await page.evaluate(() => (window as any).revealedScreens.includes("resolver"))).toBe(false)
+        await page.evaluate(() => (window as any).releaseNested())
+      }
+      await page.waitForFunction(() => (window as any).redirectBlocked)
+      await page.waitForTimeout(100)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      expect(await page.evaluate(() => (window as any).revealedScreens.includes("resolver"))).toBe(false)
+      await page.evaluate(() => (window as any).releaseRedirect())
+      await page.waitForURL("**/other")
+      await page.waitForTimeout(100)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      expect(await page.evaluate(() => (window as any).revealedScreens.includes("resolver"))).toBe(false)
+      releaseDestination()
+      await page.locator('[data-screen="other"]').waitFor({ state: "visible" })
+      expect(await page.evaluate(() => (window as any).revealedScreens.includes("resolver"))).toBe(false)
+      expect(await page.evaluate(() => (window as any).navigationError ?? null)).toBe(null)
+      await page.evaluate(() => (window as any).navigate("/").finished)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      await page.evaluate(() => {
+        const state = window as any
+        state.holdRedirect()
+        state.navigate("/resolver").finished.catch((error: Error) => {
+          if (error.name !== "AbortError") state.navigationError = error.message
+        })
+      })
+      await page.waitForFunction(() => (window as any).redirectBlocked)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      expect(await page.evaluate(() => (window as any).revealedScreens.includes("resolver"))).toBe(false)
+      await page.evaluate(() => (window as any).releaseRedirect())
+      await page.waitForURL("**/other")
+      await page.locator('[data-screen="other"]').waitFor({ state: "visible" })
+      expect(await page.evaluate(() => (window as any).revealedScreens.includes("resolver"))).toBe(false)
+      expect(await page.evaluate(() => (window as any).navigationError ?? null)).toBe(null)
+      await page.evaluate(() => (window as any).visibilityObserver.disconnect())
+    })
+  } finally { releaseDestination(); await server.close() }
+})
+
+it("holds a self-woken initial action until its redirect resolves", async () => {
+  let releaseDestination!: () => void
+  const gate = new Promise<void>(resolve => { releaseDestination = resolve })
+  const server = await serve(false, false, undefined, false, false, { gate, chainRedirect: true })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const state = window as any
+        const store = state.__prontoStore
+        const query = store.query.bind(store)
+        const gate = new Promise<void>(resolve => { state.releaseSecond = resolve })
+        state.markerReads = 0
+        store.query = async (...args: any[]) => {
+          if (args[0] === "marker" && ++state.markerReads > 1) { state.secondBlocked = true; await gate }
+          return query(...args)
+        }
+        state.navigate("/resolver").finished.catch((error: Error) => { if (error.name !== "AbortError") state.navigationError = error.message })
+      })
+      await page.waitForFunction(() => (window as any).secondBlocked, undefined, { timeout: 5000 })
+      await page.waitForTimeout(100)
+      const homeWhileBlocked = await page.locator('[data-screen="home"]').isVisible()
+      await page.evaluate(() => (window as any).releaseSecond())
+      await page.waitForURL("**/other")
+      releaseDestination()
+      await page.locator('[data-screen="other"]').waitFor({ state: "visible" })
+      expect(homeWhileBlocked).toBe(true)
+    })
+  } finally { releaseDestination(); await server.close() }
+})
+
+it("presents a self-woken action that hands a delayed continuation to the future", async () => {
+  let releaseDestination!: () => void
+  const gate = new Promise<void>(resolve => { releaseDestination = resolve })
+  const server = await serve(false, false, undefined, false, false, { gate, chainDelay: true })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const state = window as any
+        const store = state.__prontoStore
+        const query = store.query.bind(store)
+        const gate = new Promise<void>(resolve => { state.releaseSecond = resolve })
+        state.markerReads = 0
+        store.query = async (...args: any[]) => {
+          if (args[0] === "marker" && ++state.markerReads > 1) { state.secondBlocked = true; await gate }
+          return query(...args)
+        }
+        state.navigate("/resolver").finished.then(() => { state.destinationDone = true }, (error: Error) => { state.navigationError = error.message })
+      })
+      await page.waitForFunction(() => (window as any).secondBlocked, undefined, { timeout: 5000 })
+      await page.evaluate(() => (window as any).releaseSecond())
+      await page.locator('[data-screen="resolver"]').waitFor({ state: "visible", timeout: 5000 })
+      await page.waitForFunction(() => (window as any).destinationDone, undefined, { timeout: 5000 })
+      await page.waitForFunction(async () => (await (window as any).__prontoStore.query("later")).some((row: { id: string }) => row.id === "result"), undefined, { timeout: 5000 })
+      expect(await page.evaluate(() => (window as any).navigationError ?? null)).toBe(null)
+    })
+  } finally { releaseDestination(); await server.close() }
+})
+
 it("restores interaction with the presented screen when a destination fails", async () => {
   const server = await serve(false, false, undefined, false, false, { fail: 503 })
   try {
@@ -760,6 +989,80 @@ it("restores the outgoing screen when a newer catalogue fails during staging", a
   } finally { release(); await server.close() }
 })
 
+it("a failed navigation releases the link it pulsed and puts the address and the strip back on the screen on show", async () => {
+  const server = await serve(false, false, undefined, false, false, {})
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const store = (window as any).__prontoStore
+        const query = store.query
+        let blocked = false
+        store.query = async (...args: any[]) => {
+          if (!blocked && args[0] === "probe") { blocked = true; await new Promise(() => {}) }
+          return query(...args)
+        }
+        const timer = window.setTimeout.bind(window)
+        window.setTimeout = ((callback: TimerHandler, delay?: number, ...args: any[]) => timer(callback, delay === 15000 ? 100 : delay, ...args)) as typeof setTimeout
+      })
+      await page.locator('body > nav a[data-route="other"]').click()
+      await page.waitForSelector("[data-shell-error]")
+      expect(await page.locator("[data-shell-error]").innerText()).toContain("navigation timed out")
+      // The link it pressed is released, the home screen shows, and the address and the strip say home.
+      expect(await page.locator('body > nav [aria-busy="true"]').count()).toBe(0)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      expect(await page.evaluate(() => location.pathname)).toBe("/")
+      expect(await page.locator('body > nav a[data-route="home"]').getAttribute("aria-current")).toBe("page")
+      expect(await page.locator('body > nav a[data-route="other"]').getAttribute("aria-current")).toBeNull()
+    })
+  } finally { await server.close() }
+})
+
+// A turn that stalled before staging anything (a catalogue that never answers, the
+// last screen's writes) had no bound: the one that fired armed only once the
+// presented screen went inert, and the strip pulsed for good.
+it("a navigation stalled before it stages anything is bounded, and the next one proceeds", async () => {
+  const server = await serve(false, false, undefined, false, false, { locales: true })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const timer = window.setTimeout.bind(window)
+        window.setTimeout = ((callback: TimerHandler, delay?: number, ...args: any[]) => timer(callback, delay === 15000 ? 100 : delay, ...args)) as typeof setTimeout
+      })
+      await page.route(/es\.json$/, () => {})
+      const stalled = await page.evaluate(async () => {
+        try { await (window as any).navigate("/other?lang=es").finished; return "unexpected success" }
+        catch (error) { return (error as Error).message }
+      })
+      expect(stalled).toContain("navigation timed out")
+      expect(stalled).toContain("before leaving the screen on show")
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      await page.unroute(/es\.json$/)
+      await page.evaluate(() => (window as any).navigate("/other").finished)
+      expect(await page.locator('[data-screen="other"]').isVisible()).toBe(true)
+    })
+  } finally { await server.close() }
+})
+
+it("a link to the address on show shows the screen again, never a document in the page's place", async () => {
+  const server = await serve()
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => { (window as any).__sameDocument = true })
+      await page.locator('body > nav a[data-route="home"]').click()
+      await page.waitForTimeout(300)
+      expect(await page.evaluate(() => (window as any).__sameDocument === true)).toBe(true)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      expect(await page.evaluate(() => location.pathname)).toBe("/")
+    })
+  } finally { await server.close() }
+})
+
 for (const stalledRead of [false, true]) it(`bounds a stalled ${stalledRead ? "region read" : "asset load"} and ignores its late destination`, async () => {
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
@@ -783,10 +1086,14 @@ for (const stalledRead of [false, true]) it(`bounds a stalled ${stalledRead ? "r
         const timer = window.setTimeout.bind(window)
         window.setTimeout = ((callback: TimerHandler, delay?: number, ...args: any[]) => timer(callback, delay === 15000 ? 100 : delay, ...args)) as typeof setTimeout
       }, stalledRead)
-      expect(await page.evaluate(async () => {
+      const timedOut = await page.evaluate(async () => {
         try { await (window as any).navigate("/other").finished; return "unexpected success" }
         catch (error) { return (error as Error).message }
-      })).toContain("navigation timed out")
+      })
+      expect(timedOut).toContain("navigation timed out")
+      // The bound names what it was waiting on: the screen, and the region whose read stalled.
+      expect(timedOut).toContain("other at /other")
+      if (stalledRead) expect(timedOut).toContain("probe")
       await page.locator('[data-screen="home"] input[name="draft"]').fill("timeout recovered")
       release()
       if (stalledRead) await page.evaluate(() => (window as any).releaseRegionRead())
@@ -819,8 +1126,10 @@ it("holds the first screen through initial reads and releases later updates", as
       await page.locator('.shell-screen[data-entering]').waitFor()
       expect(await page.locator("[data-initial-loading]").count()).toBe(1)
       expect(await page.locator('.shell-screen').evaluate(el => getComputedStyle(el).opacity)).toBe("0")
+      const initialTop = await page.locator(".shell-screen").evaluate(el => el.getBoundingClientRect().top)
       await page.evaluate(() => (window as any).releaseInitialRead())
       await ready(page, "A")
+      expect(await page.locator(".shell-screen").evaluate(el => el.getBoundingClientRect().top)).toBe(initialTop)
       expect(await page.locator('.shell-screen').evaluate(el => getComputedStyle(el).opacity)).toBe("1")
       expect(await page.locator('[role="status"]').count()).toBe(0)
       await page.evaluate(() => (window as any).__prontoStore.write("probe", [{ key: "later", row: { id: "later" } }]))
@@ -845,10 +1154,13 @@ it("reveals a slow first screen after a bounded wait", async () => {
       })
       await page.goto(server.base)
       await page.locator('.shell-screen[data-entering]').waitFor()
+      await page.waitForFunction(() => document.getElementById('screen-css-home'))
+      expect(await page.locator('#screen-css-home').evaluate((el: HTMLStyleElement) => el.disabled)).toBe(false)
       await page.locator('[data-screen="home"] input[name="draft"]').focus()
       expect(await page.evaluate(() => document.activeElement?.id)).not.toBe("draft")
       await page.waitForFunction(() => !document.querySelector('.shell-screen[data-entering]'))
       expect(await page.locator('[data-screen="home"] h1').isVisible()).toBe(true)
+      expect(await page.locator('[data-screen="home"]').evaluate(el => getComputedStyle(el).getPropertyValue('--cold-boot-style').trim())).toBe('applied')
       expect(await page.locator('[role="status"]').count()).toBe(0)
       await page.locator('[data-screen="home"] input[name="draft"]').focus()
       expect(await page.evaluate(() => document.activeElement?.id)).toBe("draft")
@@ -961,4 +1273,323 @@ it("does not restore an old error after a newer navigation overtakes recovery", 
       expect(await page.locator('.shell-screen:not([hidden])[inert]').count()).toBe(0)
     })
   } finally { await server.close() }
+})
+
+
+it("presents a cold destination before its nested reads finish", async () => {
+  const server = await serve(false, false, undefined, false, false, { progressive: true })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const state = window as any
+        const store = state.__prontoStore
+        const query = store.query.bind(store)
+        const gate = new Promise<void>(resolve => { state.releaseDetail = resolve })
+        store.query = async (...args: unknown[]) => {
+          if (args[0] === "detail") { state.detailBlocked = true; await gate }
+          return query(...args)
+        }
+        state.destinationDone = false
+        state.navigate("/other").finished.then(() => { state.destinationDone = true })
+      })
+      await page.waitForFunction(() => (window as any).detailBlocked)
+      await page.locator('[data-screen="other"] h1').waitFor({ state: "visible" })
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(false)
+      expect(await page.evaluate(() => (window as any).destinationDone)).toBe(false)
+      expect(await page.locator('[data-screen="other"]').evaluate(el => el.closest('.shell-screen')!.inert)).toBe(true)
+      expect(await page.locator('[data-screen="other"]').evaluate(el => el.closest('.shell-screen')!.getAttribute('aria-busy'))).toBe('true')
+      let blocked = false
+      try { await page.locator('[data-screen="other"] button').click({ timeout: 300 }) } catch { blocked = true }
+      expect(blocked).toBe(true)
+      await page.evaluate(() => (window as any).releaseDetail())
+      await page.waitForFunction(() => (window as any).destinationDone)
+      expect(await page.locator('[data-screen="other"] option').innerText()).toBe("Child ready")
+      expect(await page.locator('[data-screen="other"]').evaluate(el => el.closest('.shell-screen')!.inert)).toBe(false)
+      expect(await page.locator('[data-screen="other"]').evaluate(el => el.closest('.shell-screen')!.hasAttribute('aria-busy'))).toBe(false)
+      await page.locator('[data-screen="other"] input').fill("ready to edit")
+      expect(await page.locator('[data-screen="other"] input').inputValue()).toBe("ready to edit")
+    })
+  } finally { await server.close() }
+})
+
+
+it("previews while unrelated notification wakes continue during a nested read", async () => {
+  const server = await serve(false, false, undefined, false, false, { progressive: true })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const state = window as any
+        const store = state.__prontoStore
+        const query = store.query.bind(store)
+        const flush = store.flushNotifications.bind(store)
+        const gate = new Promise<void>(resolve => { state.releaseDetail = resolve })
+        store.flushNotifications = () => Math.max(1, flush())
+        store.query = async (...args: unknown[]) => {
+          if (args[0] === "detail") { state.detailBlocked = true; await gate }
+          return query(...args)
+        }
+        state.finishRead = () => { store.flushNotifications = flush; state.releaseDetail() }
+        state.navigate("/other").finished.then(() => { state.destinationDone = true }, (error: Error) => { state.navigationError = error.message })
+      })
+      await page.waitForFunction(() => (window as any).detailBlocked)
+      await page.locator('[data-screen="other"] h1').waitFor({ state: "visible", timeout: 5000 })
+      expect(await page.evaluate(() => (window as any).__prontoStore.flushNotifications() > 0)).toBe(true)
+      expect(await page.evaluate(() => (window as any).destinationDone === true)).toBe(false)
+      expect(await page.evaluate(() => (window as any).navigationError ?? null)).toBe(null)
+      await page.evaluate(() => (window as any).finishRead())
+      await page.waitForFunction(() => (window as any).destinationDone)
+      expect(await page.locator('[data-screen="other"] option').innerText()).toBe("Child ready")
+    })
+  } finally { await server.close() }
+})
+
+it("restores the committed screen after a preview's nested invariant fails", async () => {
+  const server = await serve(false, false, undefined, false, false, { progressive: true })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const state = window as any
+        const store = state.__prontoStore
+        const query = store.query.bind(store)
+        const gate = new Promise<void>(resolve => { state.releaseDetail = resolve })
+        store.query = async (...args: unknown[]) => {
+          if (args[0] === "detail") { state.detailBlocked = true; await gate; return [{ id: "broken" }] }
+          return query(...args)
+        }
+        state.navigate("/other").finished.catch((error: Error) => { state.navigationError = error.message })
+      })
+      await page.waitForFunction(() => (window as any).detailBlocked)
+      await page.locator('[data-screen="other"] h1').waitFor({ state: "visible" })
+      expect(await page.title()).toBe("Parent ready — release")
+      expect(await page.locator('link[rel=canonical]').getAttribute('href')).toBe(`${server.base}/other`)
+      await page.evaluate(() => (window as any).releaseDetail())
+      await page.waitForFunction(() => (window as any).navigationError)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      expect(await page.title()).toBe("Release — release")
+      expect(await page.locator('link[rel=canonical]').getAttribute('href')).toBe(`${server.base}/`)
+      expect(await page.locator('[data-screen="home"]').evaluate(el => el.closest('.shell-screen')!.inert)).toBe(false)
+      expect(await page.locator('[data-screen="other"]').count()).toBe(0)
+      await page.locator('[data-screen="home"] input[name=draft]').fill("still usable")
+    })
+  } finally { await server.close() }
+})
+
+it("restores the committed view while a newer navigation overtakes a preview", async () => {
+  const server = await serve(false, false, undefined, true, false, { progressive: true })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const state = window as any
+        const store = state.__prontoStore
+        const query = store.query.bind(store)
+        const detail = new Promise<void>(resolve => { state.releaseDetail = resolve })
+        const next = new Promise<void>(resolve => { state.releaseNext = resolve })
+        store.query = async (...args: unknown[]) => {
+          if (args[0] === "detail") { state.detailBlocked = true; await detail }
+          if (args[0] === "probe" && state.blockNext) { state.nextBlocked = true; await next }
+          return query(...args)
+        }
+        state.navigate("/other").finished.catch(() => {})
+      })
+      await page.waitForFunction(() => (window as any).detailBlocked)
+      await page.locator('[data-screen="other"] h1').waitFor({ state: "visible" })
+      expect(await page.title()).toBe("Parent ready — release")
+      expect(await page.locator('link[rel=canonical]').getAttribute('href')).toBe(`${server.base}/other`)
+      await page.evaluate(() => {
+        const state = window as any
+        state.blockNext = true
+        state.navigate("/deck/a/Pikachu").finished.then(() => { state.nextDone = true })
+      })
+      await page.waitForFunction(() => (window as any).nextBlocked)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+      expect(await page.title()).toBe("Release — release")
+      expect(await page.locator('link[rel=canonical]').getAttribute('href')).toBe(`${server.base}/`)
+      expect(await page.locator('[data-screen="other"]').isVisible()).toBe(false)
+      await page.evaluate(() => { (window as any).releaseDetail(); (window as any).releaseNext() })
+      await page.waitForFunction(() => (window as any).nextDone)
+      expect(await page.locator('[data-screen="card"]').isVisible()).toBe(true)
+      expect(await page.locator('[data-screen="home"]').isVisible()).toBe(false)
+    })
+  } finally { await server.close() }
+})
+
+
+it("previews while a nested mutation settles, with controls inert until its write lands", async () => {
+  const server = await serve(false, false, undefined, false, false, { progressive: true, hatches: true })
+  try {
+    await withPage(async page => {
+      await page.goto(server.base)
+      await ready(page, "A")
+      await page.evaluate(() => {
+        const state = window as any
+        const store = state.__prontoStore
+        const write = store.write.bind(store)
+        const gate = new Promise<void>(resolve => { state.releaseMutation = resolve })
+        store.write = async (...args: unknown[]) => {
+          if (args[0] === "marker") { state.mutationBlocked = true; await gate }
+          return write(...args)
+        }
+        state.navigate("/other").finished.then(() => { state.destinationDone = true })
+      })
+      await page.waitForFunction(() => (window as any).mutationBlocked)
+      await page.locator('[data-screen="other"] h1').waitFor({ state: "visible" })
+      expect(await page.locator('[data-screen="other"]').evaluate(el => el.closest('.shell-screen')!.inert)).toBe(true)
+      expect(await page.evaluate(() => (window as any).destinationDone === true)).toBe(false)
+      expect(await page.locator('[data-screen="other"] .presentation-probe').count()).toBe(0)
+      await page.evaluate(() => (window as any).releaseMutation())
+      await page.waitForFunction(() => (window as any).destinationDone)
+      expect(await page.locator('[data-screen="other"]').evaluate(el => el.closest('.shell-screen')!.inert)).toBe(false)
+      expect(await page.locator('[data-screen="other"] .presentation-probe').count()).toBe(1)
+      expect(await page.evaluate(() => (window as any).hatchSizes.every((size: number) => size > 0))).toBe(true)
+      expect(await page.evaluate(async () => (await (window as any).__prontoStore.query("marker"))[0]?.value)).toBe("ready")
+    })
+  } finally { await server.close() }
+})
+
+describe("Cortex navigation", () => {
+  it("resumes automatic mutations when a catalogue fails before leaving the presented screen", async () => {
+    const server = await serve(false, false, undefined, false, false, { cortex: true, locales: true, homeMutation: true })
+    try {
+      await withPage(async page => {
+        await page.goto(server.base)
+        await ready(page, "A")
+        await page.route(/es\.json$/, route => route.abort("failed"))
+        expect(await page.evaluate(async () => {
+          try { await (window as any).navigate('/other?lang=es').finished; return 'unexpected success' }
+          catch (error) { return (error as Error).message }
+        })).toContain('Failed to fetch')
+        expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+        await page.evaluate(() => (window as any).__prontoStore.write('trigger', [{ key: 'after', row: { id: 'after', value: 'recovered' } }]))
+        expect(await page.evaluate(async () => {
+          const deadline = Date.now() + 3000
+          do {
+            if ((await (window as any).__prontoStore.query('result')).some((row: any) => row.value === 'recovered')) return true
+            await new Promise(resolve => setTimeout(resolve, 25))
+          } while (Date.now() < deadline)
+          return false
+        })).toBe(true)
+      })
+    } finally { await server.close() }
+  })
+
+  it("boots a deep link and follows same-screen changes and history", async () => {
+    const server = await serve(false, false, undefined, true, false, { cortex: true })
+    try {
+      await withPage(async page => {
+        await page.goto(`${server.base}/deck/a/Pikachu`)
+        await ready(page, "A")
+        await page.waitForFunction(() => document.querySelector('#card')?.textContent === 'Pikachu')
+        expect(await page.evaluate(() => (window as any).cortex.snapshot().value)).toEqual({ card: "ready" })
+        await page.evaluate(() => (window as any).navigate('/deck/a/Charmander').finished)
+        await page.waitForFunction(() => document.querySelector('#card')?.textContent === 'Charmander')
+        expect(await page.evaluate(() => (window as any).cortex.snapshot().value)).toEqual({ card: "ready" })
+        await page.goBack()
+        await page.waitForFunction(() => document.querySelector('#card')?.textContent === 'Pikachu')
+        await page.waitForFunction(() => (window as any).cortex.snapshot().matches({ card: 'ready' }))
+        await page.goForward()
+        await page.waitForFunction(() => document.querySelector('#card')?.textContent === 'Charmander')
+        await page.waitForFunction(() => (window as any).cortex.snapshot().matches({ card: 'ready' }))
+      })
+    } finally { await server.close() }
+  })
+
+  it("reattaches a cached screen's row machine when its route returns", async () => {
+    const server = await serve(false, false, undefined, false, false, { cortex: true, cortexRows: true })
+    try {
+      await withPage(async page => {
+        await page.goto(server.base)
+        await ready(page, "A")
+        await page.locator("#cortex-control").click()
+        await page.waitForFunction(() => document.querySelector('#cortex-control')?.getAttribute('data-status') === 'selected')
+        await page.evaluate(() => (window as any).navigate('/other').finished)
+        await page.evaluate(() => document.querySelector<HTMLButtonElement>('#cortex-control')!.click())
+        expect(await page.locator('#cortex-control').getAttribute('data-status')).toBe('selected')
+        await page.evaluate(() => (window as any).navigate('/').finished)
+        expect(await page.locator('#cortex-control').getAttribute('data-status')).toBe('selected')
+        await page.locator('#cortex-control').click()
+        await page.waitForFunction(() => document.querySelector('#cortex-control')?.getAttribute('data-status') === 'idle')
+      })
+    } finally { await server.close() }
+  })
+
+  it("runs a retained row family only for the active parameterized screen", async () => {
+    const server = await serve(false, false, undefined, true, false, { cortex: true, cortexRetain: true })
+    try {
+      await withPage(async page => {
+        await page.goto(server.base)
+        await ready(page, "A")
+        await page.evaluate(async () => {
+          await (window as any).__prontoStore.write("flag", [
+            { key: "First", row: { id: "First", status: "idle", trigger: "no" } },
+            { key: "Second", row: { id: "Second", status: "idle", trigger: "no" } },
+          ])
+        })
+        await page.evaluate(() => (window as any).navigate('/deck/a/First').finished)
+        await page.evaluate(() => (window as any).navigate('/deck/a/Second').finished)
+        await page.evaluate(async () => {
+          await (window as any).__prontoStore.write("flag", [
+            { key: "First", row: { id: "First", status: "idle", trigger: "yes" } },
+            { key: "Second", row: { id: "Second", status: "idle", trigger: "yes" } },
+          ])
+        })
+        await page.waitForFunction(async () => (await (window as any).__prontoStore.query('flag')).find((row: any) => row.id === 'Second')?.status === 'done')
+        await page.waitForTimeout(100)
+        expect(await page.evaluate(async () => (await (window as any).__prontoStore.query('flag')).find((row: any) => row.id === 'First').status)).toBe('idle')
+        await page.evaluate(() => (window as any).navigate('/deck/a/First').finished)
+        await page.waitForFunction(async () => (await (window as any).__prontoStore.query('flag')).find((row: any) => row.id === 'First')?.status === 'done')
+      })
+    } finally { await server.close() }
+  })
+
+  it("keeps the winning screen when a delayed navigation finishes late", async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const server = await serve(false, false, undefined, true, false, { cortex: true, gate })
+    try {
+      await withPage(async page => {
+        await page.goto(server.base)
+        await ready(page, "A")
+        await page.evaluate(() => { (window as any).navigate('/other').finished.catch((error: Error) => { if (error.name !== 'AbortError') throw error }) })
+        await page.waitForFunction(() => (window as any).cortex.snapshot().matches({ other: 'loading' }) && document.querySelectorAll('#app > .shell-screen').length === 2)
+        await page.evaluate(() => (window as any).navigate('/deck/a/Pikachu').finished)
+        expect(await page.evaluate(() => (window as any).cortex.snapshot().value)).toEqual({ card: "ready" })
+        release()
+        await page.waitForTimeout(100)
+        expect(await page.locator('[data-screen="card"]').isVisible()).toBe(true)
+        expect(await page.locator('[data-screen="other"]:visible').count()).toBe(0)
+        expect(await page.evaluate(() => (window as any).cortex.snapshot().value)).toEqual({ card: "ready" })
+      })
+    } finally { release(); await server.close() }
+  })
+
+  it("reports a failed destination and recovers on a later route", async () => {
+    const server = await serve(false, false, undefined, true, false, { cortex: true, cortexRows: true, cortexTimer: true, fail: 503 })
+    try {
+      await withPage(async page => {
+        await page.goto(server.base)
+        await ready(page, "A")
+        expect(await page.evaluate(async () => {
+          try { await (window as any).navigate('/other').finished; return 'unexpected success' }
+          catch (error) { return (error as Error).message }
+        })).toContain('503')
+        expect(await page.evaluate(() => (window as any).cortex.snapshot().value)).toEqual({ home: "ready" })
+        expect(await page.locator('[data-screen="home"]').isVisible()).toBe(true)
+        await page.locator('#cortex-control').click()
+        await page.waitForFunction(() => document.querySelector('#cortex-control')?.getAttribute('data-status') === 'selected')
+        await page.waitForFunction(() => document.querySelector('#cortex-control')?.getAttribute('data-status') === 'idle')
+        await page.evaluate(() => (window as any).navigate('/deck/a/Pikachu').finished)
+        expect(await page.locator('[data-screen="card"]').isVisible()).toBe(true)
+        expect(await page.evaluate(() => (window as any).cortex.snapshot().value)).toEqual({ card: "ready" })
+      })
+    } finally { await server.close() }
+  })
+
 })

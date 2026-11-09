@@ -32,8 +32,6 @@ import (
 		},
 	]
 
-
-
 	// Every service runs the image the app's own compose project builds, pushed
 	// to the environment's registry: what integrate tested is what releases.
 	#appImage: {
@@ -114,6 +112,15 @@ import (
 			}
 			spec: {
 				instances: 1
+				postgresql: parameters: {
+					wal_level:             "logical"
+					max_replication_slots: "128"
+					max_wal_senders:       "128"
+					max_connections:       "200"
+					fsync:                 "on"
+					synchronous_commit:    "on"
+					full_page_writes:      "on"
+				}
 				imageName: (#appImage & {svc: "database"}).out
 				// mecha's database image derives from the official postgres image,
 				// whose postgres user is 999, not CloudNativePG's 26.
@@ -160,8 +167,9 @@ import (
 
 	// The schema, built as compose builds it, by the app's own images: initdb
 	// runs the database image's initdb directory once, on a fresh database, and
-	// migrate carries it forward with pgroll on every release. The image's
-	// docker_process_sql pins the local socket, so the Job restates it against
+	// migrate applies pending pgroll migrations and reconciles permissions on
+	// every release. The image's docker_process_sql pins the local socket,
+	// so the Job restates it against
 	// the cluster's database Service; every step otherwise runs as the image's
 	// entrypoint runs it. A database comment marks initdb done.
 	let schemaEnv = [
@@ -224,10 +232,10 @@ import (
 					if [ "$marker" = "pronto initdb" ]; then
 					  echo "initdb: already built"
 					  # Its re-runnable steps are the release's, though (emit.cue's): a new
-					  # entity's table, every policy, trigger and publication, and the hybrid
-					  # machines' code run again, keeping every row.
-					  for step in 005_create_tables 006_policies 007_txid 008_publication 016_mecha_actors; do
-					    f=/docker-entrypoint-initdb.d/$step.sql
+					  # entity's table, every policy, trigger and publication, and the mecha
+					  # machines' code run again, keeping every row; that step is found by its
+					  # suffix, wherever the program places it.
+					  for f in /docker-entrypoint-initdb.d/005_create_tables.sql /docker-entrypoint-initdb.d/006_policies.sql /docker-entrypoint-initdb.d/007_txid.sql /docker-entrypoint-initdb.d/008_publication.sql /docker-entrypoint-initdb.d/[0-7][0-9][0-9]_mecha_actors.sql; do
 					    if [ -f "$f" ]; then psql -v ON_ERROR_STOP=1 -Xq -f "$f"; fi
 					  done
 					  exit 0
@@ -407,8 +415,11 @@ import (
 				timeouts: {for id, s in bounds.mesh {(id): "\(s)s"}}
 			}
 			targets: apps: {
-				for id, _ in bounds.mesh {
+				for id, _ in bounds.mesh if id != "hatch" {
 					(id): timeout: id
+				}
+				for id in release.doors {
+					(id): timeout: "hatch"
 				}
 			}
 		}
@@ -434,7 +445,6 @@ import (
 			metric: enabled: true
 		}
 	}]
-
 
 	let prontoCrudDeploymentObj = [
 		if release.type == "pronto" {
@@ -772,7 +782,7 @@ import (
 								name:  "ORIGIN"
 								value: originValue
 							},
-							for up in ["CRUD", "AUTH", "ELECTRIC", "TICKER", "RCLONE_S3", "IMGPROXY", "RENDER"] {name: "PRONTO_UPSTREAM_\(up)", value: "localhost:3500"},
+							for up in list.Concat([["CRUD", "AUTH", "ELECTRIC", "TICKER", "RCLONE_S3", "IMGPROXY", "RENDER"], [for id in release.doors {strings.ToUpper(strings.Replace(id, "-", "_", -1))}]]) {name: "PRONTO_UPSTREAM_\(up)", value: "localhost:3500"},
 							{name: "PRONTO_TRACING", value: "on"},
 							for e in (#otelExport & {service: "caddy", port: 4317}).env {e},
 							{
@@ -833,7 +843,6 @@ import (
 				}]
 			}
 		},
-
 
 	]
 
@@ -1145,6 +1154,7 @@ import (
 						ports: [
 							{port: 50002, protocol: "TCP"},
 							{port: 3500, protocol: "TCP"},
+							{port: 3000, protocol: "TCP"},
 						]
 					},
 				]
@@ -1301,6 +1311,12 @@ import (
 		},
 	]
 
+	let runtimeObjects = (#Runtime & {
+		app:         release
+		environment: targetEnv
+		images: {for name, _ in release.runtime {(name): (#appImage & {svc: name}).out}}
+	}).objects
+
 	// objects collects all generated Kubernetes API definitions in standard order
 	objects: [
 		for list in [
@@ -1322,6 +1338,7 @@ import (
 			prontoCaddyServiceObj,
 			prontoRenderDeploymentObj,
 			prontoRenderServiceObj,
+			runtimeObjects,
 			gatewayObj,
 			httpRouteObj,
 			backendTrafficPolicyObj,

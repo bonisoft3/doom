@@ -17,6 +17,8 @@
 // focus-order nits — and a gate that fails on advice is muted within a week,
 // taking the criticals with it.
 import { parse as parseYaml } from "jsr:@std/yaml@1.0.5"
+
+import { optionalSegment } from "./interpreter/fragment.js"
 import { checkInteractiveOverlap } from "./src/lint/playwright/checks/interactive-overlap.ts"
 import { checkClippedContent } from "./src/lint/playwright/checks/clipped-content.ts"
 import { checkFocusableInvisible } from "./src/lint/playwright/checks/focusable-invisible.ts"
@@ -34,7 +36,7 @@ import { checkContrast, contrastFloor, contrastRatio } from "./src/lint/playwrig
 import { armCLS, checkCLS } from "./src/lint/playwright/checks/cls.ts"
 import { captureConsole, analyzeConsole } from "./src/lint/playwright/checks/console-messages.ts"
 import type { VisualBug } from "./src/lint/playwright/types.ts"
-import { type ParamPlan, paramPlans, machineRegions } from "./interpreter/lint.ts"
+import { type ParamPlan, paramPlans, machineRegions, resolveMachineMarkup } from "./interpreter/lint.ts"
 import { type MachineRegionInfo, extractRegions, generateCoveringArrayFrames } from "./test/storybook-injector.ts"
 import type { Machine } from "./test/canonical.ts"
 import { parseFilter, parseFilterSpec, PLACEHOLDER, PLACEHOLDERS, routeAt } from "./interpreter/fragment.js"
@@ -153,17 +155,23 @@ export function floorsFrom(yaml: string | ShellDoc): Record<string, number> {
   return doc.floors
 }
 
-/** Substitute resolved values for `:param` segments. */
+/** Substitute resolved values for `:param` segments; an optional `:name?`
+ * segment with no value is left out. */
 export function fillRoute(pattern: string, params: Record<string, string>): string {
-  return pattern
+  const filled = pattern
     .split("/")
-    .map((seg) => {
-      if (!seg.startsWith(":")) return seg
-      const v = params[seg.slice(1)]
-      if (v === undefined) throw new Error(`no fixture value for :${seg.slice(1)}`)
-      return encodeURIComponent(v)
+    .flatMap((seg) => {
+      if (!seg.startsWith(":")) return [seg]
+      const optional = optionalSegment(seg)
+      const v = params[seg.slice(1, optional ? -1 : undefined)]
+      if (v === undefined || (optional && v === "")) {
+        if (optional) return []
+        throw new Error(`no fixture value for :${seg.slice(1)}`)
+      }
+      return [encodeURIComponent(v)]
     })
     .join("/")
+  return filled || "/"
 }
 
 /** Resolve an address with the same route and locale matcher as the shell. */
@@ -253,7 +261,7 @@ function crudReader(base: string, token: string | undefined): Reader {
     }
     const r = await fetch(`${base}/crud/${q}`, { headers: { Authorization: `Bearer ${token}` } })
     if (!r.ok) throw new Error(`GET /crud/${q} -> ${r.status} ${await r.text()}`)
-    return r.json() as Promise<Row[]>
+    return (await r.json()) as Row[]
   }
 }
 
@@ -424,6 +432,38 @@ export async function resolveParams(
     else keep(plan, String(raw))
   }
   return { params, unresolved }
+}
+
+export async function resolveReadyParams(plans: ParamPlan[], tiers: Tiers, api: Reader, timeoutMs: number) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("fixture readiness timeout must be positive")
+  const deadline = Date.now() + timeoutMs
+  const expired = new Error("fixture readiness timed out")
+  const read: Reader = async (query) => {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) throw expired
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        api(query),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(expired), remaining) }),
+      ])
+    } finally { clearTimeout(timer) }
+  }
+  let result = await resolveParams(plans, tiers, read)
+  for (;;) {
+    const routes = new Set(result.unresolved.filter((hole) =>
+      plans.some((plan) => plan.route === hole.route && plan.param === hole.param && !onDevice(plan, tiers))
+    ).map((hole) => hole.route))
+    const remaining = deadline - Date.now()
+    if (!routes.size || remaining <= 0) return result
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)))
+    if (Date.now() >= deadline) return result
+    // Re-resolve the entire missing route so later params stay bound to its selected row.
+    const next = await resolveParams(plans.filter((plan) => routes.has(plan.route)), tiers, read)
+    for (const route of routes) result.params.delete(route)
+    for (const [route, params] of next.params) result.params.set(route, params)
+    result = { params: result.params, unresolved: [...result.unresolved.filter((hole) => !routes.has(hole.route)), ...next.unresolved] }
+  }
 }
 
 /**
@@ -735,16 +775,13 @@ async function main(appDir: string, viewports: Viewport[] = DEFAULT_VIEWPORTS): 
   // minted only where a cluster runs the auth service that mints it.
   const session = tiers.server ? await guestSession(base) : undefined
 
-  // Keyed by route path, because that is what paramPlans walks. A route whose
-  // html is missing reads as empty markup and its params come back unplanned,
-  // which is the finding either way.
   const markup: Record<string, string> = {}
   for (const route of routes) {
     if (!route.files?.html) continue
-    markup[route.path] = await Deno.readTextFile(`${appDir}/${route.files.html}`).catch(() => "")
+    markup[route.path] = resolveMachineMarkup(await Deno.readTextFile(`${appDir}/${route.files.html}`), (shell.cortex as { actors?: Record<string, unknown> } | undefined)?.actors, route.screen)
   }
   const { plans, unplanned } = paramPlans(routes, markup)
-  const { params, unresolved } = await resolveParams(plans, tiers, crudReader(base, session?.token))
+  const { params, unresolved } = await resolveReadyParams(plans, tiers, crudReader(base, session?.token), settleTimeout())
   // Only browser-owned tab views can be materialized by a live screen; a
   // missing server row stays the coverage hole the reader found.
   const tabHoles = unresolved.filter((hole) => {
@@ -762,7 +799,7 @@ async function main(appDir: string, viewports: Viewport[] = DEFAULT_VIEWPORTS): 
           const parentPath = hole.route.slice(0, hole.route.lastIndexOf("/")) || "/"
           if (!route?.screen || !routes.some((r) => r.path === parentPath)) continue
           const known = params.get(hole.route) ?? {}
-          if (parentPath.split("/").some((p) => p.startsWith(":") && known[p.slice(1)] === undefined)) continue
+          if (parentPath.split("/").some((p) => p.startsWith(":") && !optionalSegment(p) && known[p.slice(1)] === undefined)) continue
           const page = await context.newPage()
           try {
             const found = await resolveRenderedFixture(page, shell, base, route, parentPath, known, hole.param, settleTimeout())
@@ -796,7 +833,7 @@ async function main(appDir: string, viewports: Viewport[] = DEFAULT_VIEWPORTS): 
   const live = routes.filter(
     (route) =>
       !route.path.split("/").some(
-        (s) => s.startsWith(":") && params.get(route.path)?.[s.slice(1)] === undefined,
+        (s) => s.startsWith(":") && !optionalSegment(s) && params.get(route.path)?.[s.slice(1)] === undefined,
       ),
   )
 
@@ -1104,6 +1141,22 @@ async function main(appDir: string, viewports: Viewport[] = DEFAULT_VIEWPORTS): 
               })
             }
           }
+          // A posed row on a device table outlives this route (the collection
+          // persists it), so the next route's base frame would wear the last
+          // frame's state — its theme. Those base rows go back before it; a
+          // tab row is the next route's to rebuild.
+          const persisted = Object.fromEntries(Object.entries(baseRows).filter(([table]) => tiers.local[table] === "device"))
+          if (Object.keys(persisted).length > 0) await page.evaluate(async (tables: Record<string, Record<string, unknown>>) => {
+            const w = window as unknown as { __prontoPose?: (t: string, r: Record<string, unknown>) => Promise<void> }
+            if (typeof w.__prontoPose !== "function") return
+            for (const [table, row] of Object.entries(tables)) await w.__prontoPose(table, row)
+            // The way back runs the same transitions the frame ran; a contrast
+            // pass that rasterized mid-way would read a colour that is neither.
+            await Promise.race([
+              Promise.allSettled(document.getAnimations().map((a) => a.finished)),
+              new Promise((r) => setTimeout(r, 500)),
+            ])
+          }, persisted)
         }
       }
     } catch (err) {

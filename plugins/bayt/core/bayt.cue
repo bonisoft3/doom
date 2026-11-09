@@ -82,7 +82,8 @@ import (
 	darwin?:  {do?: string, shell?: #shell}
 
 	// Output-format axis — decorations applied only when emitting that format.
-	dockerfile?: {
+	// Set `dockerfile: null` to opt a host task cmd out of Dockerfile RUN emission.
+	dockerfile?: null | {
 		// Structured wrap. When set, the RUN line gets `--mount=type=
 		// secret,…` flags for each entry in `secrets`, and the cmd body
 		// is wrapped in a /bin/sh -c '<setup>; trap <teardown> EXIT;
@@ -149,7 +150,7 @@ import (
 	// runs. Enforce at the schema level so authors can't declare
 	// `shell: "exec"` (or "nu", "bash", etc.) alongside an inject
 	// block without a clear CUE error.
-	if dockerfile != _|_ && dockerfile.inject != _|_ {
+	if dockerfile != _|_ if dockerfile != null if dockerfile.inject != _|_ {
 		shell: "sh"
 	}
 }
@@ -350,31 +351,40 @@ noop: #cmd & {
 	//
 	// Secret/ssh mounts take `id` (the secret / key name).
 	#mount: {
-		type:   "cache"
-		target: string
-		scope: *"target" | "project" | "global"
+		type:     "cache" | "secret" | "bind" | "ssh" | "tmpfs"
 		required: *false | bool
-	} | {
-		type:     "secret"
-		target?:  string
-		source?:  string
-		id?:      string
-		required: *false | bool
-	} | {
-		type:     "bind"
-		target?:  string
-		source?:  string
-		required: *false | bool
-	} | {
-		type:     "ssh"
-		target?:  string
-		source?:  string
-		id?:      string
-		required: *false | bool
-	} | {
-		type:     "tmpfs"
-		target?:  string
-		required: *false | bool
+		if type == "cache" {
+			close({
+				type:     "cache"
+				target:   string
+				scope:    *"target" | "project" | "global"
+				required: bool
+			})
+		}
+		if type == "secret" || type == "ssh" {
+			close({
+				type:     "secret" | "ssh"
+				target?:  string
+				source?:  string
+				id?:      string
+				required: bool
+			})
+		}
+		if type == "bind" {
+			close({
+				type:     "bind"
+				target?:  string
+				source?:  string
+				required: bool
+			})
+		}
+		if type == "tmpfs" {
+			close({
+				type:     "tmpfs"
+				target?:  string
+				required: bool
+			})
+		}
 	}
 
 	// Field order intentionally mirrors Dockerfile statement order so
@@ -660,7 +670,7 @@ noop: #cmd & {
 	// #watch — develop.watch entry. Compose-domain (sync/rebuild action
 	// vocab is compose-specific), so nested here rather than top-level.
 	#watch: {
-		action: "sync" | "sync+restart" | "rebuild"
+		action: "sync" | "sync+restart" | "sync+exec" | "rebuild"
 		path:   string
 		// Required even on rebuild entries, where compose ignores it —
 		// authors supply the in-image destination as documentation.
@@ -668,6 +678,7 @@ noop: #cmd & {
 		// Optional — compose rejects `ignore: []` on rebuild entries.
 		// Either pass a non-empty list or omit.
 		ignore?: [...string]
+		exec?: command: string | [string, ...string]
 	}
 
 	// up / manual — bayt control flags (consumed by the emitter, never
@@ -1213,26 +1224,9 @@ _cacheScopeMax: _cacheTagBudget - (_cacheTagHash + 2)
 	entrypoint?: #entrypoint
 	expose?: [Name=string]: #port
 
-	// hmr — destination-side classification of srcs entries for the
-	// dev loop. Each kind maps to a compose.develop.watch action:
-	//   code    → sync (framework HMR if `native: true`, else watchexec --restart)
-	//   configs → sync + SIGHUP (watchexec wraps cmd to signal-reload)
-	//   assets  → sync+restart (compose-managed full container restart)
-	//   tools   → rebuild (compose-managed image rebuild)
-	//   docs    → ignored everywhere (no sync, no rebuild)
-	// `native` is set by the stack (Pnpm.dev sets it to true since Vite/Next
-	// handle their own watching internally). When false, bayt wraps the
-	// launch cmd in nested watchexec layers for code-restart and configs-
-	// SIGHUP. The watchexec binary comes from lazybox via the standard
-	// nubox overlay (no extra dockerfile.copy needed for nubox-based stages).
-	hmr?: {
-		native:  *false | bool
-		code:    [...string]
-		configs: [...string]
-		assets:  [...string]
-		tools:   [...string]
-		docs:    [...string]
-	}
+	// HMR paths are relative to the project root. Reactions are optional;
+	// absent reactions retain the legacy Compose projection.
+	hmr?: #hmr
 
 	// Resolved cmd list (priority-sorted, nulls removed).
 	cmds: (#MapToList & {in: cmd}).out
@@ -1240,7 +1234,7 @@ _cacheScopeMax: _cacheTagBudget - (_cacheTagHash + 2)
 	// form-less one trips the empty-list index and fails generation. On the
 	// concrete list, not #cmd — the bare definition legitimately has neither.
 	_cmdForms: [for c in cmds {
-		[if c.do != _|_ {c.do}, if c.dockerfile != _|_ && c.dockerfile.do != _|_ {c.dockerfile.do}][0]
+		[if c.do != _|_ {c.do}, if c.dockerfile != _|_ if c.dockerfile != null if c.dockerfile.do != _|_ {c.dockerfile.do}][0]
 	}]
 
 	// cache — content-addressable cache.nu wrap behavior. Two
@@ -1333,9 +1327,7 @@ _reservedNamePattern: "^bayt$|_(srcs|outs|bayt)$"
 	// siblings. Optional — non-release projects leave this unset.
 	bake?: #bake
 
-	// Emit `.bayt/{depot.yaml,depot.hcl}`, the pair a host `depot bake` build
-	// phase consumes. Only depot.yaml needs docker (a `compose config`
-	// flatten), so default off keeps generation docker-free elsewhere.
+	// Emit the runtime-image build group in `.bayt/depot.hcl`.
 	depot: *false | bool
 
 	// compose.includes — project-root-relative compose files (any name;

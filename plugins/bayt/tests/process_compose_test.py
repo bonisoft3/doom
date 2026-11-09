@@ -15,7 +15,7 @@ SAYT = ROOT / 'plugins/sayt'
 
 SERVER = {
     'expose': {'http': {'port': 8000, 'env': 'PORT'}},
-    'healthcheck': {'url': 'http://127.0.0.1:8000/', 'interval': '1s', 'start_period': '10s'},
+    'healthcheck': {'port': 8000, 'path': '/', 'interval': '1s', 'start_period': '10s'},
     'entrypoint': {'do': 'echo $$ > server.pid; exec python3 -m http.server "$PORT" --bind 127.0.0.1', 'shell': 'sh'},
     # The http template's probe binary is copied into an image; this one is never built.
     'dockerfile': {'from': {'name': 'python:3'}},
@@ -46,7 +46,9 @@ class ProcessCompose(unittest.TestCase):
             launcher.chmod(0o755)
         self.env = dict(os.environ,
                         PATH=f'{self.bin}:{Path(self.nu).parent}:' + os.environ['PATH'],
-                        BAYT_CACHE_DIR=str(self.base / 'cache'), MISE_LOCKED='0')
+                        BAYT_CACHE_DIR=str(self.base / 'cache'),
+                        BAYT_CACHE_URL='', BAYT_CACHE_REGISTRY='', BAYT_CACHE_TOKEN='',
+                        MISE_LOCKED='0')
 
     def generate(self, check, after=None, server=SERVER):
         targets = {
@@ -55,7 +57,7 @@ class ProcessCompose(unittest.TestCase):
             'integrate': {'taskfile': {}, 'srcs': {'globs': ['input.txt']},
                           'cmd': {'stage': {'do': 'cp input.txt staged.txt'}}, 'entrypoint': {
                 'do': check, 'shell': 'sh',
-                'env': {'SERVER_URL': 'http://server:8000/input.txt'},
+                'env': {'SERVER_URL': {'peer': 'server', 'port': 'http', 'prefix': 'http://', 'suffix': '/input.txt'}},
                 'after': after if after is not None else {'server': 'healthy'},
             }},
         }

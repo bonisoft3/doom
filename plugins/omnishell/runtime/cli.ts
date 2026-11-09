@@ -1,7 +1,8 @@
 // omnishell's command line: the entry point every consumer of the terminal
 // reaches its checkers through.
 //
-//   omnishell check markup|handlers|machines|battery <appDir> | --self-test
+//   omnishell check markup|handlers|presentation|machines|battery|i18n|kinetic|aria <appDir> | --self-test
+//   omnishell project native <appDir> | --emit-bundle <appDir> | --self-test
 //   omnishell read markup <appDir> | --self-test
 //   omnishell render documents <appDir> <outDir> <origin>
 //   omnishell mode <appDir>
@@ -29,7 +30,8 @@ function toolDir(name: string): string {
 }
 
 const usage = [
-  "usage: omnishell check markup|handlers|machines|battery|parity|i18n|kinetic <appDir> | --self-test",
+  "usage: omnishell check markup|handlers|presentation|machines|battery|i18n|kinetic|aria <appDir> | --self-test",
+  "       omnishell project native <appDir> | --emit-bundle <appDir> | --self-test",
   "       omnishell read markup <appDir> | --self-test",
   "       omnishell render documents <appDir> <outDir> <origin>",
   "       omnishell mode <appDir>",
@@ -90,12 +92,25 @@ if (verb === "mode") {
   const { run } = await import("../render-documents.ts");
   await Deno.permissions.revoke({ name: "env" });
   await run(args);
+} else if (verb === "project") {
+  const [noun, ...args] = rest;
+  if (noun !== "native") refuse(`project: no such leaf: ${noun ?? ""}`);
+  if (args.length < 1 || args.length > 2) refuse("project native: <appDir> | --emit-bundle <appDir> | --self-test");
+  const { run } = await import("../project-native.ts");
+  await narrow(false);
+  await run(args);
 } else if (verb === "check" || verb === "read") {
   const [noun, ...args] = rest;
   if (noun === undefined) refuse(`${verb}: no leaf`);
   const leaf = `${verb} ${noun}`;
   if (args.length !== 1) refuse(`${leaf}: one <appDir> or --self-test`);
   switch (leaf) {
+    case "check aria": {
+      const { run } = await import("../check-aria-app.ts");
+      await narrow(false);
+      await run(args);
+      break;
+    }
     case "check markup": {
       const { run } = await import("../check-markup.ts");
       await narrow(false);
@@ -114,14 +129,14 @@ if (verb === "mode") {
       await run(args);
       break;
     }
-    case "check machines": {
-      const { run } = await import("../check-machines.ts");
-      await narrow(true);
+    case "check presentation": {
+      const { run } = await import("../check-presentation.ts");
+      await narrow(false);
       await run(args);
       break;
     }
-    case "check parity": {
-      const { run } = await import("../check-parity.ts");
+    case "check machines": {
+      const { run } = await import("../check-machines.ts");
       await narrow(true);
       await run(args);
       break;

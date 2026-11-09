@@ -69,7 +69,7 @@
 
   ],
   "artifact": [
-    {"path":"program.cue","sha256":"33cfda580942e14786595f776d7c99c722ebaa308c8f76a0a58edbf539b0fd88","derived":false},
+    {"path":"program.cue","sha256":"73f29c8804aa158963f57c25b3c6a9babf0992db09957cd7df6fd460ec5766c4","derived":false},
     {"path":"DESIGN.md","sha256":"72f819a242e0966550638e33f743f169b4143c5cac9a425edbeefe58f2aeb272","derived":false},
     {"path":"ir.html","sha256":"42d96a29995c6d55836015d3b44babfe20b869ce2f8c5e6087b50eb143b887a2","derived":false},
     {"path":"acceptance.md","sha256":"c1ab5e4f36600b04c4bc1e5a264ce09e383cca38a4afaf9797e5d643ed0c87b1","derived":false},
@@ -228,10 +228,12 @@
     {"name":"Intl","reason":"only an adapter or a module granted Intl via manifest endowments is endowed with Intl","except_role":"adapter"},
     {"name":"Crypto","reason":"safe platform primitives require opt-in via manifest endowments","except_role":""},
     {"name":"Cheerio","reason":"safe platform primitives require opt-in via manifest endowments","except_role":""},
+    {"name":"Pdf","reason":"safe platform primitives require opt-in via manifest endowments","except_role":""},
     {"name":"TextEncoder","reason":"safe platform primitives require opt-in via manifest endowments","except_role":""},
     {"name":"TextDecoder","reason":"safe platform primitives require opt-in via manifest endowments","except_role":""},
     {"name":"URL","reason":"safe platform primitives require opt-in via manifest endowments","except_role":""},
     {"name":"URLSearchParams","reason":"safe platform primitives require opt-in via manifest endowments","except_role":""},
+    {"name":"Statechart","reason":"safe platform primitives require opt-in via manifest endowments","except_role":""},
     {"name":"Math.random","reason":"handlers must be deterministic","except_role":""},
     {"name":"eval","reason":"reached indirectly it evaluates arbitrary source inside the compartment; SES rejects only the direct call form","except_role":""},
     {"name":"plv8","reason":"a validation is handed its world; it queries nothing","except_role":""},

@@ -1,0 +1,5 @@
+# The monorepo's own, which copybara leaves out (copy.bara.sky): mecha from
+# its tree at HEAD over the release .mise.toml pin, so the data-plane bundle
+# is built from the checkout.
+[tools]
+"github:bonisoft3/mecha" = "path:../../libraries/mecha"

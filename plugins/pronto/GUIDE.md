@@ -72,7 +72,7 @@ bundle lacks, hand-authored handlers included; omnishell's guide has
 
 The verbs are sayt's, and every check lands under the verb whose layer it
 needs: `lint` for anything that fails in seconds without executing the app
-(`cue vet`, `check-facts`, `check-sql`, `check-hybrids`, `identity.ts check`,
+(`cue vet`, `check-facts`, `check-sql`, `check-mecha`, `identity.ts check`,
 omnishell's `check handlers` and `check markup`), `test` for the app's behaviour against fixtures
 with no live service (`tests/*.test.ts`, `check machines`, `check battery`),
 `integrate` for anything that needs the cluster up (the migration replay, the
@@ -126,7 +126,7 @@ lifecycle guard: a Jessie predicate over the row and the rows its declared
 references reach. The machine names which writes it guards.
 
 ```cue
-state: machines: FavoriteRules: {
+state: mecha: rows: FavoriteRules: {
 	entity: "Favorite"
 	guards: "own-article": {
 		src: "shell/validations/own-article.js"
@@ -173,8 +173,9 @@ edge from a server entity to a `tab` or `device` one, two edges to one table,
 an edge to a table no screen reads and no form writes, a name a unique already
 uses and a denied name in the source. A validation is an ir kind
 (`data-kind="validation"`, `data-of` its entity), paired by the bijection like
-a handler. Where it runs, when the server judges it, and the rung it fills are
-[the lattice's](docs/lattice.md#the-validation-ladder).
+a handler. The rung it fills is [the lattice's](docs/lattice.md#the-validation-ladder);
+where it runs and when the server judges it are
+[Jessie in the database](docs/decisions/2026-11-05-database-jessie.md#validations)'s.
 
 ### A count the reader is inside of
 

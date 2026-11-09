@@ -10,6 +10,7 @@ package pronto
 
 import (
 	bayt "bonisoft.org/plugins/bayt/core:bayt"
+	deno "bonisoft.org/plugins/bayt/stacks/deno"
 	mise "bonisoft.org/plugins/bayt/stacks/mise"
 	sayt "bonisoft.org/plugins/bayt/stacks/sayt"
 )
@@ -24,7 +25,7 @@ _pronto: bayt.#project & {
 		// against it, and a context without it resolves something else.
 		"setup": sayt.setup & mise.install & {
 			visibility: "public"
-			srcs: globs: ["*.ts", "hybrid*.js", "scales/*.ts", "deno.json", "deno.lock"]
+			srcs: globs: ["*.ts", "mecha*.js", "scales/*.ts", "deno.json", "deno.lock"]
 			dockerfile: bayt.nubox
 		}
 		"doctor": sayt.doctor & mise.doctor
@@ -33,14 +34,14 @@ _pronto: bayt.#project & {
 		// .ts files directly under deno, so the typecheck is what building
 		// them means.
 		"build": sayt.build & mise.exec & {
-			srcs: globs: ["*.ts", "hybrid*.js", "scales/*.ts", "testdata/*.ts", "deno.json", "deno.lock"]
+			srcs: globs: ["*.ts", "mecha*.js", "scales/*.ts", "testdata/*.ts", "deno.json", "deno.lock"]
 			// Contract tests import the terminal parser, so its source closure must
 			// resolve at the same sibling path in the image as in the checkout.
 			deps: ["plugins_omnishell:build:srcs"]
-			cmd: "builtin": {
+			cmd: "builtin": (deno.#cmd & {
 				shell: "sh"
 				do:    "deno run --allow-read=. --allow-run check-build.ts"
-			}
+			}).out
 			dockerfile: from: ref: ":setup"
 		}
 	}

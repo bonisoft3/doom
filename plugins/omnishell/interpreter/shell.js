@@ -17,12 +17,14 @@ import { parseMarkup } from "./markup.js";
 // service exists to sign against.
 
 import { chromeText, describe, drawStrip, guestBox, hasStrip, localizeStrip, offersGuest, providerHref, providerKey, stripRoutes, supportsPasskeys } from "./chrome.js";
-import { localeAt, localeTable, ProgramError, routeAt, routeHref, screenEnv, Unanswered } from "./fragment.js";
+import { localeAt, localeTable, ProgramError, restatedHref, routeAt, routeHref, screenEnv, Unanswered } from "./fragment.js";
 import { activateScreenStyle, fetchText, forgetFiles, interpretScreen, prefetchScreen, templateHash, submitsOnChange, AssetMissing } from "./screen.js";
 import { compileCatalog } from "./vendor/messages.js";
 import { filesMoved, planRelease } from "./release-plan.js";
 import { replayEarlyGestures, takeEarlyGestures } from "./early-replay.js";
 import { navFeedback } from "./nav-feedback.js";
+import { createRowAttachments } from "./row-attachments.js";
+import { createCortexNavigation } from "./cortex-navigation.js";
 export { routeAt } from "./fragment.js";
 import { assetURL, preloadLinkedScreens, preloadScreen, releaseOf, setRelease } from "./preloads.js";
 import { startLinkPrefetch } from "./link-prefetch.js";
@@ -405,35 +407,8 @@ function renderSession(session, cfg, store, signOut, chrome, served = null) {
   // past a currentRoute() that throws on an address the app has no route for,
   // and the strip outlives that banner because it hangs beside the mount. The
   // only way out of a session may not be a control with no word on it.
-  const openLoginModal = (e) => {
-    const activeBtn = Array.from(document.querySelectorAll("#btn-top-login, .btn-top-login"))
-      .find((el) => !el.closest(".shell-screen[hidden]"));
-    if (activeBtn && typeof activeBtn.click === "function") {
-      e.preventDefault();
-      activeBtn.click();
-      return true;
-    }
-    const toggle = Array.from(document.querySelectorAll("#login-modal-toggle, .login-modal-chk"))
-      .find((el) => !el.closest(".shell-screen[hidden]")) ?? document.getElementById("login-modal-toggle");
-    if (toggle) {
-      e.preventDefault();
-      toggle.checked = true;
-      return true;
-    }
-    return false;
-  };
-  who.addEventListener("click", (e) => {
-    openLoginModal(e);
-  });
   out.textContent = chrome("chrome_signout", cfg.i18n?.default);
   out.addEventListener("click", (e) => {
-    const isGuestSession = Boolean(
-      session?.user?.guest ||
-      !session?.user?.handle ||
-      session?.user?.handle === "guest" ||
-      /entrar|sign\s*in|iniciar|התחבר|登录/i.test(out.textContent || ""),
-    );
-    if (isGuestSession && openLoginModal(e)) return;
     e.preventDefault();
     signOut();
   });
@@ -548,7 +523,7 @@ export function shellPreferredLanguages(served, document, navigator) {
   return served && document.documentElement.lang ? [document.documentElement.lang] : navigator?.languages;
 }
 
-export async function createShell({ config, mount, preload = true }) {
+export async function createShell({ config, mount, preload = true, hostDomModules }) {
   installModalInert(document);
   let initialDraftOwner = storedSessionOwner();
   const editedFields = new WeakSet();
@@ -739,6 +714,7 @@ export async function createShell({ config, mount, preload = true }) {
     const cfg = configUrl.pathname.endsWith(".json")
       ? JSON.parse(text)
       : (await import("./vendor/js-yaml.js")).load(text);
+    const rowAttachments = createRowAttachments(Object.fromEntries(Object.entries(cfg.cortex?.actors ?? {}).filter(([, binding]) => binding.via === "rows")));
     // A served document's head already says what it is.
     if (served === null) document.title = cfg.app;
 
@@ -780,7 +756,7 @@ export async function createShell({ config, mount, preload = true }) {
       await catalogued;
       const { renderStorybook } = await import("./storybook.js");
       const { route, params, locale } = currentRoute();
-      await renderStorybook(mount, appBase, route, params, cfg.units ?? {}, {
+      const book = await renderStorybook(mount, appBase, route, params, cfg.units ?? {}, {
         hostDom: cfg.hostDom ?? {},
         kinetic: cfg.kinetic ?? {},
         messages,
@@ -788,8 +764,9 @@ export async function createShell({ config, mount, preload = true }) {
         routes: cfg.routes,
         i18n: cfg.i18n,
         schema: cfg.schema,
+        cortex: cfg.cortex,
       });
-      return { storybook: true };
+      return { storybook: true, stop: book.stop };
     }
     const dataPlane = import("./data-sync.js");
 
@@ -900,6 +877,7 @@ export async function createShell({ config, mount, preload = true }) {
     const held = new Map();
     let current = null;
     let presented = null;
+    let preview = null;
     let seq = 0;
     const keepOf = (route) => route.keep ?? 1;
     const keyOf = (route, params) => `${route.screen} ${JSON.stringify(params)}`;
@@ -922,11 +900,16 @@ export async function createShell({ config, mount, preload = true }) {
       for (const e of mine.slice(Math.max(keepOf(route) - 1, 0))) discard(e);
     };
     const feedback = navFeedback(globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true);
+    const describeEntry = (entry) => describe(document, cfg, { route: entry.route, params: entry.params, locale: entry.locale, written: entry.written, el: entry.el, origin: location.origin });
     const present = (entry) => {
       feedback.settle();
       const previous = presented;
+      if (preview && preview !== entry) preview.el.hidden = true;
+      preview = null;
+      entry.committed = true;
       entry.el.hidden = false;
       entry.el.inert = false;
+      entry.el.removeAttribute("aria-busy");
       delete entry.el.dataset.entering;
       activateScreenStyle(`screen-css-${entry.route.screen}`);
       entry.handle?.present();
@@ -942,11 +925,16 @@ export async function createShell({ config, mount, preload = true }) {
       evict(entry.route);
     };
     const restorePresentation = async (failed) => {
-      if (current !== failed || (failed && presented === failed)) return;
+      if (current !== failed) return;
+      if (failed && presented === failed) {
+        failed.mutationActive = true;
+        return;
+      }
       current = presented;
       if (failed) {
         failed.el.hidden = presented !== null;
         failed.mutationActive = false;
+        if (preview === failed) preview = null;
       }
       const previous = current;
       mutationDrain = Promise.all([failed?.handle?.pause(), failed?.mutationDrain?.()]);
@@ -955,7 +943,9 @@ export async function createShell({ config, mount, preload = true }) {
         previous.el.hidden = false;
         previous.el.inert = false;
         activateScreenStyle(`screen-css-${previous.route.screen}`);
+        describeEntry(previous);
         previous.mutationActive = true;
+        window.scrollTo(0, previous.scrollY);
         await previous.handle?.resume();
       }
     };
@@ -1025,145 +1015,21 @@ export async function createShell({ config, mount, preload = true }) {
     // The address this mount is already rendering, spelled as it should be.
     // The Navigation API reports a replaceState as a navigation, and taking
     // that one would mount the screen a second time under the first.
-    const applyThemeMode = (mode) => {
-      const m = mode === "light" || mode === "dark" ? mode : "auto";
-      if (m === "auto") delete document.documentElement.dataset.theme;
-      else document.documentElement.dataset.theme = m;
-      try { sessionStorage.setItem("omnishell-theme", m); } catch (_e) {}
-      for (const r of document.querySelectorAll('input.theme-radio[name="theme-mode"]')) {
-        r.checked = (r.value === m);
-      }
-    };
-    try {
-      const savedTheme = sessionStorage.getItem("omnishell-theme");
-      if (savedTheme === "light" || savedTheme === "dark") {
-        document.documentElement.dataset.theme = savedTheme;
-      }
-    } catch (_e) {}
-    document.addEventListener("change", (e) => {
-      const t = e.target;
-      if (t && t.classList?.contains("theme-radio") && t.name === "theme-mode") {
-        applyThemeMode(t.value);
-      } else if (t && t.classList?.contains("fullscreen-checkbox")) {
-        try {
-          if (t.checked && document.documentElement.requestFullscreen && !document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch(() => {});
-          } else if (!t.checked && document.exitFullscreen && document.fullscreenElement) {
-            document.exitFullscreen().catch(() => {});
-          }
-        } catch (_e) {}
-      }
-    });
-    document.addEventListener("fullscreenchange", () => {
-      try {
-        if (!document.fullscreenElement) {
-          for (const cb of document.querySelectorAll("input.fullscreen-checkbox")) {
-            cb.checked = false;
-          }
-        }
-      } catch (_e) {}
-    });
-    let pendingAuthor = null;
-    const syncCategoryRadios = (author) => {
-      const root = current?.el || document;
-      if (author === "me") {
-        const mineRadio = root.querySelector?.("#cat-mine");
-        if (mineRadio) mineRadio.checked = true;
-      } else {
-        const allRadio = root.querySelector?.("#cat-all");
-        if (allRadio) allRadio.checked = true;
-      }
-    };
-    const applyPendingAuthor = () => {
-      if (!pendingAuthor) return;
-      const author = pendingAuthor;
-      const targetId = author === "me" ? "nav-my-cards" : author === "gallery" ? "nav-gallery" : "nav-home-trigger";
-      const btn = current?.el?.querySelector?.(`#${targetId}`) || document.getElementById(targetId);
-      if (btn && current?.el.contains(btn)) {
-        pendingAuthor = null;
-        syncCategoryRadios(author);
-        btn.click();
-      }
-    };
-    const EXTRA_NAV_FALLBACKS = {
-      pt: ["Minhas Fichas", "Galeria"],
-      es: ["Mis Tarjetas", "Galería"],
-      en: ["My Cards", "Gallery"],
-      he: ["הכרטיסיות שלי", "גלריה"],
-      zh: ["我的闪卡", "图库"],
-    };
-    const syncExtraNav = (loc, explicitLocale = false) => {
-      if (!nav || !nav.querySelector('a[data-route="cards"]')) return;
-      let box = nav.querySelector(":scope > .sidebar-extra-nav");
-      if (!box) {
-        box = document.createElement("div");
-        box.className = "sidebar-extra-nav";
-        box.setAttribute("role", "navigation");
-        const myLink = document.createElement("a");
-        myLink.className = "sidebar-extra-link nav-my-cards-link";
-        myLink.setAttribute("data-route", "cards");
-        myLink.setAttribute("data-author", "me");
-        const galLink = document.createElement("a");
-        galLink.className = "sidebar-extra-link nav-gallery-link";
-        galLink.setAttribute("data-route", "cards");
-        galLink.setAttribute("data-author", "gallery");
-        box.append(myLink, galLink);
-        const printLink = nav.querySelector(':scope > a[data-route="print"]');
-        if (printLink) printLink.before(box);
-        else nav.append(box);
-      }
-      const langKey = (loc || cfg.i18n?.default || "pt").split("-")[0];
-      const fb = EXTRA_NAV_FALLBACKS[langKey] || EXTRA_NAV_FALLBACKS.pt;
-      const cat = messages?.[loc] ?? messages?.[langKey] ?? messages?.[cfg.i18n?.default] ?? {};
-      const href = routeHref(cfg, "cards", {}, loc || cfg.i18n?.default, { explicitLocale }) || "/";
-      const myLink = box.querySelector(".nav-my-cards-link");
-      const galLink = box.querySelector(".nav-gallery-link");
-      if (myLink) {
-        myLink.textContent = cat.nav_my_cards || fb[0];
-        myLink.setAttribute("href", href);
-        myLink.removeAttribute("aria-current");
-      }
-      if (galLink) {
-        galLink.textContent = cat.nav_gallery || fb[1];
-        galLink.setAttribute("href", href);
-        galLink.removeAttribute("aria-current");
-      }
-    };
-    document.addEventListener("click", (e) => {
-      const themeBtn = e.target?.closest?.(".theme-btn[data-theme-val]");
-      if (themeBtn) {
-        applyThemeMode(themeBtn.dataset.themeVal);
-      }
-      const extraLink = e.target?.closest?.("a.sidebar-extra-link[data-author]");
-      if (extraLink) {
-        const author = extraLink.dataset.author || null;
-        const targetId = author === "me" ? "nav-my-cards" : author === "gallery" ? "nav-gallery" : "nav-home-trigger";
-        const btn = current?.el?.querySelector?.(`#${targetId}`) || document.getElementById(targetId);
-        if (current?.route?.screen === "cards" && btn && !btn.closest(".shell-screen[hidden]")) {
-          e.preventDefault();
-          syncCategoryRadios(author);
-          btn.click();
-        } else {
-          pendingAuthor = author;
-        }
-      }
-    }, true);
-    if (nav) {
-      const homeLink = nav.querySelector(':scope > a[data-route="cards"]');
-      if (homeLink) {
-        homeLink.addEventListener("click", () => {
-          const homeTrigger = current?.el?.querySelector?.("#nav-home-trigger") || document.getElementById("nav-home-trigger");
-          if (current?.route?.screen === "cards" && homeTrigger && !homeTrigger.closest(".shell-screen[hidden]")) {
-            syncCategoryRadios("home");
-            homeTrigger.click();
-          } else {
-            pendingAuthor = "home";
-          }
-        });
-      }
-      syncExtraNav(currentRoute().locale);
-    }
     let restating = false;
+    const scrollFragment = (root, hash) => {
+      if (!hash) return false;
+      let id;
+      try {
+        id = decodeURIComponent(hash.slice(1));
+      } catch (error) {
+        if (error instanceof URIError) return false;
+        throw error;
+      }
+      const target = [...root.querySelectorAll("[id]")].find((el) => el.id === id);
+      if (!target) return false;
+      target.scrollIntoView();
+      return true;
+    };
     const restate = (href) => {
       restating = true;
       try {
@@ -1213,7 +1079,7 @@ export async function createShell({ config, mount, preload = true }) {
       const negotiated = !asked && params.locale === undefined && locale !== written;
       if ((route.paths !== undefined && asked) || negotiated) {
         const canonical = routeHref(cfg, route.screen, params, locale, { explicitLocale: asked && locale === cfg.i18n?.default });
-        if (canonical !== undefined) restate(canonical);
+        if (canonical !== undefined) restate(restatedHref(canonical, location.search, location.hash));
         ({ route, params, locale, written } = currentRoute());
       }
       if (preload) preloadScreen(document, appBase, route);
@@ -1223,7 +1089,6 @@ export async function createShell({ config, mount, preload = true }) {
       }
       const explicitLocale = Boolean(cfg.i18n && locale === cfg.i18n.default && (params?.locale === locale || (typeof location !== "undefined" && new URLSearchParams(location.search).has("lang"))));
       localizeStrip(nav, cfg, { locale, here: location.pathname, search: location.search ?? "", messages, explicitLocale });
-      syncExtraNav(locale, explicitLocale);
       const key = keyOf(route, params);
       const retarget = current?.el.querySelector(":scope > .screen")?.getAttribute("data-retarget-params")?.split(/\s+/).filter(Boolean) ?? [];
       const unchanged = new Set([...Object.keys(current?.params ?? {}), ...Object.keys(params)]);
@@ -1241,6 +1106,7 @@ export async function createShell({ config, mount, preload = true }) {
         current.written = written;
         current.seq = ++seq;
         held.set(key, current);
+        current.mutationActive = true;
         await current.handle.retarget(params);
         if (turn !== showing) return;
         feedback.settle();
@@ -1258,12 +1124,23 @@ export async function createShell({ config, mount, preload = true }) {
         boundPresentation();
         if (current !== presented) {
           current.el.hidden = true;
+          if (preview === current) {
+            preview = null;
+            if (presented) {
+              presented.el.hidden = false;
+              activateScreenStyle(`screen-css-${presented.route.screen}`);
+              describeEntry(presented);
+              window.scrollTo(0, presented.scrollY);
+            }
+          }
           if (keepOf(current.route) === 0) discard(current);
         }
         current = null;
         await mutationDrain;
         if (turn !== showing) return;
       }
+      const prior = held.get(key);
+      if (prior?.navigating) discard(prior);
       const entry = held.get(key);
       if (entry !== undefined) {
         entry.locale = locale;
@@ -1274,7 +1151,6 @@ export async function createShell({ config, mount, preload = true }) {
           if (turn !== showing) return;
           entry.mutationActive = true;
           reword(entry);
-          if (route.screen === "cards") applyPendingAuthor();
           // What it drew is on hand, so it shows at once and refreshes behind:
           // resuming first kept a screen in memory hidden through every read
           // its regions ask again.
@@ -1302,7 +1178,7 @@ export async function createShell({ config, mount, preload = true }) {
           throw err;
         }
         describe(document, cfg, { route, params, locale, written, el: entry.el, origin: location.origin });
-        try { applyThemeMode(sessionStorage.getItem("omnishell-theme") || "auto"); } catch (_e) {}
+        if (navigationType === "push") scrollFragment(entry.el, location.hash);
         linkPrefetch.idle();
         if (preload) {
           preloadLinkedScreens(document, appBase, cfg, route.screen, [
@@ -1349,7 +1225,7 @@ export async function createShell({ config, mount, preload = true }) {
           initialLoading = document.createElement("div");
           initialLoading.dataset.initialLoading = "";
           initialLoading.setAttribute("aria-hidden", "true");
-          initialLoading.style.cssText = "min-block-size:100dvh;background:currentColor;opacity:.05";
+          initialLoading.style.cssText = "position:fixed;inset:0;pointer-events:none;background:currentColor;opacity:.05";
           if (!globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
             initialLoading.animate?.([{ opacity: 0.03 }, { opacity: 0.1 }], { duration: 1100, iterations: Infinity, direction: "alternate", easing: "ease-in-out" });
           }
@@ -1371,13 +1247,34 @@ export async function createShell({ config, mount, preload = true }) {
         // the terminal's, and a screen that pushed its own entry would be
         // deciding scroll and history for a back button it does not own.
         fresh.loading = interpretScreen(el, appBase, route, store, params, screenEnv(cfg, {
+          ...(hostDomModules ? { hostDomModules } : {}),
           messages,
           ensureMessages,
+          rowAttachments,
           locale,
-          navigate,
+          navigate: (href, options) => {
+            const target = new URL(href, location.href);
+            if (!fresh.committed && (target.origin !== location.origin || target.pathname !== location.pathname || target.search !== (location.search ?? ""))) fresh.navigating = true;
+            return navigate(href, options);
+          },
           mutationActive: () => fresh.mutationActive,
           registerMutationDrain: (drain) => { fresh.mutationDrain = drain; },
           presented: new Promise((resolve) => { fresh.onPresented = resolve; }),
+          ...(!adopting && presented !== null ? { onHeadReady: async (_screen, cas, settleActions) => {
+            await settleActions();
+            if (current !== fresh || turn !== showing || fresh.gone || fresh.navigating) return;
+            fresh.cas = cas;
+            feedback.settle();
+            preview = fresh;
+            presented.el.hidden = true;
+            el.hidden = false;
+            el.inert = true;
+            el.setAttribute("aria-busy", "true");
+            delete el.dataset.entering;
+            activateScreenStyle(`screen-css-${route.screen}`);
+            window.scrollTo(0, 0);
+            describe(document, cfg, { route, params, locale, written, el, origin: location.origin });
+          } } : {}),
           ...(seeded ? { seeded } : {}),
           ...(adopting ? { served: { screen: adopting.firstElementChild, cas: servedCas } } : {}),
         }));
@@ -1405,22 +1302,11 @@ export async function createShell({ config, mount, preload = true }) {
         }
         retainRecovery();
         await replayEarlyGestures(document, () => fresh.handle.settle());
-        if (current !== fresh || turn !== showing) return fresh.handle.pause();
-        if (route.screen === "cards") {
-          applyPendingAuthor();
-          await fresh.handle.settle();
-          if (turn !== showing) return;
-        }
+        if (current !== fresh || turn !== showing || fresh.navigating) return fresh.handle.pause();
         present(fresh);
-        try { applyThemeMode(sessionStorage.getItem("omnishell-theme") || "auto"); } catch (_e) {}
         // After the render: the screen's own h1 is where its name comes from.
         describe(document, cfg, { route, params, locale, written, el, origin: location.origin });
-        // A screen arrived at starts at its own top. This lands there anyway
-        // today, but only because hiding the outgoing screen collapses the page
-        // and the browser clamps — an accident of ordering that any overlap of
-        // the two screens would undo, and a cross-fade needs exactly that
-        // overlap.
-        if (!adopting) window.scrollTo(0, 0);
+        if (!adopting && !scrollFragment(el, location.hash)) window.scrollTo(0, 0);
       } catch (err) {
         takeEarlyGestures();
         feedback.settle();
@@ -1448,19 +1334,58 @@ export async function createShell({ config, mount, preload = true }) {
         ]);
       }
     };
-    const show = async (navigationType = "push") => {
+    const activate = async (navigationType = "push", signal) => {
+      if (signal?.aborted) return;
       const turn = ++showing;
+      let resolveAbort;
+      const aborted = new Promise((resolve) => { resolveAbort = resolve; });
+      const cancel = () => {
+        if (turn === showing) showing++;
+        resolveAbort();
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
       let deadline;
       let expire;
       const expired = new Promise((_, reject) => { expire = reject; });
+      // What the bound found when it fired: the screen it was waiting on and
+      // what that screen was waiting on, so a report names a cause rather than
+      // the bound alone.
+      const timedOut = () => {
+        const target = current;
+        const screen = target?.route.screen ?? currentRoute().route.screen;
+        const phase = !target ? "between screens, draining the last screen's writes"
+          : target.handle === undefined ? "loading its template and modules"
+          : target !== presented ? "settling its regions"
+          : target.el.inert ? "re-targeting the screen on show"
+          : "before leaving the screen on show, awaiting the destination's catalogue or the last screen's writes";
+        const hydrating = [...(target?.el.querySelectorAll("[data-hydrating]") ?? [])];
+        const regions = hydrating.slice(0, 5).map((r) => `${r.dataset.live ?? r.localName}${r.dataset.filter ? `?${r.dataset.filter}` : ""}`);
+        const state = target?.el.querySelector(":scope > .screen")?.getAttribute("data-state") ?? undefined;
+        const inflight = (globalThis.performance?.getEntriesByType?.("resource") ?? [])
+          .filter((r) => r.responseEnd === 0 && !/[?&]live=true/.test(r.name))
+          .map((r) => r.name.replace(location.origin, "").slice(0, 120)).slice(0, 5);
+        const error = new Error([
+          `screen navigation timed out after 15 seconds: ${screen} at ${location.pathname}, ${phase}`,
+          state === undefined ? null : `screen state ${state}`,
+          hydrating.length === 0 ? null : `${hydrating.length} region(s) still hydrating: ${regions.join(", ")}`,
+          inflight.length === 0 ? null : `request(s) in flight: ${inflight.join(", ")}`,
+          presented ? `screen on show: ${presented.route.screen}` : null,
+        ].filter(Boolean).join("; "));
+        error.details = { screen, path: location.pathname, phase, state, hydrating: regions, inflight, presented: presented?.route.screen };
+        return error;
+      };
+      // Bounded from the click, whenever a screen is on show: a turn stalls
+      // before it stages anything too, awaiting the last screen's writes, and
+      // a bound that armed only once the presented screen went inert left that
+      // wait silent for good. Initial hydration keeps no bound.
       const boundPresentation = () => {
-        if (deadline === undefined && presented?.el.inert) {
-          deadline = setTimeout(() => expire(new Error("screen navigation timed out after 15 seconds")), 15000);
+        if (deadline === undefined && presented) {
+          deadline = setTimeout(() => expire(timedOut()), 15000);
         }
       };
       boundPresentation();
       try {
-        await Promise.race([showTurn(navigationType, turn, boundPresentation), expired]);
+        await Promise.race([showTurn(navigationType, turn, boundPresentation), expired, aborted]);
       } catch (error) {
         if (turn !== showing) return;
         const recoveryTurn = ++showing;
@@ -1475,11 +1400,39 @@ export async function createShell({ config, mount, preload = true }) {
           failed.handle?.stop();
           if (presented) discard(failed);
         }
+        // The outgoing screen is back on show, so the address and the strip
+        // say so too: a link pulsed for a destination that never came, and the
+        // strip marked the address the navigation had already taken.
+        feedback.settle();
+        if (presented) {
+          const shown = presented;
+          // After this navigation has finished failing: restating the address
+          // from inside its own handler aborts it, and the failure would read
+          // as an abort rather than its cause.
+          setTimeout(() => {
+            if (presented !== shown || current !== shown || recoveryTurn !== showing) return;
+            const back = routeHref(cfg, shown.route.screen, shown.params, shown.locale, {
+              explicitLocale: Boolean(cfg.i18n && shown.locale === cfg.i18n.default && shown.params?.locale === shown.locale),
+            });
+            if (back !== undefined && new URL(back, location.href).pathname !== location.pathname) restate(back);
+            if (nav) localizeStrip(nav, cfg, { locale: shown.locale, here: location.pathname, search: location.search ?? "", messages });
+          }, 0);
+        }
         banner(error);
         throw error;
       } finally {
         clearTimeout(deadline);
+        signal?.removeEventListener("abort", cancel);
       }
+    };
+    const cortex = cfg.cortex === undefined ? undefined : createCortexNavigation(cfg.cortex, (request, { signal }) => {
+      if (currentRoute().route.screen !== request.screen || location.pathname !== request.pathname || location.search !== request.search) throw new ProgramError("Cortex navigation no longer matches the requested route");
+      return activate(request.navigationType, signal);
+    }, (binding, spec) => rowAttachments.attach(binding, spec));
+    const show = (navigationType = "push") => {
+      if (!cortex) return activate(navigationType);
+      if (current) current.mutationActive = false;
+      return cortex.navigate({ screen: currentRoute().route.screen, pathname: location.pathname, search: location.search, navigationType });
     };
     // A screen written in catalogues older than the ones the page holds now:
     // a deployment's, taken while it was out of sight.
@@ -1570,7 +1523,17 @@ export async function createShell({ config, mount, preload = true }) {
         // chrome's own sign-out anchor) changes nothing the stack owns, and a
         // path this app has no route for belongs to the server.
         if (url.origin !== location.origin) return;
-        if (url.pathname === location.pathname && url.search === (location.search ?? "")) return;
+        if (url.pathname === location.pathname && url.search === (location.search ?? "")) {
+          if (url.hash && current) {
+            e.intercept({ scroll: "manual", handler: () => scrollFragment(current.el, url.hash) });
+            return;
+          }
+          // The strip offers a link to the address on show on every screen. Left
+          // to the browser it loads a document in the page's place, and what
+          // the link asked (a pending author) goes with the page.
+          if (addresses(url) !== null) e.intercept({ scroll: "manual", handler: () => show("replace") });
+          return;
+        }
         if (addresses(url) === null) return;
         e.intercept({scroll: "manual", handler: () => show(e.navigationType)});
       });
@@ -1583,11 +1546,27 @@ export async function createShell({ config, mount, preload = true }) {
         if (href.startsWith("#")) return;
         const url = new URL(href, location.href);
         if (url.origin !== location.origin || addresses(url) === null) return;
-        if (url.pathname === location.pathname && url.search === (location.search ?? "")) return;
+        if (url.pathname === location.pathname && url.search === (location.search ?? "")) {
+          e.preventDefault();
+          if (url.hash && current) {
+            history.pushState(null, "", url.href);
+            scrollFragment(current.el, url.hash);
+            return;
+          }
+          show("replace");
+          return;
+        }
         e.preventDefault();
-        navigate(url.pathname + url.search);
+        navigate(url.pathname + url.search + url.hash);
       }, true);
-      addEventListener("popstate", () => show("traverse"));
+      addEventListener("popstate", () => {
+        const { route, params } = currentRoute();
+        if (current?.key === keyOf(route, params)) {
+          if (!scrollFragment(current.el, location.hash)) window.scrollTo(0, 0);
+          return;
+        }
+        show("traverse");
+      });
     }
 
     // A deployment is a newer entry at this address. What changed between the
@@ -1673,11 +1652,16 @@ export async function createShell({ config, mount, preload = true }) {
       return checking;
     };
     const heed = () => checkRelease()?.catch(unheard);
-    // A control losing focus only retries what was found while editing.
-    const retry = () => setTimeout(() => {
-      if (pending !== null) restart().catch(unheard);
-      else if (deferred) heed();
-    }, 0);
+    // A control losing focus only retries what was found while editing, and
+    // with nothing found it schedules nothing: every blur and change on the
+    // page would otherwise cost a task.
+    const retry = () => {
+      if (pending === null && !deferred) return;
+      setTimeout(() => {
+        if (pending !== null) restart().catch(unheard);
+        else if (deferred) heed();
+      }, 0);
+    };
     document.addEventListener("focusout", retry);
     document.addEventListener("change", retry);
 
@@ -1691,7 +1675,7 @@ export async function createShell({ config, mount, preload = true }) {
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) heed();
     });
-    return { store, navigate };
+    return { store, navigate, cortex };
   } catch (err) {
     if (heal !== null && (isMissing(err) || document.querySelector('meta[name="pronto-kept"]')) && await heal()) return;
     banner(err);

@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	bayt "bonisoft.org/plugins/bayt/core:bayt"
+	deno "bonisoft.org/plugins/bayt/stacks/deno"
 	mise "bonisoft.org/plugins/bayt/stacks/mise"
 	sayt "bonisoft.org/plugins/bayt/stacks/sayt"
 )
@@ -38,15 +39,15 @@ import (
 // empty.
 // --lock is explicit because deno anchors the lockfile at the workspace root
 // (this package.json), not beside --config; without it the pins go unread.
-// test/design-tokens.test.ts, test/check-parity.test.ts,
+// test/project-native.test.ts,
 // test/chrome-direction.test.ts, test/entry-document.test.ts,
 // test/document.test.ts, test/locale-resolver.test.ts,
 // test/vendor-bundle.test.ts, test/arbitrary-types.test.ts and
-// test/data-sync-parity.test.ts read the repository root — pronto's schema
-// and its type table, apps/realworld's emitted shell, every app's emitted
+// test/data-sync-parity.test.ts and test/check-presentation-apps.test.ts read the repository root — pronto's schema
+// and its type table, apps/realworld's and apps/apexrun's emitted shells, every app's emitted
 // design.css, every app's entry document, apps/golaberto's served tree, every
-// app's declared locales, the client source both the vendored bundle and the
-// battery's generator are graded against, and every app's declared keys —
+// app's declared locales, the client source the battery's generator is graded
+// against, and every app's declared keys —
 // which no image here carries, so both
 // targets leave them out. The host test verb runs package.json's test
 // script on a full checkout, and that is where they run.
@@ -55,13 +56,13 @@ _smokes: strings.Join([
 ], " ")
 
 _smokeCmd: {
-	"cache-smokes": {
+	"cache-smokes": (deno.#cmd & {
 		priority: -1
 		do:       "deno cache --config interpreter/deno.json --lock interpreter/deno.lock --frozen --allow-import=cdn.jsdelivr.net:443 \(_smokes)"
-	}
+	}).out
 	"builtin": {
 		shell: "sh"
-		do:    "sh -c 'deno test --config test/deno.json --lock test/deno.lock --frozen --cached-only --no-check --allow-env --allow-read --allow-import --allow-net --allow-sys --ignore=test/design-tokens.test.ts,test/check-parity.test.ts,test/chrome-direction.test.ts,test/entry-document.test.ts,test/document.test.ts,test/locale-resolver.test.ts,test/vendor-bundle.test.ts,test/arbitrary-types.test.ts,test/data-sync-parity.test.ts test/ && deno test --config interpreter/deno.json --lock interpreter/deno.lock --frozen --cached-only --allow-env --allow-read \(_smokes)'"
+		do:    "sh -c 'deno test --parallel --config test/deno.json --lock test/deno.lock --frozen --cached-only --no-check --allow-env --allow-read --allow-write --allow-import --allow-net --allow-sys --ignore=test/check-presentation-apps.test.ts,test/project-native.test.ts,test/chrome-direction.test.ts,test/entry-document.test.ts,test/document.test.ts,test/locale-resolver.test.ts,test/vendor-bundle.test.ts,test/arbitrary-types.test.ts,test/data-sync-parity.test.ts test/ && deno test --config interpreter/deno.json --lock interpreter/deno.lock --frozen --cached-only --allow-env --allow-read \(_smokes)'"
 	}
 }
 
@@ -84,11 +85,13 @@ _omnishell: bayt.#project & {
 		// Build = the typecheck, which is what gates a successful "build".
 		// No emitted JS artifact: downstream consumers (iris e2e helpers)
 		// `FROM` this stage and import .ts directly, so the typecheck IS the
-		// build.
+		// build. It reads the data-plane bundle (test/type-table.ts and
+		// server/snapshot-store.js import it), which `bundle` builds first.
 		"build": sayt.build & mise.exec & {
 			// Public so iris's integrate target can FROM-COPY the
 			// playwright lint helpers under src/lint/playwright/.
 			visibility: "public"
+			deps: [":bundle:outs"]
 			srcs: globs: [
 				"src/**/*",
 				// The check script typechecks test/ too, and reads its
@@ -103,6 +106,7 @@ _omnishell: bayt.#project & {
 				// is absent from, which is a container that builds and a verb
 				// that fails.
 				"check-*.ts",
+				"expand-templates.ts",
 				"arbitrary.ts",
 				"battery-inputs.ts",
 				// The adapter modules the terminal serves to an app's routes
@@ -116,6 +120,7 @@ _omnishell: bayt.#project & {
 				"base-url.ts",
 				"terminal.cue",
 				"instrument.ts",
+				"project-native.ts",
 				"read-markup.ts",
 				// The two renderers the tests import: the one a build runs and
 				// the one a cluster serves.
@@ -130,7 +135,7 @@ _omnishell: bayt.#project & {
 			// Typecheck-only build, no artifact. Cross-project consumers
 			// of the omnishell source tree (e.g. iris's pnpm workspace
 			// symlink) use `plugins_omnishell:build:srcs` instead.
-			cmd: "builtin": do: "pnpm run check"
+			cmd: "builtin": (deno.#cmd & {do: "pnpm run check"}).out
 			dockerfile: from: ref: ":setup"
 		}
 
@@ -138,7 +143,7 @@ _omnishell: bayt.#project & {
 		// Stays parallel to integrate, which re-uses the same command —
 		// omnishell has no separate integration suite.
 		"test": sayt.test & mise.exec & {
-			srcs: globs: ["test/**/*", "interpreter/**/*", "components/**/*", "check-*.ts", "base-url.ts", "terminal.cue", "read-markup.ts", "render-documents.ts", "server/**/*", "offline-first-sw.js"]
+			srcs: globs: ["test/**/*", "interpreter/**/*", "components/**/*", "check-*.ts", "expand-templates.ts", "base-url.ts", "terminal.cue", "project-native.ts", "read-markup.ts", "render-documents.ts", "server/**/*", "offline-first-sw.js"]
 			cmd: _smokeCmd
 		}
 
@@ -147,33 +152,32 @@ _omnishell: bayt.#project & {
 		// (from the build chain) + the same unit tests. No docker-bridge.sh wrap
 		// (no docker socket needed).
 		"integrate": sayt.integrate & mise.exec & {
-			srcs: globs: ["test/**/*", "interpreter/**/*", "components/**/*", "check-*.ts", "base-url.ts", "terminal.cue", "read-markup.ts", "render-documents.ts", "server/**/*", "offline-first-sw.js"]
+			srcs: globs: ["test/**/*", "interpreter/**/*", "components/**/*", "check-*.ts", "expand-templates.ts", "base-url.ts", "terminal.cue", "project-native.ts", "read-markup.ts", "render-documents.ts", "server/**/*", "offline-first-sw.js"]
 			dockerfile: {
 				from: ref: ":build"
 			}
 			cmd: _smokeCmd
 		}
 
-		// The terminal's data plane, a build product of
-		// libraries/mecha/packages/client: `tsc` and the unit tests read src/,
-		// the browser reads this.
-		//
-		// The cross-project srcs dep materialises mecha at its natural
-		// /monorepo/... path, so entry.ts's relative import resolves in the build
-		// exactly as it does in the worktree.
-		//
-		// The output is checked in, like .bayt/ and the apps' emitted trees: the
-		// shell images COPY it from the repo (pronto's terminal emit), and CI's
-		// `fresh` rung runs `bayt:generate` and fails on a diff.
+		// The terminal's data plane, a build product of mecha's packages/client:
+		// the browser surface its omnishell-entry.ts exports, bundled under that
+		// package's deno.json from wherever mise resolves github:bonisoft3/mecha
+		// (package.json bundle:mecha-client) — the release .mise.toml pins, or
+		// under mise.local.toml the monorepo's tree, which the cross-project
+		// srcs dep materialises at /monorepo/libraries/mecha and the staged
+		// `[m]ise.local.toml` names. mecha-client.js is not checked in: build
+		// COPYs it from this target's outs, and the mirror's cd.yml runs the
+		// script before its image and release builds.
 		"bundle": mise.exec & {
 			visibility: "public"
 			taskfile: run: "when_changed"
 			deps: ["libraries_mecha:setup:srcs"]
 			srcs: globs: [
-				"interpreter/vendor/entry.ts",
+				"[m]ise.local.toml",
 				"interpreter/vendor/entry-morphlex.ts",
 				"interpreter/vendor/bundle-morphlex.ts",
 				"interpreter/vendor/entry-js-yaml.ts",
+				"interpreter/vendor/entry-xstate.ts",
 				"interpreter/deno.json",
 				"src/messages.ts",
 				"package.json",
@@ -182,16 +186,17 @@ _omnishell: bayt.#project & {
 				"interpreter/vendor/mecha-client.js",
 				"interpreter/vendor/morphlex.js",
 				"interpreter/vendor/js-yaml.js",
+				"interpreter/vendor/xstate.js",
 				"interpreter/vendor/messages.js",
 			]
 			// Each leg runs package.json's script by name, rather than a second
-			// spelling of it: test/vendor-bundle.test.ts runs those scripts to
-			// decide whether the checked-in bundle is stale, and a bundle built
-			// two ways is one of them can be wrong about.
-			cmd: "builtin": {
+			// spelling of it: test/vendor-bundle.test.ts runs the xstate script
+			// to decide whether its checked-in bundle is stale, and a bundle
+			// built two ways is one of them can be wrong about.
+			cmd: "builtin": (deno.#cmd & {
 				shell: "sh"
-				do:    "sh -c 'pnpm run bundle:mecha-client && pnpm run bundle:morphlex && pnpm run bundle:js-yaml && pnpm run bundle:messages'"
-			}
+				do:    "sh -c 'pnpm run bundle:mecha-client && pnpm run bundle:morphlex && pnpm run bundle:js-yaml && pnpm run bundle:xstate && pnpm run bundle:messages'"
+			}).out
 			dockerfile: from: ref: ":setup"
 		}
 
@@ -202,6 +207,10 @@ _omnishell: bayt.#project & {
 		// and what it imports, the URL base tests share, and the markup reader
 		// and machine schema. Published as bonitao/omnishell (cd.yml); an app
 		// in the monorepo builds it from here instead (MONOREPO_COMPOSE_MODE).
+		// FROM scratch with COPYs from the checkout alone, so the mirror builds
+		// it without the graph: the data-plane bundle under interpreter/vendor
+		// is the one `bundle` wrote to the tree, which cd.yml and the monorepo's
+		// app builds run first.
 		"runtime-image": {
 			visibility: "public"
 			cmd: "builtin": null
@@ -221,6 +230,9 @@ _omnishell: bayt.#project & {
 // check-visual.ts, read-markup.ts and the two document renderers import.
 _runtimeTree: [
 	"interpreter/**",
+	// Named beside the glob that holds it: a COPY of a name that is absent
+	// fails the image build, where the glob would ship a 404.
+	"interpreter/vendor/mecha-client.js",
 	"components/**",
 	"src/**",
 	"test/storybook-injector.ts",

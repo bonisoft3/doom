@@ -46,28 +46,39 @@ services:
       additional_contexts:
         doom-ci-visual_bayt: service:doom-ci-visual_bayt
         doom-ci-boot_bayt: service:doom-ci-boot_bayt
+        doom-integrate_srcs: service:doom-integrate_srcs
+        doom-caddy_srcs: service:doom-caddy_srcs
+        doom-served_srcs: service:doom-served_srcs
+        doom-check-boot_srcs: service:doom-check-boot_srcs
+        doom-browser_srcs: service:doom-browser_srcs
         bayt: >-
-          ${BAYT_RUNTIME:-docker-image://bonitao/bayt-runtime:1.2.2@sha256:a2e08b0fd123349e30e28843665ab2a2fde9fe25fddf82919fe499f3f01f1b8f}
+          ${BAYT_RUNTIME:-docker-image://bonitao/bayt-runtime:1.3.0@sha256:c33b9187787fcbd5fa80f1f2f52c661d6e7c38a4822c269b8daff83e70dce22e}
         workspaceroot-pronto-sources_srcs: >-
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:workspaceroot-pronto-sources_srcs}
-        libraries_mecha-airlock-image_bayt: >-
-          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-airlock-image_bayt}
+        libraries_mecha-database-image_bayt: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-database-image_bayt}
+        libraries_mecha-extensions-image_bayt: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-extensions-image_bayt}
+        libraries_mecha-mesh-image_bayt: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-mesh-image_bayt}
+        libraries_mecha-conduit-image_bayt: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-conduit-image_bayt}
         libraries_mecha-auth-image_bayt: >-
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-auth-image_bayt}
+        libraries_mecha-ticker-image_bayt: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-ticker-image_bayt}
         libraries_mecha-clock-image_bayt: >-
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-clock-image_bayt}
         libraries_mecha-compute-image_bayt: >-
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-compute-image_bayt}
-        libraries_mecha-conduit-image_bayt: >-
-          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-conduit-image_bayt}
-        libraries_mecha-database-image_bayt: >-
-          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-database-image_bayt}
-        libraries_mecha-mesh-image_bayt: >-
-          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-mesh-image_bayt}
-        libraries_mecha-ticker-image_bayt: >-
-          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-ticker-image_bayt}
+        libraries_mecha-airlock-image_bayt: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-airlock-image_bayt}
+        libraries_mecha-activepieces-image_bayt: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-activepieces-image_bayt}
         libraries_mecha-database-image_srcs: >-
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-database-image_srcs}
+        libraries_mecha-extensions-image_srcs: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-extensions-image_srcs}
         libraries_mecha-mesh-image_srcs: >-
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-mesh-image_srcs}
         libraries_mecha-auth-image_srcs: >-
@@ -80,6 +91,8 @@ services:
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-compute-image_srcs}
         libraries_mecha-airlock-image_srcs: >-
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-airlock-image_srcs}
+        libraries_mecha-activepieces-image_srcs: >-
+          ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:libraries_mecha-activepieces-image_srcs}
         plugins_omnishell-runtime-image_srcs: >-
           ${MONOREPO_COMPOSE_MODE:-docker-image://busybox:musl@sha256:03db190ed4c1ceb1c55d179a0940e2d71d42130636a780272629735893292223}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image_srcs}
         plugins_omnishell-runtime-image_bayt: >-
@@ -146,6 +159,11 @@ services:
       additional_contexts:
         doom-ci-visual_bayt: service:doom-ci-visual_bayt
         doom-ci-boot_bayt: service:doom-ci-boot_bayt
+        doom-integrate_bayt: service:doom-integrate_bayt
+        doom-caddy_bayt: service:doom-caddy_bayt
+        doom-served_bayt: service:doom-served_bayt
+        doom-check-boot_bayt: service:doom-check-boot_bayt
+        doom-browser_bayt: service:doom-browser_bayt
       context: ..
       dockerfile: .bayt/Dockerfile.ci
       target: ci_bayt

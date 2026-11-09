@@ -25,10 +25,11 @@
   "activate": "mise x --",
   "srcs": {
     "globs": [
-      "interpreter/vendor/entry.ts",
+      "[m]ise.local.toml",
       "interpreter/vendor/entry-morphlex.ts",
       "interpreter/vendor/bundle-morphlex.ts",
       "interpreter/vendor/entry-js-yaml.ts",
+      "interpreter/vendor/entry-xstate.ts",
       "interpreter/deno.json",
       "src/messages.ts",
       "package.json"
@@ -40,6 +41,7 @@
       "interpreter/vendor/mecha-client.js",
       "interpreter/vendor/morphlex.js",
       "interpreter/vendor/js-yaml.js",
+      "interpreter/vendor/xstate.js",
       "interpreter/vendor/messages.js"
     ],
     "exclude": []
@@ -100,6 +102,7 @@
           "interpreter/vendor/mecha-client.js",
           "interpreter/vendor/morphlex.js",
           "interpreter/vendor/js-yaml.js",
+          "interpreter/vendor/xstate.js",
           "interpreter/vendor/messages.js"
         ],
         "exclude": []
@@ -132,10 +135,11 @@
       },
       "outs": {
         "globs": [
-          "interpreter/vendor/entry.ts",
+          "[m]ise.local.toml",
           "interpreter/vendor/entry-morphlex.ts",
           "interpreter/vendor/bundle-morphlex.ts",
           "interpreter/vendor/entry-js-yaml.ts",
+          "interpreter/vendor/entry-xstate.ts",
           "interpreter/deno.json",
           "src/messages.ts",
           "package.json",
@@ -265,10 +269,11 @@
     {
       "srcs": {
         "globs": [
-          "interpreter/vendor/entry.ts",
+          "[m]ise.local.toml",
           "interpreter/vendor/entry-morphlex.ts",
           "interpreter/vendor/bundle-morphlex.ts",
           "interpreter/vendor/entry-js-yaml.ts",
+          "interpreter/vendor/entry-xstate.ts",
           "interpreter/deno.json",
           "src/messages.ts",
           "package.json"
@@ -277,8 +282,20 @@
         "defaultGlobs": null,
         "defaultExclude": null
       },
+      "do": "sh -c 'pnpm run bundle:mecha-client && pnpm run bundle:morphlex && pnpm run bundle:js-yaml && pnpm run bundle:xstate && pnpm run bundle:messages'",
       "shell": "sh",
-      "do": "sh -c 'pnpm run bundle:mecha-client && pnpm run bundle:morphlex && pnpm run bundle:js-yaml && pnpm run bundle:messages'",
+      "dockerfile": {
+        "do": "sh -c 'd=\"${DENO_DIR:-/root/.cache/deno}\"; s=/deno-store; k=\"$(sha256sum deno.lock */deno.lock */*/deno.lock deno.json */deno.json */*/deno.json package.json */package.json 2>/dev/null | sha256sum | cut -d'\\'' '\\'' -f1)\"; mkdir -p \"$d\" \"$s\"; for sub in remote npm jsr; do if [ -d \"$s/$k/$sub\" ]; then mkdir -p \"$d/$sub\" && cp -a \"$s/$k/$sub\"/. \"$d/$sub\"/ 2>/dev/null || true; fi; done; (sh -c '\\''pnpm run bundle:mecha-client && pnpm run bundle:morphlex && pnpm run bundle:js-yaml && pnpm run bundle:xstate && pnpm run bundle:messages'\\'') || exit; t=\"$s/.tmp.$$\"; rm -rf \"$t\"; mkdir -p \"$t\"; for sub in remote npm jsr; do if [ -d \"$d/$sub\" ]; then mkdir -p \"$t/$sub\" && cp -a \"$d/$sub\"/. \"$t/$sub\"/ 2>/dev/null || true; fi; done; rm -rf \"$s/$k\" && mv \"$t\" \"$s/$k\" 2>/dev/null || rm -rf \"$t\"; find \"$s\" -mindepth 1 -maxdepth 1 ! -name \"$k\" -exec rm -rf {} + 2>/dev/null || true'",
+        "mounts": [
+          {
+            "type": "cache",
+            "target": "/deno-store",
+            "scope": "target",
+            "required": false
+          }
+        ],
+        "shell": "sh"
+      },
       "name": "builtin",
       "stop": false
     }

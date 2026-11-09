@@ -247,6 +247,7 @@ from the route table and the page's locale (`routeHref`,
 |---|---|
 | `data-route="<screen>"` | the route whose address becomes this element's `href`. A screen no route serves is a `ProgramError` |
 | `data-param-<name>` | the route's `:name`. A param the route takes and the markup does not declare is a `ProgramError`; one declared and bound empty drops the `href`, because the row is saying there is nowhere to go |
+| `data-route-fragment` | a section id appended to a routed link, encoded after its locale query. The full address works with an asset `<base>`, copied links, and new tabs |
 | `data-locale="<tag>"` | address the link in that locale instead of the page's — a language switcher is the same link in another locale |
 | `data-locale-current` | on a link naming a locale, `aria-current` (the attribute's value, or `page`) when that locale is the page's |
 
@@ -352,7 +353,7 @@ Hooks a stylesheet or a test observes and never writes:
 resolved against the row by the same binder as every other attribute and
 resynchronised on every refresh, so a hatch sees a current-value feed rather
 than a message it has to keep up with. What comes back out is named and
-request-shaped, and crosses as a parsed, frozen event (`parseDetail`). Both
+request-shaped, and crosses rebuilt and frozen by the shape its raise declares (`rebuildDetail`). Both
 are the unit's ports (shell.yaml `units.<name>.ports`): the region a mount
 sits in must be a table the unit `reads`, and a `data-on-<event>` on the mount
 must be one it `raises` — the mount refuses the rest, and `check markup`

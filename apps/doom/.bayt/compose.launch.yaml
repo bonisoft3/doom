@@ -34,6 +34,7 @@ services:
   doom-launch_bayt:
     build:
       additional_contexts:
+        doom-build_bayt: service:doom-build_bayt
         doom-caddy_bayt: service:doom-caddy_bayt
       context: ..
       dockerfile: .bayt/Dockerfile.launch

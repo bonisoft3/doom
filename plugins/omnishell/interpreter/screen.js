@@ -2,8 +2,9 @@
 // store. The binding vocabulary is the pronto SPEC's; the shell owns every
 // effect and the whole state machine — screens only style states.
 import { parseMarkup } from "./markup.js";
+import { resolveMachineReferences } from "./row-attachments.js";
 import { renderInto } from "./render.js";
-import { mountHatch } from "./hatch.js";
+import { mountHatch, selfSrc } from "./hatch.js";
 import {
   ABSENT,
   binding,
@@ -28,6 +29,9 @@ import {
 } from "./fragment.js";
 import { evaluateRole } from "./jessie.js";
 import { hostDomScreen } from "./host-dom.js";
+import { observeActor } from "./observe-actor.js";
+import { invokedActors } from "./invoked-actors.js";
+import { machineEngine } from "./machine-engine.js";
 import { assetURL, skeletonRoutes } from "./preloads.js";
 
 export class AssetMissing extends Error {
@@ -442,10 +446,15 @@ async function loadRole(screen, appBase, route, attr, role, listed = "handlers",
 // check is that the name is an event and that the handler is declared. The
 // value is a REFERENCE and never a body, which is what keeps the assembly
 // lintable and the reduce pure — an inline on<event> would be neither.
-const onAttrs = (el) =>
-  [...el.attributes]
-    .filter((a) => a.name.startsWith("data-on-"))
-    .map((a) => ({ event: a.name.slice("data-on-".length), name: a.value }));
+const onAttrs = (el) => {
+  const out = [];
+  const attrs = el.attributes;
+  for (let i = 0; i < attrs.length; i++) {
+    const a = attrs[i];
+    if (a.name.startsWith("data-on-")) out.push({ event: a.name.slice("data-on-".length), name: a.value });
+  }
+  return out;
+};
 
 /** The adapter a control names, or undefined. Modules are loaded once per
  * screen and reached through the ctx every binding already carries. null is
@@ -586,14 +595,14 @@ async function loadRenderers(screen, appBase, route, endowmentsMap = {}) {
 // first key forever, which is a sort that never sorts again.
 const REGION_ATTRS = new Set([
   "data-text", "data-filter", "data-select", "data-empty", "data-empty-row", "data-when",
-  "data-project", "data-order", "data-display-order", "data-exit-motion", "data-machine",
+  "data-project", "data-order", "data-display-order", "data-exit-motion", "data-machine", "data-cortex",
 ]);
 
 // What hydrating a region reads off its own element once, and holds for as
 // long as the region runs.
 const READ_ATTRS = new Set([
   "data-live", "data-template", "data-filter", "data-select", "data-order", "data-display-order", "data-project",
-  "data-exit-motion", "data-machine", "data-empty-row", "data-reads", "data-handler", "data-on-mutation",
+  "data-exit-motion", "data-machine", "data-cortex", "data-empty-row", "data-reads", "data-handler", "data-on-mutation",
 ]);
 /** A region's read as its element states it. A newer template stating another
  * is another region, hydrated in its place rather than brought to it. */
@@ -709,6 +718,13 @@ function localeOf(ctx) {
 class MissingBinding extends Error {}
 
 // {msg.x} and {msg[col]} read the catalogue; everything else is `binding`'s.
+/** The region contexts enclosing a child of `ctx`, nearest first: `ctx` itself
+ * when it is a region's, held by reference so a slot's row read later is its
+ * current one. */
+function enclosingOf(ctx) {
+  return ctx.table === undefined ? (ctx.enclosing ?? []) : [ctx, ...(ctx.enclosing ?? [])];
+}
+
 function lookup(expr, ctx) {
   const { row, params, messages, locale, i18n } = ctx ?? {};
   // {msg[column]} names the message a ROW carries: the writer stored a key
@@ -766,6 +782,17 @@ function lookup(expr, ctx) {
   }
   const v = binding(expr, row, params);
   if (v !== ABSENT) return v;
+  // `{table.column}` the row does not answer names the nearest enclosing
+  // region over that table: a device's key reaches a read nested under a
+  // session's row. The row's own embed of the same name answers first.
+  const dot = expr.indexOf(".");
+  if (dot > 0) {
+    const outer = (ctx === undefined ? [] : enclosingOf(ctx)).find((e) => e.table === expr.slice(0, dot) && e.row !== undefined);
+    if (outer !== undefined) {
+      const w = binding(expr.slice(dot + 1), outer.row, params);
+      if (w !== ABSENT) return w;
+    }
+  }
   const r = row ?? {};
   // An optimistic insert carries only the submitted fields; DB-defaulted
   // columns materialize when the synced row arrives. Bind blank instead of
@@ -1197,6 +1224,7 @@ function declaredCharts(spec, table) {
           onDone: regionNode.onDone,
           entry: regionNode.entry,
           exit: regionNode.exit,
+          invoke: regionNode.invoke,
         });
       }
     } else {
@@ -1236,14 +1264,38 @@ function nestedBindings(el, ctx) {
     if (name !== "data-project" && !name.startsWith("data-read-") && regionAttr(name)) continue;
     const template = stash[name] ?? el.getAttribute(name);
     if (template === null || !PLACEHOLDER.test(template)) continue;
+    // A named read resolves when its fold runs, against the context the fold
+    // is handed (a slot's own row among them); a name this row does not answer
+    // cannot move with it, so it keys the region as written.
+    if (name.startsWith("data-read-")) {
+      try {
+        out.push(`${name}=${interpolate(template, ctx)}`);
+      } catch (err) {
+        if (!(err instanceof MissingBinding)) throw err;
+        out.push(`${name}=${template}`);
+      }
+      continue;
+    }
     out.push(`${name}=${fromEnclosing(() => interpolate(template, ctx), el.dataset.live, name)}`);
   }
   return out.join("\u0000");
 }
 
+// A template's text split around its placeholders, kept: the same few strings
+// are interpolated once per row of every list. Odd entries are the
+// expressions. Bounded, since a caller may hand it text no markup wrote.
+const splitTemplates = new Map();
 function interpolate(template, ctx) {
   if (Array.isArray(template)) return evaluateAst(template, ctx, localeOf(ctx));
-  return template.replace(PLACEHOLDERS, (_, expr) => String(lookup(expr, ctx) ?? ""));
+  let parts = splitTemplates.get(template);
+  if (parts === undefined) {
+    if (splitTemplates.size >= 4096) splitTemplates.clear();
+    parts = template.split(PLACEHOLDERS);
+    splitTemplates.set(template, parts);
+  }
+  let out = parts[0];
+  for (let i = 1; i < parts.length; i += 2) out += String(lookup(parts[i], ctx) ?? "") + parts[i + 1];
+  return out;
 }
 
 function interpolateFilter(template, ctx) {
@@ -1291,19 +1343,71 @@ const HAS_MOVE_BEFORE = typeof globalThis.Element?.prototype?.moveBefore === "fu
 // the animations the stamp actually started, and fall back to releasing at
 // once where none run — a reduced-motion viewer, or an engine without the
 // Animations API.
+//
+// Asked when the pass has placed its nodes (answerSettles), not a frame later:
+// getAnimations resolves style itself, so it already sees what data-enter or
+// data-exit started, and a row with nothing to play leaves before the paint
+// instead of standing one frame inert. The frame is the fallback for a node no
+// pass has placed yet.
+const settling = new Set();
 function settle(node, done) {
-  raf(() => {
-    const running = node.getAnimations?.({ subtree: true }) ?? [];
-    if (running.length === 0) return done();
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      done();
-    };
-    Promise.allSettled(running.map((a) => a.finished)).then(finish);
-    setTimeout(finish, MOTION_CAP_MS);
-  });
+  const entry = { node, done };
+  settling.add(entry);
+  entry.frame = globalThis.requestAnimationFrame?.(() => answer(entry));
+  if (entry.frame === undefined) setTimeout(() => answer(entry), 0);
+}
+
+function answer(entry, running = entry.node.getAnimations?.({ subtree: true }) ?? []) {
+  if (!settling.delete(entry)) return;
+  if (entry.frame !== undefined) globalThis.cancelAnimationFrame?.(entry.frame);
+  if (running.length === 0) return entry.done();
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    entry.done();
+  };
+  Promise.allSettled(running.map((a) => a.finished)).then(finish);
+  setTimeout(finish, MOTION_CAP_MS);
+}
+
+/** Answers every settle whose node is in the document and can say what it is
+ * playing; an engine without the Animations API keeps its frame. Every node is
+ * read before any is released, so style resolves once for the pass. */
+function answerSettles() {
+  const placed = [...settling].filter((e) => e.node.isConnected && typeof e.node.getAnimations === "function");
+  const running = placed.map((e) => e.node.getAnimations({ subtree: true }));
+  placed.forEach((e, i) => answer(e, running[i]));
+}
+
+/** The nodes of `order` that keep their place when a list is re-placed: the
+ * longest run of them already in document order (`at` maps each node in the
+ * region to its index). Every other node moves, so a swap moves two rows, not
+ * every row between them. */
+function steadyNodes(order, at) {
+  const tails = []; // tails[n]: the order index ending the best run of length n + 1
+  const tailAt = [];
+  const prev = new Int32Array(order.length);
+  for (let k = 0; k < order.length; k++) {
+    const p = at.get(order[k]);
+    if (p === undefined) continue;
+    let lo = tails.length;
+    if (lo > 0 && tailAt[lo - 1] > p) {
+      let hi = lo - 1;
+      lo = 0;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (tailAt[mid] < p) lo = mid + 1;
+        else hi = mid;
+      }
+    }
+    prev[k] = lo > 0 ? tails[lo - 1] : -1;
+    tails[lo] = k;
+    tailAt[lo] = p;
+  }
+  const steady = new Set();
+  for (let k = tails.length > 0 ? tails[tails.length - 1] : -1; k >= 0; k = prev[k]) steady.add(order[k]);
+  return steady;
 }
 
 function playEnter(node) {
@@ -1465,31 +1569,34 @@ function emptyNote(region, copy, ctx, item) {
   region.append(note);
 }
 
+function bindText(el, ctx, renderers) {
+  const textAttr = el.getAttribute("data-text");
+  if (textAttr === null) return;
+  const format = el.getAttribute("data-text-format") ?? undefined;
+  // Written only where it differs: a served row already saying it keeps
+  // its text node, and the reader's selection in it.
+  const write = (text) => {
+    if (el.textContent !== text) el.textContent = text;
+  };
+  if (VALUE_FORMATS.has(format)) {
+    write(textAttr.replace(PLACEHOLDERS, (_, expr) =>
+      ({ datetime: formatDatetime, date: formatDate, time: formatTime, number: formatNumber, language: formatLanguage })[format](lookup(expr, ctx), ctx),
+    ));
+  } else if (format !== undefined && format !== "plain") {
+    const render = renderers[format];
+    // Every format resolves at hydration, so an unresolved one can only be
+    // the fixture adapter, which evaluates no Jessie. It shows the value as
+    // text there, the way it shows a widget's markup unenhanced.
+    if (render === undefined) write(interpolate(textAttr, ctx));
+    else renderInto(render, interpolate(textAttr, ctx), el);
+  } else {
+    write(interpolate(textAttr, ctx));
+  }
+}
+
 function bindTexts(scope, ctx, renderers = {}) {
   const visit = (el) => {
-    const textAttr = el.getAttribute("data-text");
-    if (textAttr !== null) {
-      const format = el.getAttribute("data-text-format") ?? undefined;
-      // Written only where it differs: a served row already saying it keeps
-      // its text node, and the reader's selection in it.
-      const write = (text) => {
-        if (el.textContent !== text) el.textContent = text;
-      };
-      if (VALUE_FORMATS.has(format)) {
-        write(textAttr.replace(PLACEHOLDERS, (_, expr) =>
-          ({ datetime: formatDatetime, date: formatDate, time: formatTime, number: formatNumber, language: formatLanguage })[format](lookup(expr, ctx), ctx),
-        ));
-      } else if (format !== undefined && format !== "plain") {
-        const render = renderers[format];
-        // Every format resolves at hydration, so an unresolved one can only be
-        // the fixture adapter, which evaluates no Jessie. It shows the value as
-        // text there, the way it shows a widget's markup unenhanced.
-        if (render === undefined) write(interpolate(textAttr, ctx));
-        else renderInto(render, interpolate(textAttr, ctx), el);
-      } else {
-        write(interpolate(textAttr, ctx));
-      }
-    }
+    bindText(el, ctx, renderers);
     if (el.hasAttribute("data-text-format") || el.localName === "template") return;
     for (let child = el.firstElementChild; child !== null; child = child.nextElementSibling) {
       if (!child.hasAttribute("data-live")) visit(child);
@@ -1511,10 +1618,16 @@ function guardEdits(el) {
   });
 }
 
-function bindAttributes(scope, ctx) {
-  for (let parent = scope.parentElement; parent !== null; parent = parent.parentElement) {
-    if (parent.hasAttribute("data-text-format")) return;
+// Nodes a renderer produced are the row's own content, not authored markup.
+function insideRendered(el) {
+  for (let parent = el.parentElement; parent !== null; parent = parent.parentElement) {
+    if (parent.hasAttribute("data-text-format")) return true;
   }
+  return false;
+}
+
+function bindAttributes(scope, ctx) {
+  if (insideRendered(scope)) return;
   // Renderer output has no bindings; nested regions bind against their own
   // rows, and a template's markup against the rows it stamps (a DOM without
   // template content keeps it as children). Prune all three before walking a
@@ -1529,6 +1642,70 @@ function bindAttributes(scope, ctx) {
   visit(scope);
 }
 
+/** Whether any of the element's own attributes is a binding. */
+function hasBoundAttribute(el) {
+  const attrs = el.attributes ?? [];
+  for (let i = 0; i < attrs.length; i++) {
+    const a = attrs[i];
+    if (!regionAttr(a.name) && PLACEHOLDER.test(a.value)) return true;
+  }
+  return false;
+}
+
+/** A fresh clone shares its template's binding paths. Renderers and hatches
+ * own their descendants at event wiring; nested regions own their bindings. */
+function bindingPlan(root) {
+  const plan = [];
+  // A data-text with elements under it writes over them, and the walks then
+  // never reach them; a plan made before the write would. Such a template is
+  // walked, row by row, as before.
+  let exact = true;
+  const walk = (el, path, bindable, owned) => {
+    const step = {
+      path,
+      attr: bindable && (hasBoundAttribute(el) || el.hasAttribute("data-image-src")),
+      text: bindable && el.hasAttribute("data-text"),
+      event: owned && onAttrs(el).length > 0,
+      open: owned && (el.hasAttribute("data-text-format") || el.hasAttribute("data-hatch")),
+    };
+    if (step.attr || step.text || step.event || step.open) plan.push(step);
+    if (step.text && !el.hasAttribute("data-text-format") && el.firstElementChild !== null) exact = false;
+    const below = bindable && !el.hasAttribute("data-text-format") && el.localName !== "template";
+    let i = 0;
+    for (let child = el.firstElementChild; child !== null; child = child.nextElementSibling, i++) {
+      const nested = child.hasAttribute("data-live");
+      walk(child, [...path, i], below && !nested, owned && !step.open && !nested);
+    }
+  };
+  walk(root, [], true, true);
+  return exact ? plan : undefined;
+}
+
+/** The plan's elements in a fresh clone of its template, by path. By sibling
+ * steps, not `children`: each element's `children` is a live collection the
+ * document then invalidates on every insertion, and ten thousand rows' worth
+ * makes placing them quadratic. */
+function planned(plan, node) {
+  const els = plan.map(({ path }) => {
+    let el = node;
+    for (const i of path) {
+      el = el.firstElementChild;
+      for (let k = 0; k < i; k++) el = el.nextElementSibling;
+    }
+    return el;
+  });
+  return { plan, els, unbound: true };
+}
+
+/** bindAttributes then bindTexts over a fresh clone, by its plan: the same
+ * elements in the same order, without the walk. */
+function bindPlanned(scope, { plan, els }, ctx, renderers = {}) {
+  if (!insideRendered(scope)) {
+    for (let i = 0; i < plan.length; i++) if (plan[i].attr) bindElementAttributes(els[i], ctx, true);
+  }
+  for (let i = 0; i < plan.length; i++) if (plan[i].text) bindText(els[i], ctx, renderers);
+}
+
 /**
  * One element's bound attributes. Split out because a LIST region's own
  * element belongs to nobody else's pass: its parent's stops at it (ownedBy
@@ -1541,26 +1718,14 @@ function bindElementAttributes(el, ctx, insideWalk = false) {
   // Nodes a renderer produced are the row's own content, not authored
   // markup: nothing in them is a binding, and the braces an author wrote
   // name no column.
-  if (!insideWalk) {
-    for (let parent = el.parentElement; parent !== null; parent = parent.parentElement) {
-      if (parent.hasAttribute("data-text-format")) return;
-    }
-  }
+  if (!insideWalk && insideRendered(el)) return;
   if (el.hasAttribute?.("data-image-src")) checkImageSrc(el, el.getAttribute("data-image-src"));
   // setAttribute would consume the placeholder template; persistent regions
   // (singletons) re-bind on every refresh, so originals are stashed.
   let stash = el._prontoAttrs;
   const attrs = el.attributes ?? [];
   if (stash === undefined) {
-    let hasBound = false;
-    for (let i = 0; i < attrs.length; i++) {
-      const a = attrs[i];
-      if (!regionAttr(a.name) && PLACEHOLDER.test(a.value)) {
-        hasBound = true;
-        break;
-      }
-    }
-    if (!hasBound) return;
+    if (!hasBoundAttribute(el)) return;
     stash = el._prontoAttrs = {};
   }
   // The names to consider are the element's attributes AND every name already
@@ -1683,7 +1848,7 @@ function bindElementAttributes(el, ctx, insideWalk = false) {
     // never declared is a different thing and still raises: routeHref reads
     // undefined, and the link lint refused it at generate.
     const explicitLocale = (el.dataset.locale !== undefined && el.dataset.locale !== ctx.locale) || Boolean(ctx.cfg?.i18n && ctx.locale === ctx.cfg.i18n.default && (ctx.params?.locale === ctx.locale || (typeof location !== "undefined" && new URLSearchParams(location.search).has("lang"))));
-    const href = routeHref(ctx.cfg, el.dataset.route, args, el.dataset.locale ?? ctx.locale, { explicitLocale });
+    const href = routeHref(ctx.cfg, el.dataset.route, args, el.dataset.locale ?? ctx.locale, { explicitLocale, fragment: el.dataset.routeFragment });
     if (href === undefined) el.removeAttribute("href");
     else el.setAttribute("href", href);
     if (el.dataset.localeCurrent !== undefined) {
@@ -1735,6 +1900,13 @@ function staticOrParam(template, ctx) {
 // declarations, which is what a data-hatch name resolves against. opts.routes
 // and opts.i18n are the table every link's address is composed from, and
 // opts.navigate is how a navigate form reaches the terminal's stack.
+// Large folds leave their render to the store's next turn so queued input can run first.
+const PROMPT_FOLD_MS = 4;
+
+// Work in flight, by store, across every screen it serves: a document's slots
+// share one store, and a flush of its wakes reaches all of their regions.
+const inFlight = new WeakMap();
+
 export async function interpretScreen(mount, appBase, route, store, params = {}, opts = {}) {
   const screenOpts = opts;
   const hostDom = await hostDomScreen(route, appBase, opts.hostDom ?? {}, opts);
@@ -1746,8 +1918,9 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   // on show is replaced and nothing the reader has done to it is lost.
   const served = opts.served;
   if (opts.mountHostDom !== false) ensureHydrationStyle(document);
-  const isMountActive = () => !mount.hidden && (!mount.ownerDocument?.body || mount.ownerDocument.body.contains(mount));
-  await installStyle(styleId, css, isMountActive);
+  const isMountVisible = () => !mount.hidden && (!mount.ownerDocument?.body || mount.ownerDocument.body.contains(mount));
+  const isMountActive = () => !mount.inert && isMountVisible();
+  await installStyle(styleId, css, isMountVisible);
 
   // Subscriptions of the previously mounted screen would refresh dead DOM and
   // keep their poll keys hot — stop them before mounting the next one.
@@ -1757,7 +1930,9 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   cleanups.push(hostDom.stop);
   // One seat per data-on-mutation handler, screen-wide (see wireEvents).
   const folds = new Map();
+  const refreshes = new WeakMap();
   const work = new Set();
+  const actions = new Set();
   const mutationWrites = new Set();
   // A fold reads its named reads afresh on every wake, and with nothing holding
   // their views between wakes each read was a new load whose rows woke the fold
@@ -1777,23 +1952,30 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   const derived = new Map();
   const dirty = new Set();
   let held = "shown";
+  let documentAway = false;
+  let documentEpoch = 0;
   let visitEpoch = 0;
-  const mutationActive = () => held === "shown" && (screenOpts.mutationActive?.() ?? true);
+  const mutationActive = () => !documentAway && held === "shown" && (screenOpts.mutationActive?.() ?? true);
   let failure;
   let settling;
   const failed = (err) => {
     failure ??= err;
   };
   const track = (promise) => {
-    const tracked = promise.then((value) => {
+    const done = () => {
       work.delete(tracked);
+      inFlight.set(store, inFlight.get(store) - 1);
+    };
+    const tracked = promise.then((value) => {
+      done();
       return value;
     }, (err) => {
-      work.delete(tracked);
+      done();
       failed(err);
       throw err;
     });
     work.add(tracked);
+    inFlight.set(store, (inFlight.get(store) ?? 0) + 1);
     return tracked;
   };
   const finite = (run) => {
@@ -1803,10 +1985,19 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     const waiting = new Promise((resolve) => (pause = resolve));
     const running = run(pause);
     busy += 1;
-    track(Promise.race([running, waiting]).finally(() => {
+    const action = track(Promise.race([running, waiting]).finally(() => {
       busy -= 1;
-    })).catch(failed);
-    return running;
+      actions.delete(action);
+    }));
+    actions.add(action);
+    action.catch(failed);
+    return { finished: running, ready: action };
+  };
+  const settleActions = async () => {
+    await Promise.all(regions.map((region) => region.actionsReady));
+    if (failure !== undefined) throw failure;
+    await Promise.all([...actions]);
+    if (failure !== undefined) throw failure;
   };
   const checkSettlement = (region) => {
     if (settling === undefined) return;
@@ -1847,6 +2038,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   // and brought to when it is adopted.
   const prepare = (text) => {
     const root = parseMarkup(document, text).firstElementChild;
+    resolveMachineReferences(root, screenOpts.chartBindings ?? {}, route.screen);
     localize(root);
     // A URL still carrying its placeholder is a URL the document would fetch
     // the instant this tree is connected — `src="{image_url}"` is a relative
@@ -1927,7 +2119,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       const routeArgs = routeParams(el);
       if (Object.values(routeArgs).some((v) => PLACEHOLDER.test(v))) continue;
       const explicitLocale = (el.dataset.locale !== undefined && el.dataset.locale !== currentLocale) || Boolean(cfg.i18n && currentLocale === cfg.i18n.default && (params?.locale === currentLocale || (typeof location !== "undefined" && new URLSearchParams(location.search).has("lang"))));
-      const href = routeHref(cfg, el.dataset.route, routeArgs, el.dataset.locale ?? currentLocale, { explicitLocale });
+      const href = routeHref(cfg, el.dataset.route, routeArgs, el.dataset.locale ?? currentLocale, { explicitLocale, fragment: el.dataset.routeFragment });
       if (href === undefined) el.removeAttribute("href");
       else if (el.getAttribute("href") !== href) el.setAttribute("href", href);
       // Which option of a language switcher is the page the reader is already
@@ -1957,6 +2149,13 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     screen.dataset.state = s;
   };
   setState(base);
+  const populatedLists = new Set();
+  const setListState = (region, count) => {
+    if (count > 0) populatedLists.add(region);
+    else populatedLists.delete(region);
+    base = populatedLists.size > 0 ? "populated" : "empty";
+    if (["loading", "empty", "populated"].includes(screen.dataset.state)) setState(base);
+  };
   // The regions whose outage the screen says: a top region whose read failed,
   // a nested region whose first read did. Whichever reads again last puts the
   // state back, so a region nested two deep that recovers on its own pass
@@ -2104,13 +2303,13 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         for (const key of Object.keys(el.dataset)) {
           if (!/^on[A-Z]/.test(key)) continue;
           const handled = key.slice(2).replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).slice(1);
-          if (!unit.ports.raises.includes(handled)) {
+          if (!Object.hasOwn(unit.ports.raises, handled)) {
             throw new ProgramError(`data-hatch="${name}" handles "${handled}", which its ports do not raise`);
           }
         }
         el._prontoHatch = mountHatch(el, {
           unit,
-          src: new URL(unit.src, appBase).href,
+          src: unit.self ? selfSrc(name) : new URL(unit.src, appBase).href,
           store,
           // A unit's named event becomes a real DOM event on the mount, so the
           // ordinary data-on-* path carries it the rest of the way: bind
@@ -2420,7 +2619,11 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           // store's question, answered against the collection.
           else if (action === "upsert") await store.upsertBy(entity, await values(), refused);
           else if (action === "update") {
-            await store.patch(entity, [{ key: wiring().rowId(), changes: await values() }], refused);
+            const changes = await values();
+            // A derived row can edit another entity by naming its id explicitly.
+            const key = changes.id ?? wiring().rowId();
+            delete changes.id;
+            await store.patch(entity, [{ key, changes }], refused);
           }
           else if (action === "delete" && form.dataset.filter !== undefined) {
             // Filter-scoped bulk delete: the filter, not the row context,
@@ -2510,7 +2713,16 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   // handler never receives a node or an Event — it is evaluated in a
   // compartment with nothing endowed, so it could not use one, and it stays
   // testable with no DOM. A region-level event (a tick) carries no id.
-  function wireEvents(region, items, getRows, handlers, ctx) {
+  function wireEvents(region, items, getRows, handlers, ctx, readCurrent) {
+    const gesture = (run) => {
+      let release;
+      const paused = new Promise((resolve) => { release = resolve; });
+      const running = (region._prontoGesture ?? Promise.resolve()).then(() => run(release));
+      const seat = Promise.race([running, paused]);
+      region._prontoGesture = seat.then(() => undefined, () => undefined);
+      track(seat).catch(failed);
+      return running;
+    };
     // {updates, then}. The command goes in the return, which is the whole of
     // how a reduce continues: evaluated in a compartment with nothing endowed
     // it can neither write nor wait, so it names the next event and the
@@ -2762,32 +2974,39 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       return true;
     };
 
-    const step = async (reduce, event, depth, pause, seat, automatic = event.type === "mutation") => {
-      if (held === "stopped") return;
+    const step = async (reduce, event, depth, pause, seat, automatic = event.type === "mutation", active, readItems) => {
+      if (held === "stopped" || (active && !active())) return;
       const next = await track((async () => {
         if (held === "stopped") return;
         checkSettlement(region);
         const rows = await worldOf();
-        if (automatic && !mutationActive()) return;
+        const items = readItems ? await readItems() : getRows();
+        if ((automatic && !mutationActive()) || (active && !active())) return;
         if (event.type === "mutation" && seat) {
           event = { ...event, visit: seat.visitEpoch !== visitEpoch };
           seat.visitEpoch = visitEpoch;
         }
-        const result = reduce({ items: getRows(), rows, params: { ...ctx.params }, locale: currentLocale, ssr: opts.mountUnits === false }, event);
+        const result = reduce({ items, rows, params: { ...ctx.params }, locale: currentLocale, ssr: opts.mountUnits === false }, event);
         // A promise is not a continuation command and cannot be a reduce.
         if (typeof result?.then === "function") {
           throw new Error(`handler for "${event.type}" returned a promise; a reduce returns its updates`);
         }
-        if (!await applyUpdates(result?.updates ?? [], deliver, automatic ? mutationActive : undefined)) return;
+        if (!await applyUpdates(result?.updates ?? [], deliver, active ?? (automatic ? mutationActive : undefined))) return;
         if (result?.effects && result.effects.length > 0) {
-          if (!await applyEffects(result.effects, deliver, automatic ? mutationActive : undefined)) return;
+          if (!await applyEffects(result.effects, deliver, active ?? (automatic ? mutationActive : undefined))) return;
+        }
+        if (automatic && seat) {
+          for (const update of [...(result?.updates ?? []), ...(result?.effects ?? [])]) {
+            const entity = update.entity ?? region.dataset.live;
+            if (entity === region.dataset.live || reads.includes(entity) || named.some((read) => read.table === entity)) seat.refresh = true;
+          }
         }
         if (result?.then?.type && depth + 1 >= STEPS) {
           throw new Error(`handler chain did not settle in ${STEPS} steps at "${result.then.type}"`);
         }
         return result?.then;
       })());
-      if (!next?.type) return;
+      if (!next?.type || (active && !active())) return;
       if (next.delay > 0) {
         pause?.();
         await rest(next.delay / TEMPO, { kind: "then", type: next.type });
@@ -2795,6 +3014,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         // the screen is on show, settle would track its writes and keep the screen hidden.
         await screenOpts.presented;
       }
+      if (active && !active()) return;
       const carried = { type: next.type };
       // A draw the reduce asked for. It has no randomness of its own — the
       // compartment endows nothing — so it says it wants one and is called
@@ -2820,7 +3040,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       if (typeof carried.type === "string" && carried.type.startsWith("intent:")) {
         screen.dispatchEvent?.(new CustomEvent("pronto:intent", { detail: carried, bubbles: true }));
       }
-      await step(reduce, carried, depth + 1, pause, seat, automatic);
+      await step(reduce, carried, depth + 1, pause, seat, automatic, active, readItems);
     };
 
     const bind = (el, id) => {
@@ -2836,6 +3056,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         el.addEventListener(event, async (e) => {
           const reduce = handlers.get(el.getAttribute(`data-on-${event}`));
           if (!reduce) return;
+          const began = performance.now();
           try {
             const fired = { type: event };
             if (id !== undefined) fired.id = id;
@@ -2871,7 +3092,10 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             // boundary, so what a reduce reads here is strings the terminal
             // built and never the unit's own object.
             if (e?.detail !== null && typeof e?.detail === "object") fired.detail = e.detail;
-            await step(reduce, fired, 0);
+            await gesture((pause) => step(reduce, fired, 0, pause));
+            // Flush only a short, complete fold: another screen's half-applied
+            // writes must not reach regions through this store-wide wake.
+            if (inFlight.get(store) === 0 && performance.now() - began <= PROMPT_FOLD_MS) store.flushNotifications?.();
           } catch (err) {
             report(err);
             setState("network-error");
@@ -2884,7 +3108,23 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // its id; outside one it acts on what the region read. The walk stops at
     // the next [data-live], which binds its own.
     const bindTree = (root, id) => {
+      // A stamped item wires by its template's plan: the owned elements that
+      // declare a data-on-*, and the whole of whatever a renderer or a hatch
+      // has written since (bindingPlan).
+      const plan = root._prontoPlanned;
+      root._prontoPlanned = undefined;
       if (handlers.size === 0) return;
+      if (plan !== undefined) {
+        for (let i = 0; i < plan.plan.length; i++) {
+          const el = plan.els[i];
+          if (plan.plan[i].event) bind(el, id);
+          if (!plan.plan[i].open) continue;
+          for (const inner of el.querySelectorAll("*")) {
+            if (ownedBy(inner, root)) bind(inner, id);
+          }
+        }
+        return;
+      }
       bind(root, id);
       for (const el of root.querySelectorAll("*")) {
         if (!ownedBy(el, root)) continue;
@@ -2912,6 +3152,17 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // with the bare type as its fallback, a state's transitions hide
     // root-level `on:` per exact key, and no transition for the current
     // (state, event) is a no-op, not an error.
+    if (screenOpts.handlers !== false && screenOpts.mountUnits !== false && region.dataset.cortex !== undefined && region.dataset.machine !== undefined) {
+      if (!region.dataset.cortex || !screenOpts.rowAttachments) throw new ProgramError(`region "${region.dataset.live}": data-cortex needs a row attachment family`);
+      let declaration;
+      try { declaration = JSON.parse(region.dataset.machine); }
+      catch { throw new ProgramError(`region "${region.dataset.live}": data-machine is not JSON: ${region.dataset.machine}`); }
+      try {
+        screenOpts.rowAttachments.validate(region.dataset.cortex, route.screen, declaration);
+      } catch (error) {
+        throw new ProgramError(`region "${region.dataset.live}": ${error.message}`, { cause: error });
+      }
+    }
     const charts = (screenOpts.handlers === false || region.dataset.machine === undefined)
       ? []
       : declaredCharts(region.dataset.machine, region.dataset.live);
@@ -2919,8 +3170,31 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // they share is the ROW — `_prontoMachineRow` accumulates every chart's
     // stated columns within one tick, which is what makes two charts one write
     // — and everything a chart owns alone is keyed by its field.
+    if (screenOpts.handlers !== false && screenOpts.mountUnits !== false && region.dataset.cortex !== undefined && (!region.dataset.cortex || !screenOpts.rowAttachments)) {
+      throw new ProgramError(`region "${region.dataset.live}": data-cortex needs a row attachment family`);
+    }
+    if (screenOpts.handlers !== false && screenOpts.mountUnits !== false && region.dataset.cortex !== undefined && !charts.length) {
+      throw new ProgramError(`region "${region.dataset.live}": data-cortex needs a machine`);
+    }
     for (const machine of charts) {
       const mine = (what) => `_prontoMachine_${machine.field}_${what}`;
+      const family = screenOpts.mountUnits === false ? undefined : region.dataset.cortex;
+      let gate = region[mine("gate")];
+      if (family !== undefined && !gate) {
+        gate = region[mine("gate")] = { enabled: false, generation: 0, wake: () => {} };
+        const unregister = screenOpts.rowAttachments.register(family, {
+          start() { gate.enabled = true; gate.generation++; gate.wake(); },
+          stop() {
+            gate.enabled = false;
+            gate.generation++;
+            region[mine("afterGen")] = (region[mine("afterGen")] ?? 0) + 1;
+            region[mine("armed")] = undefined;
+            region[mine("invokes")]?.stop();
+          },
+        }, route.screen);
+        cleanups.push(() => { unregister(); delete region[mine("gate")]; });
+      }
+      const enabled = () => !gate || (gate.enabled && mutationActive());
       // Naming a field outside the allowlist is an authoring error and throws.
       // An event that simply does not carry one is this transition declining —
       // a select firing an arrow written for a checkbox must not take the
@@ -2938,19 +3212,23 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         return field in event ? event[field] : NO_FIELD;
       };
 
+      const leafResult = (name, value) => {
+        if (value && typeof value.then === "function") throw new Error(`machine leaf "${name}" returned a promise`);
+        return value;
+      };
       const leafVal = (v, world, event) => {
-        if (typeof v === "string" && handlers.has(v)) return handlers.get(v)(world, event);
+        if (typeof v === "string" && handlers.has(v)) return leafResult(v, handlers.get(v)(world, event));
         // The {type, params} object form (#Ref) is always a reference;
         // loading already threw at hydration for a name no module carries.
         if (v !== null && typeof v === "object") {
           if (v.type === "event") return eventField(event, v.params?.field);
-          return handlers.get(v.type)(world, event, v.params);
+          return leafResult(v.type, handlers.get(v.type)(world, event, v.params));
         }
         return v;
       };
 
       const resolveStateNode = (path) => {
-        if (!path) return undefined;
+        if (!path) return machine;
         if (machine.states[path]) return machine.states[path];
         const parts = path.split(".");
         let curr = machine.states[parts[0]];
@@ -2986,76 +3264,13 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         return resolved;
       };
 
-      const candidatesFor = (rawState, event) => {
-        const stateName = (rawState && rawState !== "") ? rawState : machine.initial;
-        const out = [];
-        const commandKeys = event.command ? [
+      const eventKeys = (event) => [
+        ...(event.command ? [
           ...(event.from !== undefined ? [`command:${event.command}@${event.from}`] : []),
           `command:${event.command}`,
-        ] : [];
-        const keys = [
-          ...commandKeys,
-          ...(event.from !== undefined ? [`${event.type}@${event.from}`, event.type] : [event.type]),
-        ];
-        const chain = [];
-        if (stateName) {
-          chain.push(stateName);
-          let s = stateName;
-          while (s.includes(".")) {
-            s = s.slice(0, s.lastIndexOf("."));
-            chain.push(s);
-          }
-        }
-        for (const key of keys) {
-          let foundInState = false;
-          for (const st of chain) {
-            const node = resolveStateNode(st);
-            const v = node?.on?.[key];
-            if (v !== undefined) {
-              machineCandidates(v).forEach((c, index) => out.push({ c, key, index, origin: st }));
-              foundInState = true;
-              break;
-            }
-          }
-          if (!foundInState) {
-            const v = machine.on?.[key];
-            if (v !== undefined) {
-              machineCandidates(v).forEach((c, index) => out.push({ c, key, index, origin: "*" }));
-            }
-          }
-        }
-        return out;
-      };
-
-      const getExitEnterPaths = (from, to) => {
-        if (!to) return { exit: [], enter: [] };
-        if (from === to) return { exit: [from], enter: [to] };
-        if (!from) return { exit: [], enter: to.split(".").map((_, i, a) => a.slice(0, i + 1).join(".")) };
-        const fromParts = from.split(".");
-        const toParts = to.split(".");
-        let commonDepth = 0;
-        while (
-          commonDepth < fromParts.length &&
-          commonDepth < toParts.length &&
-          fromParts[commonDepth] === toParts[commonDepth]
-        ) {
-          commonDepth++;
-        }
-        const exit = [];
-        for (let i = fromParts.length; i > commonDepth; i--) {
-          exit.push(fromParts.slice(0, i).join("."));
-        }
-        const enter = [];
-        for (let i = commonDepth; i < toParts.length; i++) {
-          enter.push(toParts.slice(0, i + 1).join("."));
-        }
-        return { exit, enter };
-      };
-
-      const normalizeActions = (actions) => {
-        if (!actions) return [];
-        return Array.isArray(actions) ? actions : [actions];
-      };
+        ] : []),
+        ...(event.from !== undefined ? [`${event.type}@${event.from}`, event.type] : [event.type]),
+      ];
 
       const parseEffect = (eff, effectiveCtx, world, event) => {
         const values = {};
@@ -3123,241 +3338,51 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         return raised;
       };
 
-      const evalCandidates = (list, world, event) => {
-        for (const entry of list) {
-          if (entry.c.guard === undefined) return entry;
-          const named = typeof entry.c.guard === "string" ? entry.c.guard : entry.c.guard.type;
-          const g = handlers.get(named);
-          if (g === undefined) throw new Error(`machine guard "${named}" names no module`);
-          if (g(world, event, typeof entry.c.guard === "object" ? entry.c.guard.params : undefined)) {
-            return entry;
-          }
-        }
-        return undefined;
+      const engine = machineEngine(machine, {
+        guard(ref, run) {
+          const name = typeof ref === "string" ? ref : ref.type;
+          const g = handlers.get(name);
+          if (g === undefined) throw new Error(`machine guard "${name}" names no module`);
+          const value = g({ items: [{ ...(run.effective ?? run.row), [machine.field]: run.guardState }] }, run.event, typeof ref === "object" ? ref.params : undefined);
+          if (value && typeof value.then === "function") throw new Error(`machine guard "${name}" returned a promise`);
+          return value;
+        },
+        action(act, run) {
+          if (run.preview) return;
+          run.patch ??= {};
+          run.effective ??= { ...run.row };
+          run.effects ??= [];
+          const raised = runAction(act, run.patch, run.effective, run.effects, { items: [run.row] }, run.event);
+          if (raised === NO_FIELD) throw NO_FIELD;
+          if (raised !== undefined) run.raised = raised;
+        },
+        trace(origin, key, index, target, run) {
+          if (run.preview) return;
+          globalThis.__prontoMachineTrace?.push({ region, field: machine.field, state: origin, key, index, to: target === undefined ? run.row[machine.field] : resolveTarget(target, run.guardState) });
+        },
+      });
+      const fire = (row, event, keys = eventKeys(event), preview = false) => {
+        const state = row[machine.field] || machine.initial;
+        if (!resolveStateNode(state)) return undefined;
+        try { return engine(row, event, keys, preview); }
+        catch (error) { if (error === NO_FIELD) return undefined; throw error; }
       };
-
-      // Ordered candidates, first guard-pass wins. All assigns read the
-      // pre-transition snapshot and merge with the field write into ONE
-      // stated row — the swap needs no temporary. A first write concluding
-      // from the fallback states the whole fallback row, or the created row
-      // falls outside the slot's filter and the machine visibly resets.
-      const apply = (row, event, list, expectState) => {
-        if (row === undefined) return { updates: [] };
-        if (expectState !== undefined && row[machine.field] !== expectState) return { updates: [] };
-        const world = { items: [row] };
-        const chosen = evalCandidates(list, world, event);
-        if (chosen === undefined) return { updates: [] };
-
-        const patch = {};
-        const effectiveCtx = { ...row };
-        const effects = [];
-        let raisedThen;
-
-        let targetState = chosen.c.target !== undefined
-          ? resolveTarget(chosen.c.target, row[machine.field])
-          : undefined;
-        const arrowTarget = targetState;
-
-        const { exit: exitStates, enter: enterStates } = getExitEnterPaths(row[machine.field], targetState);
-
-        // 1. Exit actions (innermost to outermost)
-        for (const s of exitStates) {
-          const node = resolveStateNode(s);
-          if (node?.exit) {
-            for (const act of normalizeActions(node.exit)) {
-              const r = runAction(act, patch, effectiveCtx, effects, world, event);
-              if (r === NO_FIELD) return { updates: [] };
-              if (r !== undefined) raisedThen = r;
-            }
-          }
-        }
-
-        // 2. Transition actions
-        if (chosen.c.actions) {
-          for (const act of normalizeActions(chosen.c.actions)) {
-            const r = runAction(act, patch, effectiveCtx, effects, world, event);
-            if (r === NO_FIELD) return { updates: [] };
-            if (r !== undefined) raisedThen = r;
-          }
-        }
-        const rTrans = runAction(chosen.c, patch, effectiveCtx, effects, world, event);
-        if (rTrans === NO_FIELD) return { updates: [] };
-        if (rTrans !== undefined) raisedThen = rTrans;
-
-        // 3. Entry actions (outermost to innermost)
-        for (const s of enterStates) {
-          const node = resolveStateNode(s);
-          if (node?.entry) {
-            for (const act of normalizeActions(node.entry)) {
-              const r = runAction(act, patch, effectiveCtx, effects, world, event);
-              if (r === NO_FIELD) return { updates: [] };
-              if (r !== undefined) raisedThen = r;
-            }
-          }
-        }
-
-        // Debug seam, like __prontoViews: which arrow fired, where it landed,
-        // and the region that fired it. Nothing is pushed unless something
-        // armed the array. Before the cascade its landing starts, so a replay reads them in order.
-        globalThis.__prontoMachineTrace?.push({
-          region,
-          // Which chart drew it. Two charts on one region share the element, so
-          // a walk filtering by region alone would read its sibling's arrows as
-          // its own — and the field is what tells them apart everywhere else.
-          field: machine.field,
-          state: chosen.origin,
-          key: chosen.key,
-          index: chosen.index,
-          to: arrowTarget ??
-            (Object.hasOwn(patch, machine.field) ? patch[machine.field] : row[machine.field]),
-        });
-        // 4. onDone and always cascade
-        let cascadeSteps = 0;
-        while (targetState !== undefined && cascadeSteps < 10) {
-          cascadeSteps++;
-          let progressed = false;
-          // Check if targetState is final and parent has onDone
-          const currNode = resolveStateNode(targetState);
-          if (currNode?.type === "final") {
-            const hasParent = targetState.includes(".");
-            const parentPath = hasParent ? targetState.slice(0, targetState.lastIndexOf(".")) : "";
-            const parentNode = hasParent ? resolveStateNode(parentPath) : machine;
-            if (parentNode?.onDone !== undefined) {
-              const onDoneList = machineCandidates(parentNode.onDone).map((c, index) => ({
-                c, key: "onDone", index, origin: parentPath
-              }));
-              const chosenOnDone = evalCandidates(onDoneList, { items: [{ ...effectiveCtx, [machine.field]: targetState }] }, event);
-              if (chosenOnDone !== undefined) {
-                const nextTarget = chosenOnDone.c.target !== undefined
-                  ? resolveTarget(chosenOnDone.c.target, targetState)
-                  : undefined;
-                const { exit: ex, enter: en } = getExitEnterPaths(targetState, nextTarget);
-                for (const s of ex) {
-                  const node = resolveStateNode(s);
-                  if (node?.exit) {
-                    for (const act of normalizeActions(node.exit)) {
-                      const r = runAction(act, patch, effectiveCtx, effects, world, event);
-                      if (r === NO_FIELD) return { updates: [] };
-                      if (r !== undefined) raisedThen = r;
-                    }
-                  }
-                }
-                if (chosenOnDone.c.actions) {
-                  for (const act of normalizeActions(chosenOnDone.c.actions)) {
-                    const r = runAction(act, patch, effectiveCtx, effects, world, event);
-                    if (r === NO_FIELD) return { updates: [] };
-                    if (r !== undefined) raisedThen = r;
-                  }
-                }
-                const rOD = runAction(chosenOnDone.c, patch, effectiveCtx, effects, world, event);
-                if (rOD === NO_FIELD) return { updates: [] };
-                if (rOD !== undefined) raisedThen = rOD;
-                for (const s of en) {
-                  const node = resolveStateNode(s);
-                  if (node?.entry) {
-                    for (const act of normalizeActions(node.entry)) {
-                      const r = runAction(act, patch, effectiveCtx, effects, world, event);
-                      if (r === NO_FIELD) return { updates: [] };
-                      if (r !== undefined) raisedThen = r;
-                    }
-                  }
-                }
-                globalThis.__prontoMachineTrace?.push({
-                  region,
-                  field: machine.field,
-                  state: parentPath || "*",
-                  key: "onDone",
-                  index: chosenOnDone.index,
-                  to: nextTarget,
-                });
-                targetState = nextTarget;
-                progressed = true;
-                continue;
-              }
-            }
-          }
-
-          // Check always on current targetState
-          const stateNode = resolveStateNode(targetState);
-          if (stateNode?.always !== undefined) {
-            const alwaysList = machineCandidates(stateNode.always).map((c, index) => ({
-              c, key: "always", index, origin: targetState
-            }));
-            const chosenAlways = evalCandidates(alwaysList, { items: [{ ...effectiveCtx, [machine.field]: targetState }] }, event);
-            if (chosenAlways !== undefined) {
-              const nextTarget = chosenAlways.c.target !== undefined
-                ? resolveTarget(chosenAlways.c.target, targetState)
-                : undefined;
-              const { exit: ex, enter: en } = getExitEnterPaths(targetState, nextTarget);
-              for (const s of ex) {
-                const node = resolveStateNode(s);
-                if (node?.exit) {
-                  for (const act of normalizeActions(node.exit)) {
-                    const r = runAction(act, patch, effectiveCtx, effects, world, event);
-                    if (r === NO_FIELD) return { updates: [] };
-                    if (r !== undefined) raisedThen = r;
-                  }
-                }
-              }
-              if (chosenAlways.c.actions) {
-                for (const act of normalizeActions(chosenAlways.c.actions)) {
-                  const r = runAction(act, patch, effectiveCtx, effects, world, event);
-                  if (r === NO_FIELD) return { updates: [] };
-                  if (r !== undefined) raisedThen = r;
-                }
-              }
-              const rAlw = runAction(chosenAlways.c, patch, effectiveCtx, effects, world, event);
-              if (rAlw === NO_FIELD) return { updates: [] };
-              if (rAlw !== undefined) raisedThen = rAlw;
-              for (const s of en) {
-                const node = resolveStateNode(s);
-                if (node?.entry) {
-                  for (const act of normalizeActions(node.entry)) {
-                    const r = runAction(act, patch, effectiveCtx, effects, world, event);
-                    if (r === NO_FIELD) return { updates: [] };
-                    if (r !== undefined) raisedThen = r;
-                  }
-                }
-              }
-              globalThis.__prontoMachineTrace?.push({
-                region,
-                field: machine.field,
-                state: targetState,
-                key: "always",
-                index: chosenAlways.index,
-                to: nextTarget,
-              });
-              targetState = nextTarget;
-              progressed = true;
-              continue;
-            }
-          }
-          if (!progressed) break;
-        }
-
+      const apply = (row, event, keys = eventKeys(event), expectState) => {
+        if (row === undefined || (expectState !== undefined && row[machine.field] !== expectState)) return { updates: [] };
+        const result = fire(row, event, keys);
+        if (!result?.taken) return { updates: [] };
+        const patch = result.patch ?? {};
         const out = { updates: [] };
-        if (targetState !== undefined || Object.keys(patch).length > 0) {
-          // A write concluding from the fallback states the fallback's columns for
-          // an absent row only: a handler's write may have landed in the store
-          // before this slot refreshed, and stating them over it reverted it (an
-          // audience a reader chose became the default as they typed a topic).
+        if (result.state !== row[machine.field] || Object.keys(patch).length > 0 || result.enter.length > 0) {
           const fromFallback = row === region._prontoFallbackRow;
-          // The fallback's own state is one of its columns: an arrow that names no
-          // target leaves a landed row's state as it is.
-          const stated = { id: row.id, ...(fromFallback ? {} : { [machine.field]: row[machine.field] }), ...patch };
-          if (targetState !== undefined) stated[machine.field] = targetState;
+          const stated = { id: row.id, ...(fromFallback ? {} : { [machine.field]: row[machine.field] }), ...patch, ...(result.targeted ? { [machine.field]: result.state } : {}) };
           out.updates = [{ op: "put", id: stated.id, row: stated, ...(fromFallback ? { absent: row } : {}) }];
-          // The chain's own view of the row: a raise delivered after this
-          // write must conclude from it, not from the slot's last refresh —
-          // the store's wake is asynchronous and the chain is not.
           region._prontoMachineRow = { ...row, ...stated };
         }
-        // Entered even on a self-target: re-entry is what re-arms `after`.
-        if (targetState !== undefined) entered = targetState;
-        if (effects.length > 0) out.effects = effects;
-        // raise is the reduce's then: under XState's name — delivered after
-        // the writes, depth-bounded by the terminal.
-        if (raisedThen !== undefined) out.then = { type: raisedThen };
+        if (result.enter.length) entered = result.state;
+        if (result.effects?.length) out.effects = result.effects;
+        if (result.raised !== undefined) out.then = { type: result.raised };
+        region[mine("invokes")]?.exit(result.exit);
         return out;
       };
 
@@ -3366,7 +3391,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       const machineReduce = (state, event) => {
         const row = machineRow(state);
         if (row === undefined) return { updates: [] };
-        return apply(row, event, candidatesFor(row[machine.field], event));
+        return apply(row, event);
       };
       // A chart raises, it never draws; named all the same, so a draw it
       // ever asked for would be its own.
@@ -3374,11 +3399,41 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
 
       // Every invocation arms the state its chain ended in; the entered flag
       // is set even on a self-target, which is what re-arms the timer.
-      const runMachine = (reduce, event) => finite(async (pause) => {
+      const runMachine = (reduce, event, automatic = false, release, generation = gate?.generation, readItems) => finite(async (pause) => {
+        const active = () => enabled() && (!gate || gate.generation === generation) && (!automatic || mutationActive());
+        if (!active()) return;
         entered = undefined;
-        await step(reduce, event, 0, pause);
+        await step(reduce, event, 0, () => { pause(); release?.(); }, undefined, automatic, active, readItems);
+        if (!active()) return;
         if (entered !== undefined) armAfter(entered);
-      });
+        syncInvocations();
+      }).finished;
+
+      const syncInvocations = () => {
+        if (!enabled() || !mutationActive() || screenOpts.mountUnits === false) return;
+        const actors = region[mine("invokes")] ??= invokedActors(machine, screenOpts.actors ?? {}, (binding) => {
+          if (binding.via !== "observe") throw new ProgramError(`unsupported invoked actor adapter ${binding.via}`);
+          return observeActor(binding, {
+            store, readRow: () => region._prontoMachineRow ?? getRows()[0], track,
+            failed: (error) => { failed(error); setState("network-error"); },
+            send: async (event, attached) => {
+              let delivered = false;
+              const receiver = (region._prontoMachineRow ?? getRows()[0])?.id;
+              const reduce = (world, fired) => {
+                const row = world.items[0];
+                if (!row || row.id !== receiver || !mutationActive() || !attached(row)) return { updates: [] };
+                delivered = true;
+                return apply(row, fired);
+              };
+              actorOf.set(reduce, machine.field);
+              await gesture((release) => runMachine(reduce, event, true, release, undefined, readCurrent));
+              return delivered;
+            },
+          });
+        });
+        const row = region._prontoMachineRow ?? getRows()[0];
+        if (row) actors.sync(row[machine.field] || machine.initial);
+      };
 
       // `after` is the relocated invoke: armed on state entry, canceled on
       // exit, re-armed by a self-target, performed by the terminal's clock.
@@ -3405,7 +3460,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           // while the machine still stands in the state that armed it.
           const timerReduce = (state, event) =>
             event.type === `after:${key}`
-              ? apply(machineRow(state), event, list, stateName)
+              ? apply(machineRow(state), event, [`after:${key}`], stateName)
               : machineReduce(state, event);
           actorOf.set(timerReduce, machine.field);
           // Periodic when every arrow the timer can take lands back in the
@@ -3442,6 +3497,8 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         region[once] = true;
         region.addEventListener(type, async (e) => {
           try {
+            if (!enabled()) return;
+            const generation = gate?.generation;
             const fired = { type };
             const src = e.target?.closest?.("[id]");
             if (src && src.id !== "" && region.contains(src)) fired.from = src.id;
@@ -3474,11 +3531,11 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             // data-key already admits.
             if (DISPLACING_EVENTS.has(type) || (type === "keydown" && ROVING_KEYS.has(e.key))) {
               const row = region._prontoMachineRow ?? getRows()[0];
-              if (row !== undefined && evalCandidates(candidatesFor(row[machine.field], fired), { items: [row] }, fired) !== undefined) {
+              if (row !== undefined && fire(row, fired, eventKeys(fired), true)?.taken === true) {
                 e.preventDefault();
               }
             }
-            await runMachine(machineReduce, fired);
+            await gesture((pause) => runMachine(machineReduce, fired, false, pause, generation));
           } catch (err) {
             report(err);
             setState("network-error");
@@ -3506,27 +3563,34 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           });
         });
       }
-      // A state change the machine did not make — a refusal's rollback among
-      // them — re-arms on the refresh it causes; the entered flag covers the
-      // machine's own moves.
-      const current = (region._prontoMachineRow ?? getRows()[0])?.[machine.field];
-      if (current !== undefined) {
-        if (region[mine("armed")] !== current) armAfter(current);
-        // On every refresh, not only a new state: a fold's foreign fact arrives as a column,
-        // and this is the chart reading it.
-        const node = resolveStateNode(current);
-        if (node?.always !== undefined) {
-          const alwaysList = machineCandidates(node.always).map((c, index) => ({ c, key: "always", index, origin: current }));
-          const standing = region._prontoMachineRow ?? getRows()[0];
-          // Asked of the row in hand first: a step reads the region's whole world, on every refresh.
-          // Held to the state it was asked in, which a gesture may have left by the time it runs,
-          // and a raise it chains is an ordinary event.
-          if (evalCandidates(alwaysList, { items: [standing] }, { type: "always" }) !== undefined) runMachine((state, event) => event.type === "always" ? apply(machineRow(state), event, alwaysList, current) : machineReduce(state, event), { type: "always" }).catch((err) => {
-            failed(err);
-            report(err);
-          });
+      const wake = () => {
+        if (!enabled()) return;
+        const current = (region._prontoMachineRow ?? getRows()[0])?.[machine.field];
+        if (current !== undefined && !resolveStateNode(current)) return;
+        if (screenOpts.mountUnits !== false && mutationActive()) syncInvocations();
+        // A state change the machine did not make — a refusal's rollback among
+        // them — re-arms on the refresh it causes; the entered flag covers the
+        // machine's own moves.
+        if (current !== undefined) {
+          if (region[mine("armed")] !== current) armAfter(current);
+          // On every refresh, not only a new state: a fold's foreign fact arrives as a column,
+          // and this is the chart reading it.
+          const node = resolveStateNode(current);
+          if (node?.always !== undefined) {
+            const standing = region._prontoMachineRow ?? getRows()[0];
+            // Asked of the row in hand first: a step reads the region's whole world, on every refresh.
+            // Held to the state it was asked in, which a gesture may have left by the time it runs,
+            // and a raise it chains is an ordinary event.
+            if (fire(standing, { type: "always" }, ["always"], true)?.taken === true) runMachine((state, event) => event.type === "always" ? apply(machineRow(state), event, ["always"], current) : machineReduce(state, event), { type: "always" }).catch((err) => {
+              failed(err);
+              report(err);
+            });
+          }
         }
-      }
+
+      };
+      if (gate) gate.wake = wake;
+      wake();
     }
 
     // A mutation landed on this region's collection, and the terminal knows it
@@ -3573,20 +3637,28 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         const wake = () => {
           if (held === "stopped") return;
           seat.running = true;
+          seat.refresh = false;
           let rejected = false;
-          finite((pause) => step(rowsReduce, mutEvent, 0, pause, seat)
+          return finite((pause) => step(rowsReduce, mutEvent, 0, pause, seat)
             .catch((err) => {
               rejected = true;
               failed(err);
               report(err);
               setState("network-error");
             })
-            .finally(() => {
-              seat.running = false;
+            .finally(async () => {
+              try {
+                if (!rejected && seat.refresh && held !== "stopped") {
+                  store.flushNotifications?.();
+                  await refreshes.get(region);
+                }
+              } finally {
+                seat.running = false;
+              }
               if (!seat.again || rejected || held === "stopped") return;
               seat.again = false;
-              wake();
-            }));
+              return wake();
+            })).ready;
         };
         wake();
       }
@@ -3622,6 +3694,10 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   // (inside a parent's template item) bind silently.
   function hydrateRegion(region, ctx, top) {
     ensureOwnReady(region);
+    let resolveActions;
+    const actionsReady = new Promise((resolve) => { resolveActions = resolve; });
+    const finishActions = () => resolveActions();
+    if (!region.dataset.onMutation && !region.dataset.machine) finishActions();
     const finishOwn = () => {
       region._prontoOwnDone = true;
       if (region.hasAttribute("data-hydrating")) region.removeAttribute("data-hydrating");
@@ -3660,6 +3736,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       el._prontoHasHatches = Boolean(root.matches?.("[data-hatch]") || root.querySelector("[data-hatch]") !== null);
       el._prontoHasNested = root.querySelector("[data-live]") !== null;
       el._prontoHasKeys = Boolean(root.matches?.("[data-key]") || root.querySelector("[data-key]") !== null);
+      el._prontoPlan = bindingPlan(root);
       const when = el.getAttribute("data-when");
       if (when === null) return { el, admits: null };
       // A data-when is matched against the row itself, so its values are
@@ -3774,6 +3851,10 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // Read back by the machine reduce (wired per refresh, outside this scope):
     // a write concluding from the fallback must state the whole fallback row.
     region._prontoFallbackRow = fallbackRow;
+    const readCurrent = async () => {
+      const rows = await store.query(table, opts.order, { ...opts, current: true });
+      return rows.length === 0 && region._prontoFallbackRow === currentRow && fallbackRow !== undefined ? [fallbackRow] : rows;
+    };
     let currentRow;
     // The slot's one ctx, mutated in place across refreshes. bind() wires each
     // listener once, and the step/worldOf closures it captures read this
@@ -3781,6 +3862,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // value to the first row the slot ever bound.
     const slotCtx = {
       params: ctx.params,
+      enclosing: enclosingOf(ctx),
       inert: ctx.inert,
       messages: ctx.messages,
       i18n: ctx.i18n,
@@ -3976,7 +4058,10 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         const held = entry.nested.get(el);
         if (held !== undefined && held.filter === want && held.order === wantOrder) {
           const bound = held.h.binds ? nestedBindings(el, entry.ctx) : "";
-          if (held.bound !== bound) {
+          // A restate reaches every nested region: a fold reading the route's
+          // params, or a text binding one, moves with no read or binding of
+          // its element moving, and a retarget restates the top regions alone.
+          if (held.bound !== bound || restating) {
             held.bound = bound;
             ready.push(held.h.restate());
           }
@@ -4039,6 +4124,13 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       } else {
         node = tmpl.content.firstElementChild.cloneNode(true);
         node.dataset.id = entry.ctx.row.id;
+        // A fresh clone is its template's markup exactly, so the template's
+        // plan finds its bindings (bindingPlan). Not an id that itself reads
+        // as a placeholder: the walk would bind data-id, and the plan has no
+        // way to know it.
+        if (tmpl._prontoPlan !== undefined && !PLACEHOLDER.test(node.dataset.id)) {
+          node._prontoPlanned = planned(tmpl._prontoPlan, node);
+        }
       }
       if (tmpl._prontoHasForms) {
         for (const form of formsIn(node)) {
@@ -4139,6 +4231,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
               entry = {
                 ctx: {
                   params: ctx.params,
+                  enclosing: enclosingOf(ctx),
                   inert: ctx.inert,
                   messages: ctx.messages,
                   i18n: ctx.i18n,
@@ -4193,8 +4286,16 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
               // would stick on the literal "undefined" and never clear.
               if (row.$synced === false) entry.node.dataset.pending = "true";
               else if (entry.node.hasAttribute("data-pending")) delete entry.node.dataset.pending;
-              bindAttributes(entry.node, entry.ctx);
-              bindTexts(entry.node, entry.ctx, renderers);
+              // A node's first bind follows its template's plan; any later
+              // one walks, since by then the row's markup is its own.
+              const plan = entry.node._prontoPlanned;
+              if (plan?.unbound) {
+                plan.unbound = false;
+                bindPlanned(entry.node, plan, entry.ctx, renderers);
+              } else {
+                bindAttributes(entry.node, entry.ctx);
+                bindTexts(entry.node, entry.ctx, renderers);
+              }
               if (entry.tmpl._prontoHasHatches) bindHatches(entry.node, entry.ctx);
               if (entry.tmpl._prontoHasNested || entry.nested.size > 0) toSync.push(entry);
               if (!entry.wired) fresh.push(entry);
@@ -4240,15 +4341,46 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
                 child.remove();
               }
             }
-            let cursor = region.firstElementChild;
-            for (const node of order) {
-              while (cursor && cursor.dataset?.exit !== undefined) cursor = cursor.nextElementSibling;
-              if (cursor === node) {
-                cursor = cursor.nextElementSibling;
-                continue;
+            // Rows already in place at either end are left alone. Of the rest,
+            // the longest run already in order stays, and every other row
+            // moves.
+            const skipExits = (child, step) => {
+              while (child && child.dataset?.exit !== undefined) child = child[step];
+              return child;
+            };
+            let start = 0;
+            let head = skipExits(region.firstElementChild, "nextElementSibling");
+            while (start < order.length && head === order[start]) {
+              start += 1;
+              head = skipExits(head.nextElementSibling, "nextElementSibling");
+            }
+            let end = order.length;
+            let tail = skipExits(region.lastElementChild, "previousElementSibling");
+            while (end > start && tail === order[end - 1]) {
+              end -= 1;
+              tail = skipExits(tail.previousElementSibling, "previousElementSibling");
+            }
+            const middle = order.slice(start, end);
+            const at = new Map();
+            let index = 0;
+            for (let child = head; child && child !== order[end]; child = child.nextElementSibling) {
+              if (child.dataset?.exit === undefined) at.set(child, index++);
+            }
+            const steady = steadyNodes(middle, at);
+            // In order, each before the next row that stays, so rows arriving
+            // into an empty list are appended as they come.
+            const after = order[end] ?? null;
+            let stays = 0;
+            for (let k = 0; k < middle.length; k++) {
+              const node = middle[k];
+              if (steady.has(node)) continue;
+              if (stays <= k) {
+                stays = k + 1;
+                while (stays < middle.length && !steady.has(middle[stays])) stays += 1;
               }
-              if (HAS_MOVE_BEFORE && node.isConnected) region.moveBefore(node, cursor);
-              else region.insertBefore(node, cursor);
+              const next = stays < middle.length ? middle[stays] : after;
+              if (HAS_MOVE_BEFORE && node.isConnected) region.moveBefore(node, next);
+              else region.insertBefore(node, next);
             }
             emptyNote(region, order.length === 0 ? region.dataset.empty : undefined, ctx, templates[0]?.el);
             const select = region.closest("select");
@@ -4257,18 +4389,20 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
               if (select.value === select._prontoBound) select._prontoBound = undefined;
             }
             fromEnclosing(() => bindElementAttributes(region, ctx), table, "own element");
+            answerSettles();
           };
           const wireListNodes = () => {
             wireKeysOn(region);
             const nodes = fresh.map((f) => f.node);
             for (const f of fresh) if (f.tmpl._prontoHasKeys) wireKeysIn(f.node);
-            const { deliver, apply } = wireEvents(region, nodes, () => currentRows, handlers, ctx);
+            const { deliver, apply } = wireEvents(region, nodes, () => currentRows, handlers, ctx, readCurrent);
             const dragName = region.dataset.handler;
             if (handlers.has(dragName) && dragging) {
               wireDrag(region, nodes, () => currentRows, lateReduce(handlers, dragName), deliver, apply);
             }
             for (const f of fresh) f.wired = true;
             first = false;
+            finishActions();
           };
           const progressive = first && served === undefined && screenOpts.fixtures !== true;
           if (progressive) {
@@ -4277,10 +4411,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             for (const entry of toSync) for (const child of entry.node.querySelectorAll("[data-live]")) holdUnboundLoads(child);
             placeListNodes();
             for (const entry of toSync) markChildRegionsHydrating(entry.node, region);
-            if (top) {
-              base = rows.length === 0 ? "empty" : "populated";
-              if (["loading", "empty", "populated"].includes(screen.dataset.state)) setState(base);
-            }
+            if (top) setListState(region, rows.length);
             finishOwn();
             if (screenOpts.onHeadReady && toSync.length > 0) {
               if (top && headFlushed) await headFlushed;
@@ -4297,10 +4428,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           }
           wireListNodes();
         }
-        if (top) {
-          base = rows.length === 0 ? "empty" : "populated";
-          if (["loading", "empty", "populated"].includes(screen.dataset.state)) setState(base);
-        }
+        if (top) setListState(region, rows.length);
       } else {
         // Singleton region: the row must exist (seed doctrine), except where
         // data-empty-row supplies the fallback for pipeline sinks whose row
@@ -4375,7 +4503,8 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         slotCtx.row = row;
         // A singleton has affordances too, and its one row is what they act
         // on: the reduce is handed it the way a list's is handed its rows.
-        wireEvents(region, null, () => (currentRow === undefined ? [] : [currentRow]), handlers, slotCtx);
+        wireEvents(region, null, () => (currentRow === undefined ? [] : [currentRow]), handlers, slotCtx, readCurrent);
+        finishActions();
         bindAttributes(region, slotCtx);
         wireKeysIn(region);
         bindTexts(region, slotCtx, renderers);
@@ -4424,7 +4553,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     let running = false;
     let queued = false;
     let queuedChanges;
-    const refreshSerially = async (changes) => {
+    const refreshSerially = async (changes, begin) => {
       if (running) {
         if (!queued) queuedChanges = changes;
         else if (queuedChanges !== undefined && changes !== undefined) queuedChanges = [...queuedChanges, ...changes];
@@ -4437,6 +4566,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       try {
         do {
           queued = false;
+          begin();
           checkSettlement(region);
           await refresh(changes);
           changes = queuedChanges;
@@ -4478,46 +4608,57 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       const said = outages.delete(guarded);
       if ((clears || said) && outages.size === 0 && screen.dataset.state === "network-error") setState(base);
     };
-    const guarded = (changes) => track((async () => {
-      if (stopped) return;
-      clearTimeout(retryTimer);
-      try {
-        // A wake queued behind a pass in flight has painted nothing; the
-        // call running the pass answers for it.
-        const ran = await refreshSerially(stale ? undefined : changes);
-        if (stopped) return;
-        stale = false;
-        retryMs = 2000;
-        if (ran) {
-          shown = true;
+    let restating = false;
+    const guarded = (changes) => {
+      const wasRunning = running;
+      const pass = track((async () => {
+        if (stopped || documentAway) return;
+        let epoch = documentEpoch;
+        clearTimeout(retryTimer);
+        try {
+          const ran = await refreshSerially(stale ? undefined : changes, () => { epoch = documentEpoch; });
+          if (stopped) return;
+          if (epoch !== documentEpoch && documentAway) {
+            finishOwn();
+            paint?.resolve();
+            return;
+          }
+          stale = false;
+          retryMs = 2000;
+          if (ran) {
+            shown = true;
+            paint?.resolve();
+            recovered(top);
+          }
+        } catch (err) {
+          if (stopped) return;
+          if (epoch !== documentEpoch) {
+            stale = true;
+            finishOwn();
+            paint?.resolve();
+            if (!documentAway && held === "shown") return guarded();
+            return;
+          }
+          failed(err);
+          stale = true;
+          if (err instanceof ProgramError) {
+            paint?.reject(err);
+            throw err;
+          }
+          report(err);
+          if (top || (reading && !shown)) {
+            outages.add(guarded);
+            setState("network-error");
+          }
+          finishOwn();
           paint?.resolve();
-          recovered(top);
+          retryTimer = setTimeout(guarded, retryMs);
+          retryMs = Math.min(retryMs * 2, 15000);
         }
-      } catch (err) {
-        if (stopped) return;
-        failed(err);
-        stale = true;
-        // A slot that matched two rows, or a row no template admits, is a
-        // broken invariant, not an outage: no retry can repair it, and the
-        // network-error dressing would say the store is down when the data is
-        // wrong. The rejection propagates — hydration fails on a first paint,
-        // a later wake rejects loudly — and the next real change re-checks
-        // without a timer.
-        if (err instanceof ProgramError) {
-          paint?.reject(err);
-          throw err;
-        }
-        report(err);
-        if (top || (reading && !shown)) {
-          outages.add(guarded);
-          setState("network-error");
-        }
-        finishOwn();
-        paint?.resolve();
-        retryTimer = setTimeout(guarded, retryMs);
-        retryMs = Math.min(retryMs * 2, 15000);
-      }
-    })());
+      })());
+      if (!wasRunning) refreshes.set(region, pass);
+      return pass;
+    };
     const dependencies = new Set([
       ...(region.dataset.reads ?? "").split(",").map((table) => table.trim()).filter(Boolean),
       ...[...region.attributes].filter((attr) => attr.name.startsWith("data-read-"))
@@ -4536,9 +4677,12 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       // on a torn-down region must not write into the live store — and the
       // cleared mark is what lets resume's refresh re-arm the standing state.
       for (const chart of mounted) {
+        const gate = region[`_prontoMachine_${chart.field}_gate`];
+        if (gate) gate.generation++;
         const gen = `_prontoMachine_${chart.field}_afterGen`;
         region[gen] = (region[gen] ?? 0) + 1;
         region[`_prontoMachine_${chart.field}_armed`] = undefined;
+        region[`_prontoMachine_${chart.field}_invokes`]?.stop();
       }
       unsub?.();
       unsub = null;
@@ -4546,10 +4690,12 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     const stop = () => {
       if (stopped) return;
       stopped = true;
+      if (top) populatedLists.delete(region);
       for (const dependency of dependencies) derived.get(dependency).delete(guarded);
       detach();
       dropAll();
       finishOwn();
+      finishActions();
       paint?.resolve();
       recovered(false);
     };
@@ -4564,10 +4710,12 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     };
     if (templates.length === 0) wireSlotForms();
     const attempt = guarded();
+    attempt.then(finishActions, finishActions);
     // A nested region's ProgramError reaches its enclosing row through
     // `painted`, which rejects with it.
     if (!top) attempt.catch(() => {});
     return {
+      actionsReady,
       // The read it was hydrated with (moved).
       read: readOf(region),
       // Whether this region binds its own element from the row it hangs under
@@ -4577,7 +4725,10 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       ready: top ? attempt : painted,
       // A re-render on the same rows, for a parent whose projection parameter
       // moved. Not resume(): the subscription is already standing.
-      restate: () => guarded(),
+      restate: () => {
+        restating = true;
+        return guarded().finally(() => { restating = false; });
+      },
       // A newer template for the screen on show, `from` its counterpart of this
       // region, reading what it read (handle.morph). A list takes its items
       // from it and morphs each row it holds to its item in place, so a row
@@ -4608,6 +4759,9 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           const item = tmpl.content.firstElementChild;
           const node = entry.node;
           morphTree(node, item.cloneNode(true), { slots: false });
+          // The node is the newer item's shape now, which the plan it was
+          // stamped with does not describe.
+          node._prontoPlanned = undefined;
           const pairs = new Map();
           adoptTree(item, node, { rows: true, live: true, pairs });
           entry.tmpl = tmpl;
@@ -4687,19 +4841,14 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
   wireScreen();
 
   if (opts.onHeadReady) {
-    (async () => {
+    track((async () => {
       await Promise.all(regions.map((r) => r.el._prontoOwnReady));
-      await opts.onHeadReady(screen, cas);
       setTimeout(resolveHeadFlushed, 0);
-    })().catch((err) => {
+      await opts.onHeadReady(screen, cas, settleActions);
+    })()).catch((err) => {
       resolveHeadFlushed?.();
       failed(err);
     });
-  }
-
-  await Promise.all(pending);
-  if (regions.length === 0) {
-    screen.dataset.state = route.states?.[0] ?? "populated";
   }
 
   // The terminal owns the navigation stack, so it needs more than a teardown:
@@ -4715,13 +4864,45 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     if (errors.length) throw new AggregateError(errors, "screen cleanup failed");
   };
   const mountHostDom = () => {
-    try { hostDom.start(screen, { messages: opts.messages, params }); }
+    try { hostDom.start(screen, { messages: opts.messages, params, store }); }
     catch (error) {
       try { stopScreen(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "screen mount failed"); }
       throw error;
     }
   };
-  if (isMountActive()) mountHostDom();
+  let hydrated = false;
+  // Browser history can suspend the document while its reads are still in flight.
+  const leaveDocument = (event) => {
+    documentAway = true;
+    documentEpoch += 1;
+    if (!event.persisted) return stopScreen();
+    for (const region of regions) region.pause();
+  };
+  const returnDocument = () => {
+    if (!documentAway || held === "stopped") return;
+    documentAway = false;
+    if (held === "shown") track(Promise.all(regions.map((region) => region.resume())).then(() => {
+      if (hydrated && !documentAway && held === "shown" && isMountActive()) mountHostDom();
+    })).catch(failed);
+  };
+  globalThis.addEventListener("pagehide", leaveDocument);
+  globalThis.addEventListener("pageshow", returnDocument);
+  cleanups.push(() => {
+    globalThis.removeEventListener("pagehide", leaveDocument);
+    globalThis.removeEventListener("pageshow", returnDocument);
+  });
+
+  try { await Promise.all(pending); }
+  catch (error) {
+    try { stopScreen(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "screen mount failed"); }
+    throw error;
+  }
+  hydrated = true;
+  if (regions.length === 0) {
+    screen.dataset.state = route.states?.[0] ?? "populated";
+  }
+
+  if (!documentAway && held !== "stopped" && isMountActive()) mountHostDom();
   // A newer template for the screen on show (the service worker's
   // revalidation): its skeleton is brought to it in place, then each region
   // (retemplate). A region it adds, or whose read it changes, is hydrated
@@ -4753,9 +4934,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     const pairs = new Map();
     adoptTree(next, screen, { rows: true, live: true, pairs });
     localize(screen);
-    // Every list re-binds its rows, and a top region's pass names the
-    // screen's state after its own rows: the region settling last would
-    // decide it, though a template moving on changes no row.
+    // Every list re-binds its rows, but a template moving on changes no row.
     const [state, standing] = [screen.dataset.state, base];
     const ready = [];
     for (const r of [...regions]) {
@@ -4792,7 +4971,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     settle,
     present: mountHostDom,
     updateStyle: async (css) => {
-      await installStyle(styleId, css, isMountActive);
+      await installStyle(styleId, css, isMountVisible);
     },
     // A release's handlers, by pathname. A chain already running ends on the one it began on.
     updateHandlers: async (paths) => {

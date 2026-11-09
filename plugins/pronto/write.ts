@@ -12,7 +12,9 @@
 // stale emissions; a file authored in place is never recorded, so the sweep
 // cannot reach it.
 
+import type { LiveStatic } from "./live-tree.ts";
 import { dirname, resolve } from "node:path";
+import { packageHatch, type Declaration } from "./activepieces-package.ts";
 import { pathToFileURL } from "node:url";
 import { stringify } from "jsr:@std/yaml@1.0.5";
 import { derive, GENERATED_HTML_HEADER, terminalPath } from "./derive.ts";
@@ -24,19 +26,24 @@ import { generateProto, type ProtoEntity } from "./type-proto.ts";
 import { checkTypeSeeds, type TypeEntity } from "./type-check.ts";
 import { parseHeld, seedSql, type SeedData } from "./seed.ts";
 import { type Program, renderIr, writeIrStylesheet } from "./ir-render.ts";
-import { declaredMachine } from "./hybrid-spec.ts";
+import { declaredMachine } from "./mecha-spec.ts";
 import { compileMechaPorts } from "./mecha-ports.ts";
 import { compileMechaReducer, type MechaReducerMachine, type Terminal } from "./mecha-reducer.ts";
+import { compileCortexSources, type CortexChart } from "./cortex-sources.ts";
+import { compileFunction } from "./database-functions.ts";
+import { compileCortexSql } from "./cortex-machine.ts";
 import { surfaceOf, type SurfaceEntity } from "./mecha-surface.ts";
+import { sha256Hex } from "./facts.ts";
 
 type EmitFile = { format: string; text?: string; data?: unknown; src?: string };
 type Emission = {
   manifest: string[];
   files: Record<string, EmitFile>;
   checkout: Record<string, EmitFile>;
-  terminal: { surface: { runtime: string; documentRenderer: string; documentConfig: string } };
+  terminal: { surface: { runtime: string; documentRenderer: string; documentConfig: string; statics: { file: string; target: string }[] } };
   build?: { meta?: { dir?: string } };
-  cluster?: { meta?: { root?: string; statics?: { file: string }[] } };
+  cluster?: { meta?: { root?: string; statics?: { file: string; target: string }[] } };
+  development?: { statics: { file: string; target: string }[] };
 };
 
 // jessie/bloblang/js entries always carry `src`, never `text`, so they need
@@ -87,6 +94,10 @@ async function terminal(): Promise<Terminal> {
 }
 
 function render(rel: string, f: EmitFile): string {
+  if (f.format === "cortex-sql") {
+    const input = f.data as { charts: CortexChart[]; entities: Parameters<typeof compileCortexSources>[1] };
+    return sqlFile(rel, compileCortexSources(input.charts, input.entities));
+  }
   if (f.format === "type-sql" || f.format === "carrier-sql") return sqlFile(rel, generateTypeSQL(f.data as { precision: number; scale: number }[]));
   if (f.format === "seed-sql") {
     const data = f.data as SeedData;
@@ -103,15 +114,34 @@ function render(rel: string, f: EmitFile): string {
   return fail(`${rel}: no text and format ${f.format} is not structured`);
 }
 
-async function exportEmission(): Promise<Emission> {
+/** Compiles the emission's cortex machines to their SQL, in place. */
+function cortexSql(value: unknown): void {
+  if (value === null || typeof value !== "object") return;
+  const node = value as Record<string, unknown>;
+  for (const [k, v] of Object.entries(node)) {
+    if (typeof v === "string") {
+      if (v.includes("@PRONTO_XSTATE")) node[k] = compileCortexSql(v);
+    } else cortexSql(v);
+  }
+}
+
+/** What ir.html's cards are drawn from: Program's slices of the program. */
+type Drawing = { program: Program; ir: string };
+const DRAWING = "program: {state: code.state, surface: code.surface, capabilities: code.capabilities}, ir: code.meta.ir.source";
+
+/** The emission, and the drawing read in the same evaluation: each export of a
+ * program evaluates it whole. */
+async function exportEmission(): Promise<{ emission: Emission; drawing: Drawing }> {
   const exported = await new Deno.Command("cue", {
-    args: ["export", ".", "-e", "out", "--out", "json"],
+    args: ["export", ".", "-e", `{emission: out, ${DRAWING}}`, "--out", "json"],
     cwd: appDir,
     stdout: "piped",
     stderr: "inherit",
   }).output();
   if (!exported.success) fail("cue export failed");
-  const emission: Emission = JSON.parse(new TextDecoder().decode(exported.stdout));
+  const exportedJson = JSON.parse(new TextDecoder().decode(exported.stdout)) as { emission: Emission } & Drawing;
+  const emission = exportedJson.emission;
+  cortexSql(emission);
   checkTypeSeeds(emission.files["schema/entities.proto"].data as Record<string, TypeEntity>);
   const checks = await projectSay(appDir, emission.files[".say.yaml"].data) as { say: Record<string, unknown> };
   const graph = emission.files["bayt.json"].data as { files: Record<string, { say: Record<string, unknown> }> };
@@ -147,7 +177,7 @@ async function exportEmission(): Promise<Emission> {
       fail(`${s.file}: no such file — the cluster serves it from the build context, so it must exist in the app (${owed[s.file] ?? "most often a review ladder file"})`);
     }
   }
-  return emission;
+  return { emission, drawing: { program: exportedJson.program, ir: exportedJson.ir } };
 }
 
 const unsafe = (p: string) => p.split("/").some((s) => s === "" || s === "." || s === "..");
@@ -175,8 +205,8 @@ async function recorded(manifestPath: string): Promise<string[]> {
 /** Everything the run will write, rendered, so nothing on disk moves for an
  * emission the writer refuses. Documents are the one exception, rendered by
  * renderDocuments once the files they are rendered from are on disk. */
-async function rendered(emission: Emission): Promise<Map<string, string>> {
-  const contents = new Map<string, string>();
+async function rendered(emission: Emission): Promise<Map<string, string | Uint8Array>> {
+  const contents = new Map<string, string | Uint8Array>();
   for (const rel of [...emission.manifest].sort()) {
     if (unsafe(rel)) fail(`unsafe path: ${rel}`);
     const f = emission.files[rel];
@@ -184,7 +214,7 @@ async function rendered(emission: Emission): Promise<Map<string, string>> {
     if (f.format === "local-handler") {
       // The app's module (state, event, machine, machines) over the machine
       // its Cortex state reaches. A local child runs the machine's own
-      // reducer — the hybrid runtime and rules PostgreSQL runs, here in the
+      // reducer — the mecha runtime and rules PostgreSQL runs, here in the
       // handler's cage, where the terminal bounds a chain's steps rather than
       // metering fuel — so a local game is the terminal's rows and steps;
       // every child is handed the declarations of the machines it may write to.
@@ -199,27 +229,60 @@ async function rendered(emission: Emission): Promise<Map<string, string>> {
         // Compiled for its refusals alone: the rules the terminal embeds are
         // the ones PostgreSQL would accept, contracts and reach included.
         await compileMechaReducer(data.machine.machine, rules, await terminal());
-        const runtime = (await Deno.readTextFile(new URL("./hybrid-runtime.js", import.meta.url))).trim();
-        machine = `{spec, execute: (${runtime})(spec, (() => {\n${rules.trim()}\n})())}`;
+        const runtime = (await Deno.readTextFile(new URL("./mecha-runtime.js", import.meta.url))).trim();
+        machine = `{spec, execute: (${runtime})(spec, (() => {\n${rules.trim()}\n})(), Statechart)}`;
       }
       contents.set(rel, `// generated by pronto — do not edit\nconst app = ${app};\nconst spec = ${spec};\nconst machine = ${machine};\nconst machines = ${machines};\n(state, event) => app(state, event, machine, machines);\n`);
       continue;
     }
-    if (f.format === "hybrid-sql") {
-      const { hybrids, entities, timers } = f.data as { hybrids: Record<string, { machine: MechaReducerMachine; rules: string }>; entities: Record<string, SurfaceEntity>; timers: string };
+    if (f.format === "function-sql") {
+      const { functions } = f.data as { functions: Record<string, { rules: string; fuel: number }> };
+      const terminalOf = await terminal();
+      const statements: string[] = [];
+      for (const name of Object.keys(functions).sort()) {
+        const { rules, fuel } = functions[name];
+        if (unsafe(rules)) fail(`${rel}: unsafe function rules path ${rules}`);
+        statements.push(compileFunction({ name, fuel }, await Deno.readTextFile(`${appDir}/${rules}`), terminalOf));
+      }
+      contents.set(rel, sqlFile(rel, statements.join("\n")));
+      continue;
+    }
+    if (f.format === "mecha-reducer-local") {
+      const { reducers } = f.data as { reducers: Record<string, { machine: MechaReducerMachine; rules: string }> };
+      const terminalOf = await terminal();
+      const compiled: Record<string, { source: string; engine: { sha256: string } }> = {};
+      for (const name of Object.keys(reducers).sort()) {
+        const mecha = reducers[name];
+        if (unsafe(mecha.rules)) fail(`${rel}: unsafe mecha rules path`);
+        const { source, engine } = await compileMechaReducer(mecha.machine, await Deno.readTextFile(`${appDir}/${mecha.rules}`), terminalOf);
+        compiled[name] = { source, engine: { sha256: await sha256Hex(new TextEncoder().encode(engine)) } };
+      }
+      contents.set(rel, JSON.stringify(compiled, null, 2) + "\n");
+      continue;
+    }
+    if (f.format === "mecha-reducer-sql") {
+      const { reducers, entities, timers } = f.data as { reducers: Record<string, { machine: MechaReducerMachine; rules: string }>; entities: Record<string, SurfaceEntity>; timers: string };
       const terminalOf = await terminal();
       const statements: string[] = timers ? [timers] : [];
-      for (const name of Object.keys(hybrids).sort()) {
-        const hybrid = hybrids[name];
-        if (unsafe(hybrid.rules)) fail(`${rel}: unsafe hybrid rules path`);
-        const rules = await Deno.readTextFile(`${appDir}/${hybrid.rules}`);
-        statements.push((await compileMechaReducer(hybrid.machine, rules, terminalOf, surfaceOf(hybrid.machine, entities))).sql);
+      for (const name of Object.keys(reducers).sort()) {
+        const mecha = reducers[name];
+        if (unsafe(mecha.rules)) fail(`${rel}: unsafe mecha rules path`);
+        const rules = await Deno.readTextFile(`${appDir}/${mecha.rules}`);
+        statements.push((await compileMechaReducer(mecha.machine, rules, terminalOf, surfaceOf(mecha.machine, entities))).sql);
       }
-      statements.push(compileMechaPorts(Object.fromEntries(Object.entries(hybrids).map(([name, hybrid]) => [name, hybrid.machine]))));
+      statements.push(compileMechaPorts(Object.fromEntries(Object.entries(reducers).map(([name, mecha]) => [name, mecha.machine]))));
       contents.set(rel, sqlFile(rel, statements.join("\n")));
       continue;
     }
     if (f.src === undefined) {
+      if (/^activepieces\/.+\/declaration\.json$/.test(rel)) {
+        const prefix = parent(rel);
+        for (const [path, bytes] of await packageHatch(appDir, f.data as Declaration)) {
+          const output = `${prefix}/${path}`;
+          if (unsafe(output) || emission.files[output] !== undefined || contents.has(output)) fail(`${rel}: conflicting package output ${output}`);
+          contents.set(output, bytes);
+        }
+      }
       contents.set(rel, render(rel, f));
       continue;
     }
@@ -301,7 +364,7 @@ async function renderDocuments(emission: Emission): Promise<Map<string, string>>
 }
 
 /** Reconciles the emission, including stale files and rendered documents. */
-async function writeEmission(emission: Emission): Promise<{ written: string[]; changed: boolean }> {
+async function writeEmission(emission: Emission): Promise<{ written: string[]; changed: boolean; wrote: boolean }> {
   const contents = await rendered(emission);
   const documents = Object.keys(emission.files).filter((rel) => emission.files[rel].format === "document");
   const written = [...contents.keys(), ...documents].sort();
@@ -311,7 +374,7 @@ async function writeEmission(emission: Emission): Promise<{ written: string[]; c
   // run that dies midway leaves nothing the next one cannot find.
   const stale: string[] = [];
   for (const rel of await recorded(manifestPath)) {
-    if (emission.files[rel]) continue;
+    if (emission.files[rel] || contents.has(rel)) continue;
     const info = await ifMissing(Deno.lstat(`${appDir}/${rel}`), null);
     if (info === null) continue;
     if (info.isDirectory) fail(`${rel}: recorded as written, but is now a directory`);
@@ -328,19 +391,22 @@ async function writeEmission(emission: Emission): Promise<{ written: string[]; c
     await Deno.writeTextFile(manifestPath, manifest);
     changed = true;
   }
-  const put = async (rel: string, text: string) => {
+  const put = async (rel: string, value: string | Uint8Array) => {
     const path = `${appDir}/${rel}`;
-    if (await ifMissing(Deno.readTextFile(path), null) === text) return;
+    const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+    const previous = await ifMissing(Deno.readFile(path), null);
+    if (previous !== null && previous.length === bytes.length && previous.every((byte, i) => byte === bytes[i])) return;
     changed = true;
     const dir = parent(path);
     if (dir !== appDir) await Deno.mkdir(dir, { recursive: true });
-    await Deno.writeTextFile(path, text);
+    await Deno.writeFile(path, bytes);
   };
   for (const [rel, text] of contents) await put(rel, text);
   for (const [rel, text] of await renderDocuments(emission)) await put(rel, text);
   // The checkout's own files, as mise.local.toml is: written only in one,
   // and in no manifest a mirror copies, so after the sweep of what the last
   // manifest recorded.
+  let checkoutChanged = false;
   if ((await checkout()) !== undefined) {
     for (const [rel, f] of Object.entries(emission.checkout)) {
       const text = render(rel, f);
@@ -348,9 +414,10 @@ async function writeEmission(emission: Emission): Promise<{ written: string[]; c
       if ((await ifMissing(Deno.readTextFile(path), "")) === text) continue;
       await Deno.mkdir(dirname(path), { recursive: true });
       await Deno.writeTextFile(path, text);
+      checkoutChanged = true;
     }
   }
-  return { written, changed };
+  return { written, changed, wrote: changed || checkoutChanged };
 }
 
 const derivedText = async () => JSON.stringify(await Promise.all(
@@ -437,48 +504,85 @@ async function writeMiseLocal(): Promise<void> {
   if ((await ifMissing(Deno.readTextFile(path), "")) !== text) await Deno.writeTextFile(path, text);
 }
 
+const timings: { phase: string; ms: number }[] = [];
+async function timed<T>(phase: string, run: () => Promise<T>): Promise<T> {
+  const start = performance.now();
+  try {
+    return await run();
+  } finally {
+    timings.push({ phase, ms: Math.round(performance.now() - start) });
+  }
+}
+
 // Emitted markup feeds derivation. A second pass is needed only when emission
 // or the derived declarations moved; unchanged declarations and bytes cannot
 // change what the first pass read. Every generation still derives and exports once.
-await writeMiseLocal();
-await writeIrStylesheet(appDir);
-const before = await derivedText();
-await derive(appDir);
-// An entity's writers come from the screens, so ids are minted once a derivation exists.
-await mint(appDir);
-const settled = await derivedText();
-let emission = await writeEmission(await exportEmission());
-let derivations = 1;
-if (emission.changed || settled !== before) {
-  await derive(appDir);
-  derivations++;
-  if ((await derivedText()) !== settled) {
-    emission = await writeEmission(await exportEmission());
-    const again = await derivedText();
-    await derive(appDir);
+async function generate(): Promise<void> {
+  timings.length = 0;
+  await writeMiseLocal();
+  await writeIrStylesheet(appDir);
+  const before = await derivedText();
+  let read = await timed("derive", () => derive(appDir));
+  // An entity's writers come from the screens, so ids are minted once a derivation exists.
+  await mint(appDir, Object.values(read.entities));
+  const settled = await derivedText();
+  const first = await timed("export", exportEmission);
+  let currentEmission = first.emission;
+  let emission = await timed("emit", () => writeEmission(first.emission));
+  let derivations = 1;
+  // A drawing is stale once anything its export read was written again.
+  let drawn: Drawing | undefined = emission.wrote ? undefined : first.drawing;
+  if (emission.changed || settled !== before) {
+    read = await timed("derive", () => derive(appDir));
     derivations++;
-    if ((await derivedText()) !== again) fail("derivation did not settle in two passes");
+    drawn = undefined;
+    if ((await derivedText()) !== settled) {
+      const next = await timed("export", exportEmission);
+      currentEmission = next.emission;
+      emission = await timed("emit", () => writeEmission(next.emission));
+      const again = await derivedText();
+      read = await timed("derive", () => derive(appDir));
+      derivations++;
+      if ((await derivedText()) !== again) fail("derivation did not settle in two passes");
+    }
   }
+  // Generated IR contributes claims and diagrams, not application bindings.
+  if (await timed("ir", () => drawIr(drawn))) {
+    await timed("ir-facts", read.refreshIr);
+  }
+  console.error(`pronto write timings: ${JSON.stringify(timings)}`);
+  console.error(`pronto write: ${emission.written.length} files emitted → ${appDir} (${derivations} derivation${derivations === 1 ? "" : "s"})`);
+  const runtimeRoot = dirname(await terminalPath("deno.json", appDir));
+  const statics = new Map<string, LiveStatic>();
+  for (const s of [...(currentEmission.cluster?.meta?.statics ?? []), ...currentEmission.terminal.surface.statics, ...(currentEmission.development?.statics ?? [])]) {
+    statics.set(s.target, { source: resolve(s.target.startsWith("/omnishell/") ? runtimeRoot : appDir, s.file), target: s.target });
+  }
+  statics.set("/srv/shell/shell.json", { source: resolve(appDir, ".pronto/development/shell.json"), target: "/srv/shell/shell.json" });
+  const live = `${appDir}/.pronto/live`;
+  await Deno.mkdir(`${live}/caddy`, { recursive: true });
+  await Deno.writeTextFile(`${live}/.gitignore`, "*\n");
+  await Deno.writeTextFile(`${live}/caddy/release-scripts`, "");
+  await Deno.writeTextFile(`${live}/sources.json`, JSON.stringify([...statics.values()]));
 }
-// The cards ir.html carries are drawn from the settled program and the emitted
-// screens; a redraw moves ir.html, whose hash the facts hold, so derive runs
-// once more to record it.
-if (await drawIr()) {
-  await derive(appDir);
-  derivations++;
-}
-console.error(`pronto write: ${emission.written.length} files emitted → ${appDir} (${derivations} derivation${derivations === 1 ? "" : "s"})`);
 
-async function drawIr(): Promise<boolean> {
-  const lift = (await derivedText()).includes("@tag(derive,") ? ["-t", "derive=true"] : [];
+await generate();
+
+
+async function drawIr(drawn: Drawing | undefined): Promise<boolean> {
+  const { program, ir } = drawn ?? await exportDrawing();
+  const facts = JSON.parse(await Deno.readTextFile(`${appDir}/.pronto/facts.json`));
+  return await renderIr(appDir, ir, program, facts);
+}
+
+// Strict, as the emission's export is, so a reused drawing and a fresh one
+// are the same read of the program.
+async function exportDrawing(): Promise<Drawing> {
   const out = await new Deno.Command("cue", {
-    args: ["export", ...lift, ".", "-e", "{program: code, ir: code.meta.ir.source}", "--out", "json"],
+    args: ["export", ".", "-e", `{${DRAWING}}`, "--out", "json"],
     cwd: appDir,
     stdout: "piped",
     stderr: "piped",
   }).output();
   if (!out.success) fail(new TextDecoder().decode(out.stderr));
-  const { program, ir } = JSON.parse(new TextDecoder().decode(out.stdout)) as { program: Program; ir: string };
-  const facts = JSON.parse(await Deno.readTextFile(`${appDir}/.pronto/facts.json`));
-  return await renderIr(appDir, ir, program, facts);
+  return JSON.parse(new TextDecoder().decode(out.stdout)) as Drawing;
 }

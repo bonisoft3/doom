@@ -13,7 +13,7 @@
 // Three properties, held over every input:
 //
 //   confinement   the module runs in the compartment production runs it in
-//                 (interpreter/jessie.js), endowed with nothing but its meter
+//                 (interpreter/jessie.js), endowed with its declared grants and meter
 //   termination   every loop head and function entry spends a step of a fixed
 //                 budget, so a module that does not finish is stopped by a
 //                 counter rather than by CI's wall clock. The steps are spent
@@ -48,8 +48,8 @@
 import fc from "npm:fast-check@3.23.2";
 import { sharedInputs, type PropertyFor } from "./battery-inputs.ts";
 import { load as parseYaml } from "./interpreter/vendor/js-yaml.js";
-import { evaluateCaged } from "./interpreter/jessie.js";
-import { machineRegions, scanScreen } from "./interpreter/lint.ts";
+import { buildEndowments, ensureSes, evaluateCaged, SAFE_ENDOWMENTS } from "./interpreter/jessie.js";
+import { machineRegions, resolveMachineMarkup, scanScreen } from "./interpreter/lint.ts";
 import { machineCandidates, RESERVED_LEAVES } from "./interpreter/fragment.js";
 import {
   arbitraryHandlerInput,
@@ -100,6 +100,8 @@ export type Exercised = {
   path: string;
   role: "handler" | "validation";
   table?: string;
+  leaf?: boolean;
+  delay?: boolean;
   params?: Record<string, unknown>;
   runs: number;
   maxFuel: number;
@@ -111,10 +113,10 @@ export type Exercised = {
  * its own literals; a reduce bound to a gesture (data-handler, data-on-*)
  * states neither, because which region encloses the element is a fact about
  * the tree and not about the attribute. */
-export type CallSite = { table?: string; params?: Record<string, unknown> };
+export type CallSite = { table?: string; leaf?: boolean; delay?: boolean; params?: Record<string, unknown> };
 
 const sameSite = (a: CallSite, b: CallSite) =>
-  a.table === b.table && JSON.stringify(a.params ?? null) === JSON.stringify(b.params ?? null);
+  a.table === b.table && a.leaf === b.leaf && a.delay === b.delay && JSON.stringify(a.params ?? null) === JSON.stringify(b.params ?? null);
 
 /**
  * The call sites one screen's markup states, by the basename it names each
@@ -140,33 +142,48 @@ export function callSites(html: string): Map<string, CallSite[]> {
     // machineRegions refuses what is not JSON, so a chart reaching here parses.
     const chart = JSON.parse(region.machine);
     const table = region.table;
+    const values = (fields: Record<string, unknown>) => {
+      for (const value of Object.values(fields)) {
+        if (typeof value === "string") take(value, { table, leaf: true });
+        else if (value !== null && typeof value === "object" && "type" in value &&
+          typeof value.type === "string" && !RESERVED_LEAVES.has(value.type)) {
+          take(value.type, { table, leaf: true, params: (value as { params?: Record<string, unknown> }).params });
+        }
+      }
+    };
+    // deno-lint-ignore no-explicit-any
+    const actions = (value: any) => {
+      for (const action of Array.isArray(value) ? value : value ? [value] : []) {
+        values(action.assign ?? {});
+        for (const effect of Array.isArray(action.effect) ? action.effect : action.effect ? [action.effect] : []) {
+          values(effect.values ?? {});
+        }
+      }
+    };
     const walk = (value: unknown) => {
       // deno-lint-ignore no-explicit-any
       for (const candidate of machineCandidates(value) as any[]) {
         const guard = candidate.guard;
-        if (typeof guard === "string") take(guard, { table });
-        else if (guard !== null && typeof guard === "object") take(guard.type, { table, params: guard.params });
-        for (const v of Object.values(candidate.assign ?? {})) {
-          if (typeof v === "string") take(v, { table });
-          // deno-lint-ignore no-explicit-any
-          else if (v !== null && typeof v === "object" && !RESERVED_LEAVES.has((v as any).type)) {
-            // deno-lint-ignore no-explicit-any
-            take((v as any).type, { table, params: (v as any).params });
-          }
-        }
+        if (typeof guard === "string") take(guard, { table, leaf: true });
+        else if (guard !== null && typeof guard === "object") take(guard.type, { table, leaf: true, params: guard.params });
+        actions(candidate);
+        actions(candidate.actions);
       }
     };
-    for (const value of Object.values(chart.on ?? {})) walk(value);
     // deno-lint-ignore no-explicit-any
-    for (const state of Object.values(chart.states ?? {}) as any[]) {
-      for (const value of Object.values(state.on ?? {})) walk(value);
-      if (state.always !== undefined) walk(state.always);
-      for (const [delay, value] of Object.entries(state.after ?? {})) {
-        // A non-numeric delay is a module answering the milliseconds.
-        if (!/^\d+$/.test(delay)) take(delay, { table });
+    const state = (node: any) => {
+      for (const value of Object.values(node.on ?? {})) walk(value);
+      if (node.always !== undefined) walk(node.always);
+      if (node.onDone !== undefined) walk(node.onDone);
+      for (const [delay, value] of Object.entries(node.after ?? {})) {
+        if (!/^\d+$/.test(delay)) take(delay, { table, delay: true });
         walk(value);
       }
-    }
+      actions(node.entry);
+      actions(node.exit);
+      for (const child of Object.values(node.states ?? {})) state(child);
+    };
+    state(chart);
   }
   return sites;
 }
@@ -217,6 +234,7 @@ export async function exercise(
   site: CallSite = {},
   options: BatteryOptions = {},
   propertyFor: PropertyFor<BatteryInput> = (predicate) => fc.property(inputs, predicate),
+  endowments: string[] = [],
 ): Promise<Exercised> {
   const runs = options.numRuns ?? RUNS;
   const meter = fuelMeter(options.fuelLimit ?? FUEL);
@@ -225,6 +243,8 @@ export async function exercise(
     path,
     role,
     table: site.table,
+    leaf: site.leaf,
+    delay: site.delay,
     params: site.params,
     runs,
     maxFuel,
@@ -237,7 +257,10 @@ export async function exercise(
 
   let target: (...args: unknown[]) => unknown;
   try {
-    target = await evaluateCaged(instrument(source), meter.endowments) as (...args: unknown[]) => unknown;
+    await ensureSes();
+    const granted = [...new Set(endowments)];
+    const undeclared = Object.fromEntries(Object.keys(SAFE_ENDOWMENTS).filter((name) => !granted.includes(name)).map((name) => [name, `${role}: ${name} is not endowed; declare it among the module's endowments`]));
+    target = await evaluateCaged(instrument(source), { ...buildEndowments(granted), ...meter.endowments }, undeclared) as (...args: unknown[]) => unknown;
   } catch (err) {
     return result(meter.consumed(), said(err));
   }
@@ -247,6 +270,7 @@ export async function exercise(
     return result(0, `${role} source does not end in a function`);
   }
 
+  const call = (state: unknown, event: unknown) => site.delay ? target(state, event) : target(state, event, params);
   let maxFuel = 0;
   const details = fc.check(
     propertyFor(({ state, event }) => {
@@ -254,7 +278,7 @@ export async function exercise(
       const frozenEvent = deepFreeze(structuredClone(event));
 
       meter.reset();
-      const first = target(frozenState, frozenEvent, params);
+      const first = call(frozenState, frozenEvent);
       const firstFuel = meter.consumed();
       if (firstFuel > maxFuel) maxFuel = firstFuel;
 
@@ -262,7 +286,7 @@ export async function exercise(
       if (wrong !== null) throw new Error(wrong);
 
       meter.reset();
-      const second = target(frozenState, frozenEvent, params);
+      const second = call(frozenState, frozenEvent);
       if (meter.consumed() !== firstFuel) {
         throw new Error(`the same input cost ${firstFuel} steps and then ${meter.consumed()}`);
       }
@@ -286,7 +310,7 @@ export async function exercise(
           meter.reset();
           let reversed: unknown;
           try {
-            reversed = target(reversedState, frozenEvent, params);
+            reversed = call(reversedState, frozenEvent);
           } catch (err) {
             throw new Error(`on reversed row order: ${said(err)}`);
           }
@@ -315,10 +339,12 @@ export async function exercise(
 type SchemaEntity = { durability: string; fields: FieldDef[] };
 type Edge = { table: string; key: string; from: string };
 type Shell = {
+  cortex?: { actors?: Record<string, unknown> };
   i18n?: { default: string; locales?: Record<string, unknown> };
   schema?: Record<string, SchemaEntity>;
-  routes?: { files?: { handlers?: string[] } }[];
+  routes?: { screen?: string; files?: { html?: string; handlers?: string[] } }[];
   validations?: Record<string, Record<string, { src?: string; edges?: Edge[] }>>;
+  endowments?: Record<string, string[]>;
 };
 
 /** The entities as the generators take them, keyed by the table they are
@@ -339,21 +365,20 @@ export const basenameOf = (path: string) => path.replace(/^.*\//, "").replace(/\
  * refuse is a finding rather than a throw: the modules the other screens name
  * are still worth running, and check-markup reports the refusal in the
  * grammar's own words. */
-async function screenCallSites(appDir: URL, findings: Finding[]): Promise<Map<string, CallSite[]>> {
+async function screenCallSites(appDir: URL, findings: Finding[], shell: Shell): Promise<Map<string, CallSite[]>> {
   const merged = new Map<string, CallSite[]>();
-  const dir = new URL("shell/screens/", appDir);
-  const names: string[] = [];
-  try {
-    for await (const f of Deno.readDir(dir)) if (f.isFile && f.name.endsWith(".html")) names.push(f.name);
-  } catch (err) {
-    if (!(err instanceof Deno.errors.NotFound)) throw err;
+  const paths = new Map<string, string>();
+  for (const route of shell.routes ?? []) {
+    if (!route.screen || !route.files?.html) throw new Error("route declares no screen or HTML file");
+    paths.set(route.screen, route.files.html);
   }
-  for (const name of names.sort()) {
+
+  for (const [name, path] of [...paths].sort(([a], [b]) => a.localeCompare(b))) {
     let sites: Map<string, CallSite[]>;
     try {
-      sites = callSites(await Deno.readTextFile(new URL(name, dir)));
+      sites = callSites(resolveMachineMarkup(await Deno.readTextFile(new URL(path, appDir)), shell.cortex?.actors, name));
     } catch (err) {
-      findings.push({ severity: "error", path: `shell/screens/${name}`, message: said(err) });
+      findings.push({ severity: "error", path, message: said(err) });
       continue;
     }
     for (const [module, found] of sites) {
@@ -412,24 +437,32 @@ export async function checkApp(appDir: URL, options: BatteryOptions = {}): Promi
       exercised.push({ path, role, runs: 0, maxFuel: 0, error: said(err) });
       return;
     }
-    const uses = new Map<string | undefined, number>();
-    for (const site of sites) uses.set(site.table, (uses.get(site.table) ?? 0) + 1);
-    const inputStreams = new Map<string | undefined, {
+    const keyOf = (site: CallSite) => JSON.stringify([site.table, site.leaf === true, site.delay === true]);
+    const uses = new Map<string, number>();
+    for (const site of sites) uses.set(keyOf(site), (uses.get(keyOf(site)) ?? 0) + 1);
+    const inputStreams = new Map<string, {
       inputs: fc.Arbitrary<BatteryInput>;
       propertyFor: PropertyFor<BatteryInput>;
     }>();
     for (const site of sites) {
+      const key = keyOf(site);
       let inputs: fc.Arbitrary<{ state: unknown; event: unknown }>;
       let propertyFor: PropertyFor<BatteryInput>;
       try {
-        let stream = inputStreams.get(site.table);
+        let stream = inputStreams.get(key);
         if (stream === undefined) {
           inputs = inputsFor(site.table);
+          if (site.leaf) inputs = inputs.map(({ state, event }) => ({
+            state: { items: [(state as { items: unknown[] }).items[0]] }, event,
+          }));
+          if (site.delay) inputs = fc.tuple(inputs, fc.boolean()).map(([{ state }, present]) => ({
+            state: { items: present ? [(state as { items: unknown[] }).items[0]] : [] }, event: { type: "after" },
+          }));
           stream = {
             inputs,
-            propertyFor: uses.get(site.table)! > 1 ? sharedInputs(inputs) : (predicate) => fc.property(inputs, predicate),
+            propertyFor: uses.get(key)! > 1 ? sharedInputs(inputs) : (predicate) => fc.property(inputs, predicate),
           };
-          inputStreams.set(site.table, stream);
+          inputStreams.set(key, stream);
         }
         ({ inputs, propertyFor } = stream);
       } catch (err) {
@@ -439,10 +472,10 @@ export async function checkApp(appDir: URL, options: BatteryOptions = {}): Promi
         exercised.push({ path, role, table: site.table, params: site.params, runs: 0, maxFuel: 0, error: said(err) });
         continue;
       }
-      exercised.push(await exercise(path, role, source, inputs, site, options, propertyFor));
-      const remaining = uses.get(site.table)! - 1;
-      uses.set(site.table, remaining);
-      if (remaining === 0) inputStreams.delete(site.table);
+      exercised.push(await exercise(path, role, source, inputs, site, options, propertyFor, shell.endowments?.[path] ?? []));
+      const remaining = uses.get(key)! - 1;
+      uses.set(key, remaining);
+      if (remaining === 0) inputStreams.delete(key);
     }
   };
 
@@ -451,7 +484,7 @@ export async function checkApp(appDir: URL, options: BatteryOptions = {}): Promi
   // the reference hands it.
   const handlers = new Set<string>();
   for (const route of shell.routes ?? []) for (const path of route.files?.handlers ?? []) handlers.add(path);
-  const sites = await screenCallSites(appDir, findings);
+  const sites = await screenCallSites(appDir, findings, shell);
   if (handlers.size > 0 && Object.keys(entities).length === 0) {
     // A module reads a world and the world is the app's collections. An app
     // that ships modules and registers no table has nothing to draw one from,

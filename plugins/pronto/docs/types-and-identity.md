@@ -68,7 +68,7 @@ gets its own rendering of the tree: the Postgres `CHECK` calls
 because a `CHECK` holds no subquery; the CUE constraint closes the record
 (`close({...})`, `list.MaxItems`) for the seed vet; `bounds` carries the tree
 (`kind`, `fields`, `items`, `maxItems`) into shell.yaml, where the battery
-draws values inside it. The step-time check (`hybrid-runtime.js`) walks the
+draws values inside it. The step-time check (`mecha-runtime.js`) walks the
 same shape over the machine's own values, so a settle never writes what the
 column refuses. Electric hands the terminal the value, so a handler reads
 `row.view` as the record it is. A request's payload and an open's input are
@@ -234,7 +234,7 @@ validations alone ([the lattice](lattice.md#the-validation-ladder)):
 | `cel` on a field | values a field may not take | a SQL `CHECK` at the cluster rungs and a CUE constraint on seed rows, both rendered from `.pronto/cel.json`; nothing at `tab` or `device` |
 | `invariant` on an entity | rows that may not exist | a SQL `CHECK` at the cluster rungs; nothing at `tab` or `device` |
 | `unique`, `uniques` | rows that may not coexist | a unique index at the cluster rungs, and `reconcile()` when a browser collection loads |
-| a validation | rows inconsistent with those they reference | the store at every rung, and a plv8 trigger at the cluster rungs |
+| a validation | rows inconsistent with those they reference | the store at every rung, and a plv8 trigger at the cluster rungs ([Jessie in the database](decisions/2026-11-05-database-jessie.md#validations)) |
 | a machine | transitions a field may not make | the terminal, for a `tab` or `device` row only ([machines](../../omnishell/docs/machines.md#the-chart)) |
 | `access` | readers a row may not reach | RLS policies at the cluster rungs ([access](access.md)) |
 

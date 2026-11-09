@@ -36,13 +36,13 @@ routes:
     nav:
       label: Arena
     files:
-      html: shell/screens/arena.html
-      css: shell/screens/arena.css
+      adapters: []
       handlers:
         - shell/handlers/match_control.js
-      adapters: []
       shared: []
       renderers: []
+      html: shell/screens/arena.html
+      css: shell/screens/arena.css
     ssr: spa
     states:
       - warmup
@@ -53,13 +53,13 @@ routes:
     nav:
       label: Lobby
     files:
-      html: shell/screens/lobby.html
-      css: shell/screens/lobby.css
+      adapters: []
       handlers:
         - shell/handlers/enter_arena.js
-      adapters: []
       shared: []
       renderers: []
+      html: shell/screens/lobby.html
+      css: shell/screens/lobby.css
     ssr: spa
     states:
       - ready
@@ -586,5 +586,9 @@ units:
     isolation: compartment
     ports:
       reads: []
-      raises: []
+      raises: {}
+    files:
+      - shell/units/upscaler/xbrz.js
+      - shell/units/upscaler/LICENSE
+      - shell/units/upscaler/NOTICE.md
     src: shell/units/upscaler/xbrz.js

@@ -25,7 +25,7 @@ Pin the release in your project's `.mise.toml`:
 
 ```toml
 [tools]
-"github:bonisoft3/bayt" = "0.66.0"
+"github:bonisoft3/bayt" = "0.71.0"
 ```
 
 `bayt` is then on PATH. Run from any directory containing a `bayt.cue` to get the `.bayt` generated dir with all configuration your build needs:
@@ -268,11 +268,18 @@ decoration.
 
 ## depot.dev builds
 
-Set `depot: true` on a `#project` to emit `.bayt/depot.yaml` and
-`.bayt/depot.hcl`. The YAML is the project's Compose graph flattened for
-Depot; the HCL group names the runtime-image closure it must build. This gives
-`sayt/depot` a generated input tailored to Depot's Bake interface, with
-tags, cache settings, and outputs left for CI to supply.
+Set `depot: true` on a `#project` to emit `.bayt/depot.hcl`, whose group
+selects the runtime-image closure. At build time, resolve the project's Compose
+graph with `docker compose --profile '*' -f compose.yaml config`, feed its YAML
+to `docker buildx bake -f - -f .bayt/depot.hcl --print depot-build`, then pass
+the evaluated plan to `depot bake -f - depot-build`. YAML preserves `x-bake`.
+The optional `sayt/depot` action orchestrates this with pinned Compose and Buildx. Required
+`env_file` inputs must exist when planning a build; keep runtime-only env files in
+a separate Compose overlay passed only to runtime commands. Generation
+needs no Docker or Compose, and CI supplies image tags, cache settings, and outputs.
+
+`bayt depot-plan` reads evaluated Bake JSON with `--plan <file>` and
+fingerprints the `depot-build` group's leaves for `sayt/plan`.
 
 ## Merkle-chain invalidation, in one diagram
 
@@ -424,7 +431,7 @@ Emitted under `.bayt/`:
 | `.bayt/compose.<n>.closure.yaml` | up targets only (`compose.up: true` — launch/integrate): flat include of the target's fragment closure + the reserved `bayt` alias, loadable with no user root or federation (`docker compose -f … up bayt`) |
 | `.bayt/skaffold.<n>.yaml`   | per-target skaffold config                                       |
 | `.bayt/bake.<n>.hcl`        | per-target bake HCL                                              |
-| `.bayt/depot.yaml`, `.bayt/depot.hcl` | depot.dev bake pair: pre-flattened compose + runtime-closure `group` — only with `#project.depot` |
+| `.bayt/depot.hcl` | depot.dev runtime-image build `group` — only with `#project.depot` |
 | `.bayt/vscode.<n>.json`     | per-target vscode task entries (build/test only). User merges into `.vscode/tasks.json`; `sayt lint` warns on drift. |
 
 The `.bayt/` directory is generated but committed. A single `sayt generate` (or `bayt generate --all`) rebuilds the whole tree atomically.

@@ -37,8 +37,6 @@
   "srcs": {
     "globs": [
       "cue.mod",
-      "apps/deno.json",
-      "apps/*/tests/deno.json",
       "plugins/pronto",
       "plugins/omnishell",
       "plugins/bayt",
@@ -138,8 +136,6 @@
       "outs": {
         "globs": [
           "cue.mod",
-          "apps/deno.json",
-          "apps/*/tests/deno.json",
           "plugins/pronto",
           "plugins/omnishell",
           "plugins/bayt",

@@ -15,8 +15,9 @@ def main [] {
 		test_docker_env_empty_on_windows
 	} else {
 		test_pinned_compose_docker_config
-		test_sibling_layout_gets_docker_config
+		test_sibling_layout_preserves_docker_config
 		test_docker_env_export
+		test_docker_env_isolates_checkouts
 	}
 
 	print "\nAll auto-bayt tests passed!"
@@ -112,11 +113,9 @@ def test_pinned_compose_docker_config [] {
 	rm -rf $fx.tmpdir
 }
 
-# The sibling-checkout (monorepo) layout must get the same DOCKER_CONFIG;
-# narrowing the with-env to the PATH branch would silently unpin the
-# layout this repo itself uses.
-def test_sibling_layout_gets_docker_config [] {
-	print "test sibling layout gets DOCKER_CONFIG..."
+# The sibling generator no longer invokes Compose or needs a private Docker config.
+def test_sibling_layout_preserves_docker_config [] {
+	print "test sibling layout preserves DOCKER_CONFIG..."
 	let fx = (setup-fixture)
 	let core = ($fx.tmpdir | path join "bayt" "core")
 	mkdir $core
@@ -124,9 +123,9 @@ def test_sibling_layout_gets_docker_config [] {
 	("export def main [--runtime: string = \"\"] { ($env.DOCKER_CONFIG? | default \"\") | save -f " + $sink + " }")
 		| save ($core | path join "generate.nu")
 
-	let result = (run-auto-bayt $fx)
+	let result = (with-env {DOCKER_CONFIG: "caller-config"} { run-auto-bayt $fx })
 	assert ($result.exit_code == 0) $"expected 0, got ($result.exit_code): ($result.stderr)"
-	assert-pinned-shim $fx
+	assert equal (open --raw $sink) "caller-config"
 	rm -rf $fx.tmpdir
 }
 
@@ -158,6 +157,31 @@ def test_docker_env_export [] {
 	rm -rf $fx.tmpdir
 }
 
+# Two checkouts (even with identical compose.toml contents) embed different
+# compose-stub paths in their shims, so each must get its own DOCKER_CONFIG
+# directory rather than overwriting a shared cli-plugins/docker-compose mid-run.
+def test_docker_env_isolates_checkouts [] {
+	print "test concurrent checkouts get isolated DOCKER_CONFIG shims..."
+	let fx1 = (setup-fixture)
+	let fx2 = (setup-fixture)
+	let out1 = (do {
+		nu -c $"use ($fx1.distro)/auto-bayt.nu docker-env; docker-env | get DOCKER_CONFIG"
+	} | complete)
+	let out2 = (do {
+		nu -c $"use ($fx2.distro)/auto-bayt.nu docker-env; docker-env | get DOCKER_CONFIG"
+	} | complete)
+	assert ($out1.exit_code == 0) $"expected 0, got ($out1.exit_code): ($out1.stderr)"
+	assert ($out2.exit_code == 0) $"expected 0, got ($out2.exit_code): ($out2.stderr)"
+	let cfg1 = ($out1.stdout | str trim)
+	let cfg2 = ($out2.stdout | str trim)
+	assert ($cfg1 != $cfg2) $"expected distinct DOCKER_CONFIG dirs for different checkouts, both got: ($cfg1)"
+	$cfg1 | save -f ($fx1.tmpdir | path join "dockercfg")
+	$cfg2 | save -f ($fx2.tmpdir | path join "dockercfg")
+	assert-pinned-shim $fx1
+	assert-pinned-shim $fx2
+	rm -rf $fx1.tmpdir $fx2.tmpdir
+}
+
 # The recorded DOCKER_CONFIG must exist and its docker-compose shim must
 # be an executable that routes through a mise tool-stub to the distro's
 # compose stub — an executable alone could be the host's real plugin.
@@ -171,4 +195,5 @@ def assert-pinned-shim [fx: record] {
 	let body = (open $shim)
 	assert ($body | str contains "tool-stub") $"expected tool-stub invocation in shim: ($body)"
 	assert ($body | str contains ($fx.distro | path join "compose")) $"expected distro compose stub path in shim: ($body)"
+	rm -rf $cfg
 }

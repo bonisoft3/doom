@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "terminal": true,
   "types": {
     "types": {
       "string": {
@@ -605,8 +606,10 @@
       "validations": {}
     }
   },
-  "hybrids": {},
+  "reducers": {},
+  "machines": {},
   "hatches": {},
   "rawMigrations": [],
-  "duckstreams": {}
+  "duckstreams": {},
+  "effects": {}
 }

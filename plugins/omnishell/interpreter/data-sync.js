@@ -42,21 +42,35 @@ const HEADERS = { "Content-Type": "application/json" };
  * four milliseconds, and a region wakes once per write — so every write past
  * the first few pays the clamp, most of what clearing a thousand rows costs.
  * A posted message is a task with no such floor.
+ *
+ * And the next frame, whichever comes first. After a click, Chrome renders
+ * before it runs the tasks the click posted, so a wake that waits for its
+ * message paints one frame late; an animation frame callback runs before that
+ * frame's paint. Both come after the current task and its microtasks, so a
+ * fold's awaited writes still land first. A hidden tab gets no frames, and
+ * there the message wakes it.
  */
 const later = (fn) => {
   // A channel per wake, closed as it fires: an open port is a resource a
   // runtime keeps alive, and a wake owns nothing once it has run.
   const channel = new MessageChannel();
-  channel.port1.onmessage = () => {
+  let frame;
+  let done = false;
+  const cancel = () => {
+    done = true;
     channel.port1.close();
     channel.port2.close();
+    if (frame !== undefined) globalThis.cancelAnimationFrame?.(frame);
+  };
+  const run = () => {
+    if (done) return;
+    cancel();
     fn();
   };
+  channel.port1.onmessage = run;
   channel.port2.postMessage(null);
-  return () => {
-    channel.port1.close();
-    channel.port2.close();
-  };
+  if (typeof globalThis.requestAnimationFrame === "function") frame = globalThis.requestAnimationFrame(run);
+  return cancel;
 };
 
 function token() {
@@ -234,7 +248,7 @@ async function send(url, init) {
 }
 
 export async function http(url, init) {
-  if ((init?.method ?? "GET") === "GET") {
+  if ((init?.method ?? "GET") === "GET" && init?.cache !== "no-store") {
     const body = takeServedBody(url);
     if (body !== undefined) {
       return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
@@ -662,11 +676,11 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   // Every row of a local collection carries each column shell.yaml lists as
   // optional ({table: [{name, type}]}): a device collection outlives the
   // program that wrote it, so a stored row can predate a column, and binding a
-  // column a row lacks throws. An unset text column is "" and any other type is
-  // null, since "" is no value an int, a bool or a timestamp can hold; a
-  // binding renders both as empty. fill() patches the stored rows; blank() the
-  // rows created later.
-  const unset = (type) => (type === "text" ? "" : null);
+  // column a row lacks throws. An unset text column (`string`, or its legacy
+  // alias `text`) is "" and any other type is null, since "" is no value an
+  // int, a bool or a timestamp can hold; a binding renders both as empty.
+  // fill() patches the stored rows; blank() the rows created later.
+  const unset = (type) => (type === "string" || type === "text" ? "" : null);
   async function fill(table) {
     const cols = cfg.optional?.[table];
     if (cols === undefined) return;
@@ -1282,7 +1296,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   // (subscribe), until a read answers what the view holds.
   const stoodIn = new Set();
   function standIn(key, table, order, opts) {
-    if (opts.current) return undefined;
+    if (opts.current || opts.confirmed) return undefined;
     const last = kept(recalled, key);
     const carried = last !== undefined || !keepsReads ? undefined : kept(answered, memoKey(`${crud(table)}?${search(order, opts)}`));
     if (last === undefined && carried === undefined) return undefined;
@@ -1354,7 +1368,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     for (const memo of [answered, recalled]) for (const [key, entry] of memo) if (entry.tables.has(table)) memo.delete(key);
   }
   const generations = (tables) => [...tables].map((t) => generation.get(t) ?? 0).join(",");
-  const requestRows = async (url) => (await request(url)).json();
+  const requestRows = async (url, init) => (await request(url, init)).json();
   const coalescedRows = coalesceReads(requestRows, canCoalesceSchemaEq(cfg.schema, cfg.carriers));
   async function fetchServer(url) {
     const rows = await (!keepsReads || hasServedRead(url) ? requestRows(url) : coalescedRows(url));
@@ -1507,6 +1521,8 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     if (clauses?.some(({ col, op, value }) => op === "eq" && literal(table, col, value) === NOHOLD)) return [];
     const url = `${crud(table)}?${search(order, opts)}`;
     const key = memoKey(url);
+    // Absence can trigger a state transition; a document snapshot cannot prove it.
+    if (opts.confirmed) return requestRows(url, { cache: "no-store" });
     if (!hasServedRead(url) && !(keepsReads && answered.has(key))) {
       await awaitSeedForUrl(url);
     }
@@ -1559,16 +1575,18 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
 
   async function read(table, order, opts = {}) {
     order ??= opts.order;
+    // Independently synchronized collections can be ready before an accepted write arrives.
+    if (opts.confirmed && local[table] === undefined) return readServer(table, order, opts);
     const url = `${crud(table)}?${search(order, opts)}`;
     const rKey = recallKey(table, order, opts);
     const isLocalReady = () => answersLocally(table, order, opts);
-    if (!requestOnly(table) && local[table] === undefined && !recalled.has(rKey) &&
+    if (!opts.confirmed && !requestOnly(table) && local[table] === undefined && !recalled.has(rKey) &&
         !hasServedRead(url) && !(keepsReads && answered.has(memoKey(url))) &&
         !isLocalReady()) {
       await awaitSeedForUrl(url);
     }
     const heldAnswer = keepsReads ? kept(answered, memoKey(url)) : undefined;
-    const servedForPage = hasServedRead(url) || Boolean(heldAnswer?.served && isServedAtPage(heldAnswer.servedAt));
+    const servedForPage = !opts.confirmed && (hasServedRead(url) || Boolean(heldAnswer?.served && isServedAtPage(heldAnswer.servedAt)));
     if (requestOnly(table) || (servedForPage && !recalled.has(rKey))) {
       return readServer(table, order, opts);
     }
@@ -2395,6 +2413,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   async function upload(key, file) {
     if (pendingSession && !token()) await pendingSession();
     if (!token()) throw new Error("an upload requires an authenticated session");
+    await request(`${base}/blob-claim/${encodeURIComponent(key)}`, { method: "POST", body: "{}" });
     return request(`${base}/blobs/mecha-objects/${encodeURIComponent(key)}`, { method: "PUT", body: file });
   }
 
@@ -2521,6 +2540,9 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     pose,
     subscribe,
     upload: (...args) => (clearAllServed(), upload(...args)),
+    // A host-DOM hatch's authorized call, past the collections: it makes the
+    // guest's session as every other write does.
+    http,
     flushNotifications,
     tabSnapshot,
     restoreTabs,

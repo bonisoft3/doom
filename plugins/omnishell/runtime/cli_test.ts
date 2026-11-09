@@ -37,6 +37,20 @@ Deno.test("an installed terminal is named from its own root, a checkout's from t
   }
 });
 
+Deno.test("presentation command reads the declared route", async () => {
+  const app = await Deno.makeTempDir({ prefix: "omnishell presentation " });
+  try {
+    await Deno.mkdir(join(app, "shell"));
+    await Deno.writeTextFile(join(app, "shell", "home.html"), '<button aria-label="Save">Save</button>');
+    await Deno.writeTextFile(join(app, "shell", "home.css"), '');
+    await Deno.writeTextFile(join(app, "shell", "shell.json"), JSON.stringify({ routes: [{ files: { html: "shell/home.html", css: "shell/home.css" } }] }));
+    const report = JSON.parse(await run(app, ["check", "presentation", app]));
+    assert(Array.isArray(report.obligations) && report.counts.violation === 0, "presentation command did not return the route inventory");
+  } finally {
+    await Deno.remove(app, { recursive: true });
+  }
+});
+
 Deno.test("the runtime image's tree holds everything its entry points import", async () => {
   // The image's tree as bayt builds it: the runtime-image target's srcs.
   const target = JSON.parse(await Deno.readTextFile(join(terminal, ".bayt/bayt.runtime-image.json")));
@@ -82,5 +96,26 @@ Deno.test("the runtime image's tree holds everything its entry points import", a
     }
   } finally {
     await Deno.remove(image, { recursive: true });
+  }
+});
+
+Deno.test("ARIA command reads declared screens and fails on duplicate current links", async () => {
+  const app = await Deno.makeTempDir({ prefix: "omnishell aria " });
+  try {
+    await Deno.mkdir(join(app, "shell"));
+    await Deno.mkdir(join(app, "screens"));
+    await Deno.writeTextFile(join(app, "shell", "shell.json"), JSON.stringify({ routes: [{ files: { html: "screens/home.html" } }] }));
+    await Deno.writeTextFile(join(app, "screens", "home.html"), '<nav><a aria-current="page">A</a></nav>');
+    await run(app, ["check", "aria", app]);
+    await Deno.writeTextFile(join(app, "screens", "home.html"), '<nav><a aria-current="page">A</a><a aria-current="page">B</a></nav>');
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: ["run", "--no-check", "--config", join(terminal, "test/deno.json"), "--allow-read", "--allow-write=.", "--allow-env", join(terminal, "runtime/cli.ts"), "check", "aria", app],
+      stdout: "piped", stderr: "piped",
+    }).output();
+    assert(result.code === 1, `expected violation exit, got ${result.code}: ${decoder.decode(result.stderr)}`);
+    const obligations = JSON.parse(decoder.decode(result.stdout));
+    assert(obligations.some((o: { path: string; property: string; status: string }) => o.path === "screens/home.html" && o.property === "aria-current-cardinality" && o.status === "violation"), "missing screen violation");
+  } finally {
+    await Deno.remove(app, { recursive: true });
   }
 });

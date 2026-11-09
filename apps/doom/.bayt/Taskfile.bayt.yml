@@ -28,6 +28,10 @@ includes:
     taskfile: ./Taskfile.test.yaml
     dir: ../
     optional: true
+  launch:
+    taskfile: ./Taskfile.launch.yaml
+    dir: ../
+    optional: true
   integrate:
     taskfile: ./Taskfile.integrate.yaml
     dir: ../
@@ -46,10 +50,6 @@ includes:
     optional: true
   integrate-action:
     taskfile: ./Taskfile.integrate-action.yaml
-    dir: ../
-    optional: true
-  check-boot:
-    taskfile: ./Taskfile.check-boot.yaml
     dir: ../
     optional: true
   ci-boot:

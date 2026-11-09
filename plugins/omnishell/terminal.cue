@@ -260,13 +260,11 @@ _presenterPolicy: _ @embed(file="presenter-security-policy.txt", type=text)
 			mount:     string
 			props:     string
 			events: [Name=string]: {performs: string, note: string}
-			// What an event's detail may carry across either seat: at most
-			// `keys` string fields, each named by `key`, each at most `value`
-			// printable-ASCII characters — hatch.js's DETAIL, which pronto's
-			// vendored-unit test holds equal to this. A memo's columns ride in
-			// one answer, so pronto's #emit holds a memo's count, names and
-			// declared size bounds to it.
-			detail: {keys: 8, key: "^[a-z][a-z0-9_]{0,23}$", value: 128}
+			// The one bound a seat holds every event's detail to whatever its
+			// shape: its size in bytes, hatch.js's DETAIL_BYTES, which pronto's
+			// vendored-unit test holds equal to this. Everything else is the
+			// payload shape the program declares beside each raised name.
+			detail: bytes: 10485760
 			grants: [...string]
 			note: string
 		}
@@ -276,10 +274,13 @@ _presenterPolicy: _ @embed(file="presenter-security-policy.txt", type=text)
 			events: height: {performs: "sets the unit frame's height", note: "the unit measures itself; clamped so a wrong answer cannot blow out the page"}
 			events: answer: {
 				performs: "dispatches a non-bubbling CustomEvent of the same name on the mount element, where data-on-answer names the reduce that receives it"
-				note:     "the detail is rebuilt from validated strings and frozen; the unit's own object never crosses"
+				note:     "the detail is rebuilt from its declared payload shape and frozen; the unit's own object never crosses"
 			}
-			// An opaque origin is granted nothing beyond its ports.
-			grants: []
+			// What the seat delegates to a unit that declares it, as the
+			// frame's permissions-policy `allow`: the browser asks the reader in
+			// the app's own name, and a unit that declares nothing gets nothing
+			// beyond its ports. hatch.js's REALM_GRANTS.
+			grants: ["geolocation"]
 			note: "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox, never allow-same-origin — the unit runs in an opaque origin and cannot reach this one. Props are delivered with targetOrigin \"*\", which an opaque origin leaves no alternative to, so a hatch is never given a secret"
 		}
 		// The agent seat's second role: a presenter, a worker that only
@@ -312,7 +313,7 @@ _presenterPolicy: _ @embed(file="presenter-security-policy.txt", type=text)
 			props: "data-prop-* attributes, delivered as one current-value object, withheld until the unit says it is ready"
 			events: answer: {
 				performs: "dispatches a non-bubbling CustomEvent of the same name on the mount element, where data-on-answer names the reduce that receives it"
-				note:     "the detail is rebuilt from validated strings and frozen; the unit's own object never crosses"
+				note:     "the detail is rebuilt from its declared payload shape and frozen; the unit's own object never crosses"
 			}
 			// The terminal grants a unit nothing at either boundary.
 			grants: []
@@ -464,11 +465,11 @@ _presenterPolicy: _ @embed(file="presenter-security-policy.txt", type=text)
 
 		modules: [...#Path]
 		modules: [
-			"shell.js", "chrome.js", "screen.js", "fragment.js", "data-sync.js", "validate.js", "render.js",
+			"shell.js", "cortex-navigation.js", "row-attachments.js", "machine-engine.js", "observe-actor.js", "invoked-actors.js", "chrome.js", "screen.js", "fragment.js", "data-sync.js", "validate.js", "render.js",
 			"release-plan.js", "early-gestures.js", "early-replay.js", "nav-feedback.js", "preloads.js", "link-prefetch.js", "markup.js", "script-url.js", "deferred-boot.js",
 			"host-dom.js", "hatch.js", "hatch-worker.js", "hatch-presenter.js", "presenter-realm.js", "presenter.js",
-			"storybook.js", "jessie.js", "kinetic.js", "kinetic-milestones.js", "kinetic-session.js", "kinetic-sound.js", "kinetic-mount.js", "rtc-channel.js", "prng.js",
-			"vendor/mecha-client.js", "vendor/js-yaml.js", "vendor/ses.umd.min.js", "vendor/morphlex.js",
+			"storybook.js", "jessie.js", "statechart.js", "kinetic.js", "kinetic-milestones.js", "kinetic-session.js", "kinetic-sound.js", "kinetic-mount.js", "rtc-channel.js", "prng.js",
+			"vendor/mecha-client.js", "vendor/xstate.js", "vendor/js-yaml.js", "vendor/ses.umd.min.js", "vendor/morphlex.js",
 			"vendor/messages.js", "vendor/game-inputs.js", "vendor/ggrs/ggrs_wasm.js", "vendor/ggrs/ggrs_wasm_bg.wasm",
 		]
 

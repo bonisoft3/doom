@@ -71,6 +71,13 @@ services:
     profiles:
     - ci
     scale: 1
+  caddy:
+    extends:
+      file: ./compose.caddy.yaml
+      service: doom-caddy
+    profiles:
+    - caddy
+    scale: 1
   served:
     extends:
       file: ./compose.served.yaml
@@ -91,11 +98,4 @@ services:
       service: doom-ci-boot
     profiles:
     - ci-boot
-    scale: 1
-  caddy:
-    extends:
-      file: ./compose.caddy.yaml
-      service: doom-caddy
-    profiles:
-    - caddy
     scale: 1

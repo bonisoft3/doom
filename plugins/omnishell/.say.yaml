@@ -13,17 +13,48 @@ say:
           - do: setup
             use: ./setup.nu
           - do: mise exec -- pnpm install --filter @omnishell/core --frozen-lockfile
+  generate:
+    rulemap:
+      bundle:
+        priority: 1
+        cmds:
+          - do: "with-env {MISE_LOCKED: '0'} { mise tool-stub ../sayt/task.toml -t .bayt/Taskfile.yml bayt:generate }"
   # The checkers are reached through the command line that dispatches to them,
   # which imports every one: a checker this list never names is typed anyway,
   # and one added later is typed the day it is dispatched rather than the day
   # somebody remembers a glob.
+  # The data-plane bundle is a build product (bayt.cue `bundle`): the
+  # typecheck, the unit tests and every consumer of this tree import it.
+  build:
+    rulemap:
+      bundle:
+        priority: -3
+        cmds:
+          - do: "with-env {MISE_LOCKED: '0'} { mise tool-stub ../sayt/task.toml -t .bayt/Taskfile.yml bayt:bundle }"
   lint:
     rulemap:
+      bundle:
+        priority: -3
+        cmds:
+          - do: "with-env {MISE_LOCKED: '0'} { mise tool-stub ../sayt/task.toml -t .bayt/Taskfile.yml bayt:bundle }"
       types:
         cmds:
           - do: "deno check --config test/deno.json src/ test/ check-visual.ts runtime/cli.ts"
   test:
     rulemap:
+      bundle:
+        priority: -3
+        cmds:
+          - do: "with-env {MISE_LOCKED: '0'} { mise tool-stub ../sayt/task.toml -t .bayt/Taskfile.yml bayt:bundle }"
+      cortex:
+        priority: -1
+        cmds:
+          - do: "deno test --config test/deno.json --no-check --allow-env --allow-read --allow-write --allow-import --allow-net --allow-sys --allow-run=cue,deno interpreter/cortex-navigation.test.ts interpreter/row-attachments.test.js interpreter/observe-actor.test.ts interpreter/invoked-actors.test.ts interpreter/machine-engine.test.ts interpreter/cortex-mount.test.js"
+          - do: "deno test --config test/deno.json --no-lock --no-check --allow-env --allow-read --allow-write --allow-import --allow-net --allow-sys interpreter/document-lifecycle.test.js"
+      machine-obligations:
+        priority: -1
+        cmds:
+          - do: "deno test --config test/deno.json --allow-read --allow-write --allow-env test/check-presentation.test.ts test/check-presentation-apps.test.ts"
       kinetic:
         platform: kinetic
         priority: -2
@@ -48,7 +79,9 @@ say:
         priority: -1
         cmds:
           - do: "with-env {MISE_LOCKED: '0'} { mise tool-stub runtime/deno.toml run --no-lock --no-check --node-modules-dir=none --config test/deno.json --allow-read=. --allow-write=. --allow-env runtime/cli.ts check battery --self-test }"
+          - do: "with-env {MISE_LOCKED: '0'} { mise tool-stub runtime/deno.toml run --no-lock --no-check --node-modules-dir=none --config test/deno.json --allow-read=. --allow-write=. --allow-env runtime/cli.ts check aria --self-test }"
   integrate:
+    args: "--bake --no-up"
     rulemap:
       builtin:
         stop: false

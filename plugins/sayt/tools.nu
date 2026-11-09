@@ -148,9 +148,10 @@ export def note [--stdout, msg: string] {
 
 # Diagnostics go to stderr: callers capture stdout for the command's output alone.
 export def --wrapped vrun [--trail="\n", --envs: record = {}, cmd, ...args] {
+  let input = $in
   if (verbosity) != "quiet" { print-preamble $envs $cmd $args $trail }
   with-env $envs {
-    $in | ^$cmd ...$args
+    $input | ^$cmd ...$args
   }
 }
 
@@ -205,7 +206,12 @@ export def mise-bin [] {
 
 export def mise-env []: nothing -> record {
   let mise = mise-bin
-  let searched = [($mise | path dirname)] ++ $env.PATH
+  let shims = if $nu.os-info.name == "windows" {
+    $env.MISE_DATA_DIR? | default ($env.LOCALAPPDATA? | default "" | path join "mise") | path join "shims"
+  } else {
+    $env.MISE_DATA_DIR? | default ($env.XDG_DATA_HOME? | default ($env.HOME? | default "" | path join ".local" "share") | path join "mise") | path join "shims"
+  }
+  let searched = [($mise | path dirname) $shims] ++ $env.PATH
   let paths = if $nu.os-info.name == "windows" {
     {Path: ($searched | str join (char esep))}
   } else {
@@ -215,13 +221,14 @@ export def mise-env []: nothing -> record {
 }
 
 export def --wrapped run-mise [...args] {
+  let input = $in
   with-env (mise-env) {
     hide-env -i MISE_LOCKED
     mise-trust $env.SAYT_MISE_BIN
     # Bootstrap stubs and explicit lock updates precede a usable project lock.
     let unlocked = ($args.0? in ["tool-stub" "lock"])
     with-env (if $unlocked { {MISE_LOCKED: "0"} } else { {} }) {
-      vrun $env.SAYT_MISE_BIN ...$args
+      $input | vrun $env.SAYT_MISE_BIN ...$args
     }
   }
 }
@@ -246,7 +253,7 @@ def mise-live [name: string, envs: record, args: list]: nothing -> int {
 # invocation — including a tool-stub, whose own path is not the config.
 def mise-trust [mise: string] {
   let trusted = $env.MISE_TRUSTED_CONFIG_PATHS? | default ""
-  if (".mise.toml" | path exists) and ($trusted | is-empty) {
+  if ((".mise.toml" | path exists) or ("mise.toml" | path exists)) and ($trusted | is-empty) {
     ^$mise trust -y -a -q
   }
 }
@@ -254,6 +261,10 @@ def mise-trust [mise: string] {
 export def --wrapped run-cue [...args] {
   let stub = stub-path "cue"
   run-mise tool-stub $stub ...$args
+}
+
+export def --wrapped run-buildx [...args] {
+  $in | run-mise tool-stub (stub-path "buildx") ...$args
 }
 
 export def --wrapped run-docker [...args] {
@@ -302,9 +313,11 @@ export def --wrapped run-nu [...args] {
 }
 
 export def --wrapped main [tool: string, ...args] {
+	let input = $in
 	match $tool {
 		"cue" => { run-cue ...$args }
 		"docker" => { run-docker ...$args }
+		"buildx" => { $input | run-buildx ...$args }
 		"compose" => { run-docker-compose ...$args }
 		"git-cliff" => { run-git-cliff ...$args }
 		"goreleaser" => { run-goreleaser ...$args }

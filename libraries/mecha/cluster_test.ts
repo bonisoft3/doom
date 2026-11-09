@@ -9,16 +9,18 @@ import { ENDOWABLE } from "./services/compute/language.ts";
 
 const MECHA = fileURLToPath(new URL(".", import.meta.url));
 
-type Effect = { name: string; origin?: string; bridge?: string; ai?: "text" | "image"; tier?: "cheap" | "heavy"; handler?: string; endpoint?: string; secrets?: string[] };
-type Bridge = { name: string; container: string; port?: number };
+type Effect = { name: string; origin?: string; bridge?: string; ai?: "text" | "image"; tier?: "cheap" | "heavy"; handler?: string; endpoint?: string; secrets?: string[]; simulated?: true };
+type Bridge = { name: string; container: string; port?: number; action?: string; targets?: string[]; simulator?: Record<string, unknown>; appliance?: Record<string, unknown> };
 type State = {
   migrations: string[];
   pipelines: { name: string; file: string }[];
   schedules: string[];
-  computations: { name: string; file: string; to: string[]; wasm: string[]; onComplete?: string }[];
+  computations: { name: string; file: string; to: string[]; wasm: string[]; onComplete?: string; feldera?: string }[];
+  duckstreamEngine?: "duckdb-snapshot" | "feldera";
   effects?: Effect[];
   effectInterpreters?: string;
   pgroll?: Record<string, { operations: unknown[] }>;
+  pgrollDir?: string;
   bridges?: Bridge[];
 };
 
@@ -76,6 +78,8 @@ Deno.test("a computation alone gets a durable CDC consumer without a clock", asy
   }, "surface.targets");
   assert.equal(got.ok, true, got.stderr);
   assert.equal(got.value.clock, undefined);
+  assert.equal(got.value.feldera, undefined);
+  assert.equal(got.value.compute.compose.environment.DUCKSTREAM_ENGINE, "${DUCKSTREAM_ENGINE:-duckdb-snapshot}");
   assert.equal(got.value.ticker, undefined);
   assert.equal(got.value.launch.compose.depends_on.transform.condition, "service_started");
   assert.equal(got.value.launch.compose.depends_on.conduit.condition, "service_healthy");
@@ -245,7 +249,7 @@ Deno.test("an effect places the airlock and its daprd, and the ticker and clock 
   assert.equal(t.ticker.compose.environment?.WAKE_URLS, "http://airlock:9997/healthz");
   assert.equal((await targets({ schedules: ["tick"] })).ticker.compose.environment?.WAKE_URLS, "http://mesh-events:3500/v1.0/healthz/outbound");
   assert.equal((await targets({ schedules: ["tick"], effects: [PROBE] })).ticker.compose.environment?.WAKE_URLS, "http://mesh-events:3500/v1.0/healthz/outbound,http://airlock:9997/healthz");
-  assert.deepEqual(Object.keys(t.airlock.compose.environment ?? {}).sort(), ["AIRLOCK_DIR", "DATABASE_URL", "MESH_URL"]);
+  assert.deepEqual(Object.keys(t.airlock.compose.environment ?? {}).sort(), ["AIRLOCK_DIR", "DATABASE_URL", "MESH_URL", "ORIGIN"]);
   assert.deepEqual(t.airlock.dockerfile.cmd, [
     "run", "--frozen", "--unstable-worker-options", "--allow-net=database:5432,airlock-mesh:3500,0.0.0.0:9997",
     "--allow-read", "--allow-env", "--allow-sys", "main.ts",
@@ -351,6 +355,12 @@ Deno.test("an effect whose name is not a DNS label is refused", async () => {
   }
 });
 
+Deno.test("a key a simulator takes has a default, since no account stands behind it", async () => {
+  const t = await targets({ effects: [{ ...PROBE, simulated: true, secrets: ["SIMULATED_KEY"] }, { ...PROBE, name: "other", secrets: ["REAL_KEY"] }] });
+  assert.equal(t.airlock.compose.environment?.SIMULATED_KEY, "${SIMULATED_KEY:-simulator}");
+  assert.equal(t.airlock.compose.environment?.REAL_KEY, "${REAL_KEY:?REAL_KEY is required: an effect declares it}");
+});
+
 Deno.test("a secret reaches the airlock as a required variable, with no default, once however many effects name it", async () => {
   const t = await targets({ effects: [{ ...PROBE, secrets: ["PROBE_KEY", "SHARED_KEY"] }, { ...PROBE, name: "other", secrets: ["SHARED_KEY"] }] });
   assert.equal(t.airlock.compose.environment?.PROBE_KEY, "${PROBE_KEY:?PROBE_KEY is required: an effect declares it}");
@@ -361,34 +371,32 @@ Deno.test("a secret reaches the airlock as a required variable, with no default,
   }
 });
 
-const MAIL: Bridge = { name: "mail", container: "smtp" };
+// `{}`: the container itself is the local stand-in, as for a runner whose
+// SMTP server a test points inside the stack.
+const MAIL: Bridge = { name: "mail", container: "smtp", simulator: {} };
 const CONFIRM: Effect = { name: "confirm", bridge: "mail" };
-const mailConfig = { image: {name: "img"}, server: "smtp.mail.example:587", domain: "airlock.example" };
-const mailTarget = (config = mailConfig) => `(#MailContainer & ${JSON.stringify(config)}).target`;
+const activepiecesConfig = { image: {name: "img"}, source: "activepieces/integrations", secrets: ["SMTP_AUTH_JSON"] };
+const activepiecesTarget = (config = activepiecesConfig) => `(#ActivepiecesContainer & ${JSON.stringify(config)}).target`;
 const withContainers = (state: Partial<State>, containers: string) => `(${cluster(state, {})} & {surface: targets: ${containers}})`;
 const runtimeWith = (state: Partial<State>, containers: string, field = "targets") =>
   evaluated(`(#Runtime & {project: "p", cluster: ${withContainers(state, containers)}}).${field}`);
 
-Deno.test("mail is an ordinary container serving an Airlock bridge", async () => {
-  const config = {...mailConfig, user: "MAIL_USER_VAR", password: "MAIL_PASSWORD_VAR"};
-  const got = await runtimeWith({effects: [PROBE, CONFIRM], bridges: [MAIL]}, `{smtp: ${mailTarget(config)}}`);
+Deno.test("Activepieces is an ordinary container serving an Airlock bridge", async () => {
+  const got = await runtimeWith({effects: [PROBE, CONFIRM], bridges: [MAIL]}, `{smtp: ${activepiecesTarget()}}`);
   assert.equal(got.ok, true, got.stderr);
   const t = got.value;
   const bridge = t.smtp;
-  assert.deepEqual(bridge.dockerfile.cmd, [
-    "run", "--frozen", "--allow-net=0.0.0.0:8080,smtp.mail.example:587",
-    "--allow-env=MAIL_SMTP,MAIL_TLS,MAIL_MESSAGE_ID_DOMAIN,MAIL_USER,MAIL_PASSWORD,ETHEREAL_API,ETHEREAL_API_KEY,ETHEREAL_CACHE,ETHEREAL_WEB",
-    "--allow-sys=hostname", "mail.ts",
-  ]);
+  assert.equal(bridge.dockerfile.workdir, "/app");
+  assert.deepEqual(bridge.srcs.globs, ["activepieces/integrations/**"]);
+  assert.equal(bridge.dockerfile.cmd, undefined);
   assert.deepEqual(bridge.compose.networks, {"airlock-out": {aliases: ["smtp"]}, "bridge-mail-egress": {aliases: ["smtp"]}});
   const networks = await exported({ effects: [PROBE, CONFIRM], bridges: [MAIL] }, "surface.networks");
   assert.deepEqual(networks.value["bridge-mail-egress"], {});
   assert.deepEqual(bridge.compose.environment, {
-    MAIL_SMTP: "smtp.mail.example:587",
-    MAIL_TLS: "starttls",
-    MAIL_MESSAGE_ID_DOMAIN: "airlock.example",
-    MAIL_USER: "${MAIL_USER_VAR:?MAIL_USER_VAR is required: mail container's user}",
-    MAIL_PASSWORD: "${MAIL_PASSWORD_VAR:?MAIL_PASSWORD_VAR is required: mail container's password}",
+    ACTIVEPIECES_MANIFEST: "/app/manifest.json",
+    ACTIVEPIECES_REGISTRY: "/app/registry.ts",
+    PORT: "8080",
+    SMTP_AUTH_JSON: "${SMTP_AUTH_JSON:?SMTP_AUTH_JSON is required by the integration hatch}",
   });
   assert.equal(t["airlock-mesh"].compose.environment.AIRLOCK_BRIDGES, "mail");
   assert.deepEqual(t["airlock-mesh"].compose.depends_on["p-smtp"], { condition: "service_started" });
@@ -396,22 +404,42 @@ Deno.test("mail is an ordinary container serving an Airlock bridge", async () =>
   assert.equal(t["airlock-mesh"].compose.environment.AIRLOCK_ORIGINS, "https://sink.example.test");
 });
 
-Deno.test("mail container retains its server, domain and paired credential validation", async () => {
-  for (const config of [
-    { ...mailConfig, server: "smtp.mail.example" },
-    { ...mailConfig, server: "database:5432" },
-    { ...mailConfig, server: "10.0.0.1:25" },
-    { ...mailConfig, domain: "airlock" },
-    { ...mailConfig, tls: "implicit" },
-    { ...mailConfig, user: "MAIL_USER_VAR" },
-  ]) {
-    const got = await evaluated(mailTarget(config));
-    assert.equal(got.ok, false, JSON.stringify(config));
+Deno.test("the local stack runs a bridge only as its simulator, and tells the airlock it stands on local", async () => {
+  const live = await runtimeWith({effects: [PROBE, CONFIRM], bridges: [MAIL]}, `{smtp: ${activepiecesTarget()}}`);
+  assert.equal(live.ok, true, live.stderr);
+  assert.equal(live.value.airlock.compose.environment.AIRLOCK_TARGET, "local");
+  // A simulator replaces the fields it names and keeps the rest of the
+  // container: its name, port, environment and bridge networks.
+  const stub = await runtimeWith(
+    {effects: [CONFIRM], bridges: [{ ...MAIL, simulator: {dockerfile: {from: {name: "stub@sha256:fixture"}}} }]},
+    `{smtp: {dockerfile: from: name: "real@sha256:fixture", compose: environment: {PORT: "8080"}}}`,
+  );
+  assert.equal(stub.ok, true, stub.stderr);
+  assert.equal(stub.value.smtp.dockerfile.from.name, "stub@sha256:fixture");
+  assert.deepEqual(stub.value.smtp.compose.environment, {PORT: "8080"});
+  assert.deepEqual(stub.value.smtp.compose.networks, {"airlock-out": {aliases: ["smtp"]}, "bridge-mail-egress": {aliases: ["smtp"]}});
+  // Without a simulator the real container never starts locally: none wired,
+  // none waited on, though the release's container is declared.
+  const bare = await runtimeWith({effects: [PROBE, CONFIRM], bridges: [{ name: "mail", container: "smtp" }]}, `{smtp: ${activepiecesTarget()}}`);
+  assert.equal(bare.ok, true, bare.stderr);
+  assert.equal(bare.value.smtp, undefined);
+  assert.equal(bare.value["airlock-mesh"].compose.environment.AIRLOCK_BRIDGES, "");
+  assert.deepEqual(bare.value["airlock-mesh"].compose.depends_on, {});
+  assert.equal(bare.value.airlock.compose.environment.AIRLOCK_TARGET, "local");
+  const none = await runtimeWith({effects: [PROBE]}, "{}");
+  assert.equal(none.ok, true, none.stderr);
+  assert.equal(none.value.airlock.compose.environment.AIRLOCK_TARGET, undefined);
+});
+
+Deno.test("Activepieces container requires valid secret names", async () => {
+  for (const secret of ["smtp_auth", "1KEY", ""]) {
+    const got = await evaluated(activepiecesTarget({...activepiecesConfig, secrets: [secret]}));
+    assert.equal(got.ok, false, secret);
   }
 });
 
 Deno.test("a custom acquisition container gets the bridge role without mail configuration or implicit database access", async () => {
-  const state = {effects: [{name: "fetch", bridge: "crawl"}], bridges: [{name: "crawl", container: "crawler", port: 9090}]};
+  const state = {effects: [{name: "fetch", bridge: "crawl"}], bridges: [{name: "crawl", container: "crawler", port: 9090, simulator: {}}]};
   const got = await runtimeWith(state, `{crawler: {dockerfile: {from: name: "crawler@sha256:fixture", cmd: ["crawl"]}, compose: environment: {CALLBACK_TOKEN: "restricted"}}}`);
   assert.equal(got.ok, true, got.stderr);
   assert.deepEqual(got.value.crawler.dockerfile.cmd, ["crawl"]);
@@ -421,6 +449,63 @@ Deno.test("a custom acquisition container gets the bridge role without mail conf
   const explicit = await runtimeWith(state, `{crawler: {dockerfile: from: name: "crawler", compose: networks: ["callbacks"]}}`);
   assert.equal(explicit.ok, true, explicit.stderr);
   assert.deepEqual(explicit.value.crawler.compose.networks.callbacks, {aliases: ["crawler"]});
+});
+
+// Cloudflare ships the container's own image, so the real container is built
+// here without the docker appliance's form, and a container that only pulls
+// its image is refused: the publish would have nothing to build.
+Deno.test("a bridge on cloudflare builds its real container and needs a Dockerfile", async () => {
+  const state = {effects: [{name: "fetch", bridge: "crawl"}], bridges: [{name: "crawl", container: "crawler", targets: ["cloudflare"], simulator: {}}]};
+  const got = await runtimeWith(state, `{crawler: {dockerfile: {from: name: "crawler@sha256:fixture", cmd: ["crawl"]}, compose: environment: {CALLBACK_TOKEN: "restricted"}}}`);
+  assert.equal(got.ok, true, got.stderr);
+  assert.deepEqual(got.value["crawler-appliance"].dockerfile.cmd, ["crawl"]);
+  assert.equal(got.value["crawler-appliance"].compose.manual, true);
+  const pulled = await runtimeWith(state, `{crawler: {dockerfile: from: null, compose: image: "ghcr.io/example/crawler:1"}}`);
+  assert.equal(pulled.ok, false);
+  assert.match(pulled.stderr, /builds no image from a Dockerfile/);
+});
+
+// The appliance target kept the container's `entrypoint.after` without the
+// waits' deps, which bayt refuses, and dropped `compose.environment`, which
+// the cloudflare publish reads from the compose file bayt renders for it.
+Deno.test("a bridge's real container keeps its entrypoint and environment and none of the stack's waits", async () => {
+  const state = {effects: [{name: "fetch", bridge: "crawl"}], bridges: [{name: "crawl", container: "crawler", targets: ["cloudflare"], simulator: {}}]};
+  const got = await runtimeWith(state, `{crawler: {dockerfile: {from: name: "crawler@sha256:fixture", cmd: ["crawl"]}, entrypoint: {do: "crawl", env: {MODE: "live"}, after: {database: "healthy"}}, expose: http: {port: 8080, env: "PORT"}, compose: {environment: {CALLBACK_TOKEN: "restricted"}, build: args: {PROFILE: "release"}, depends_on: {database: {condition: "service_healthy"}}}}}`);
+  assert.equal(got.ok, true, got.stderr);
+  const appliance = got.value["crawler-appliance"];
+  assert.equal(appliance.entrypoint.after, undefined);
+  assert.deepEqual(appliance.entrypoint.env, {MODE: "live"});
+  assert.equal(appliance.expose.http.env, "PORT");
+  // The build args ride along: bayt renders them into the compose file the
+  // publish forwards as the image's build variables.
+  assert.deepEqual(appliance.compose, {manual: true, environment: {CALLBACK_TOKEN: "restricted"}, build: {args: {PROFILE: "release"}}});
+  assert.equal(appliance.deps, undefined);
+});
+
+Deno.test("a container on cloudflare states its process in its Dockerfile, not in compose", async () => {
+  const state = {effects: [{name: "fetch", bridge: "crawl"}], bridges: [{name: "crawl", container: "crawler", targets: ["cloudflare"], simulator: {}}]};
+  for (const compose of [`command: ["crawl"]`, `entrypoint: ["/bin/crawl"]`]) {
+    const got = await runtimeWith(state, `{crawler: {dockerfile: {from: name: "crawler@sha256:fixture"}, compose: {${compose}}}}`);
+    assert.equal(got.ok, false, compose);
+    assert.match(got.stderr, /compose.command or compose.entrypoint/);
+  }
+  const docker = await runtimeWith({...state, bridges: [{name: "crawl", container: "crawler", targets: ["docker"], appliance: {srcs: ["/bin/crawl"], command: ["/bin/crawl"], port: 8090}}]}, `{crawler: {dockerfile: {from: name: "crawler@sha256:fixture"}, compose: {command: ["crawl"]}}}`);
+  assert.equal(docker.ok, true, docker.stderr);
+});
+
+// Two bridges on one container unified two ports onto its one `expose`, and
+// on cloudflare built two containers from one image.
+Deno.test("bridges share a container on one port, and on cloudflare a container is one bridge's", async () => {
+  const effects = [{name: "fetch", bridge: "crawl"}, {name: "scan", bridge: "scrape"}];
+  const crawler = `{crawler: {dockerfile: {from: name: "crawler@sha256:fixture"}, compose: {}}}`;
+  const shared = await runtimeWith({effects, bridges: [{name: "crawl", container: "crawler", simulator: {}}, {name: "scrape", container: "crawler"}]}, crawler);
+  assert.equal(shared.ok, true, shared.stderr);
+  const ports = await runtimeWith({effects, bridges: [{name: "crawl", container: "crawler", simulator: {}}, {name: "scrape", container: "crawler", port: 8081}]}, crawler);
+  assert.equal(ports.ok, false);
+  assert.match(ports.stderr, /on different ports/);
+  const cloudflare = await runtimeWith({effects, bridges: [{name: "crawl", container: "crawler", targets: ["cloudflare"], simulator: {}}, {name: "scrape", container: "crawler"}]}, crawler);
+  assert.equal(cloudflare.ok, false);
+  assert.match(cloudflare.stderr, /which cloudflare runs as one bridge's container/);
 });
 
 Deno.test("a bridge cannot refer to an absent, removed or unbuilt container", async () => {
@@ -580,6 +665,16 @@ Deno.test("the release builds exactly the published images", async () => {
   assert.deepEqual(matrix[1].slice(1, -1).split(",").map((s) => s.trim()), images);
 });
 
+Deno.test("the standalone Activepieces Dockerfile matches the shared build recipe", async () => {
+  const out = await new Deno.Command("cue", {
+    args: ["export", "./services/activepieces:activepieces", "-e", "Dockerfile", "--out", "text"],
+    cwd: MECHA, stdout: "piped", stderr: "piped",
+  }).output();
+  assert.equal(out.success, true, new TextDecoder().decode(out.stderr));
+  const dockerfile = new TextDecoder().decode(out.stdout);
+  assert.equal(dockerfile, await Deno.readTextFile(`${MECHA}services/activepieces/Dockerfile`));
+});
+
 // The migration runner is the database image run as a runner: pgroll and the
 // script ship there, so one image serves both and one pin names it.
 Deno.test("the migrate runner takes the database image", async () => {
@@ -590,6 +685,24 @@ Deno.test("the migrate runner takes the database image", async () => {
   }).output();
   assert.equal(out.success, true, new TextDecoder().decode(out.stderr));
   assert.deepEqual(JSON.parse(new TextDecoder().decode(out.stdout)), { from: { name: "img" }, entrypoint: ["/migrate.sh"] });
+});
+
+Deno.test("materialized migrations keep engine payloads out of the build request", async () => {
+  const pgroll = { "01_engine": { operations: [{ sql: { up: `SELECT '${"x".repeat(32_768)}';`, onComplete: true } }] } };
+  const state = { pgroll, pgrollDir: "services/database/pgroll" };
+  const got = await lowered(state, "targets.migrate");
+  assert.equal(got.ok, true, got.stderr);
+  assert.deepEqual(got.value.srcs.globs, ["services/database/pgroll/01_engine.json"]);
+  assert.deepEqual(got.value.dockerfile.copy, [{ srcs: ["services/database/pgroll/01_engine.json"], dst: "/pgroll/01_engine.json" }]);
+  assert.deepEqual(got.value.dockerfile.epilogue, []);
+  assert.ok(JSON.stringify(got.value).length < 4096);
+
+  const inline = await exported({ pgroll }, "surface.targets.migrate.dockerfile.epilogue");
+  assert.equal(inline.ok, true, inline.stderr);
+  assert.match(inline.value[0], /base64 -d/);
+
+  const invalid = await exported({ pgrollDir: state.pgrollDir, pgroll: { "01_engine": { operations: [{ unknown_operation: {} }] } } }, "state.pgroll");
+  assert.equal(invalid.ok, false, "selecting files must still validate the declared migration grammar");
 });
 
 // The schedule table is initdb's alone: a volume older than the cluster's
@@ -617,15 +730,15 @@ Deno.test("the blob store runs rclone's own image", async () => {
   assert.match(got.value.entrypoint.join(" "), /mkdir -p .*RCLONE_LOCAL_BUCKET.* && exec rclone serve s3/);
 });
 
-Deno.test("a cluster takes the published images and no others", async () => {
+Deno.test("a cluster requires the core published images; Activepieces is selected by its container recipe", async () => {
   const out = await new Deno.Command("cue", {
     args: ["export", ".:cluster", "-e", "{images: [for k, _ in #Cluster.meta.images {k}], published: #Images}"],
     cwd: MECHA, stdout: "piped", stderr: "piped",
   }).output();
   assert.equal(out.success, true, new TextDecoder().decode(out.stderr));
   const { images, published } = JSON.parse(new TextDecoder().decode(out.stdout));
-  assert.deepEqual([...images].sort(), [...published].sort());
-  assert.deepEqual([...published].sort(), ["airlock", "auth", "clock", "compute", "conduit", "database", "mesh", "ticker"]);
+  assert.deepEqual([...images].sort(), published.filter((s: string) => s !== "activepieces").sort());
+  assert.deepEqual([...published].sort(), ["activepieces", "airlock", "auth", "clock", "compute", "conduit", "database", "extensions", "mesh", "ticker"]);
 });
 
 // A provider's settings are the deployment's, over defaults the program may
@@ -664,6 +777,44 @@ Deno.test("a provider's program defaults stand until the deployment sets its own
   }
 });
 
+Deno.test("compute readiness preserves the startup allowance for each sequential native program", async () => {
+  for (const duckstreamEngine of ["duckdb-snapshot", "feldera"] as const) {
+    for (const count of [1, 2]) {
+      const computations = Array.from({ length: count }, (_, i) => ({ name: `analytics_${i}`, file: `program_${i}.js`, feldera: `program_${i}.json`, to: [`metric_${i}`], wasm: [] }));
+      const got = await exported({ duckstreamEngine, computations }, "surface.targets.compute.compose.healthcheck");
+      assert.equal(got.ok, true, got.stderr);
+      assert.equal(got.value.start_period, `${duckstreamEngine === "feldera" ? 30 * count : 15}m`);
+      assert.deepEqual(got.value.test, ["CMD", "portcheck", "--port", "9997"]);
+    }
+  }
+});
+
+Deno.test("Feldera deployment selects its pinned internal service and ships the descriptor for either engine", async () => {
+  for (const duckstreamEngine of ["duckdb-snapshot", "feldera"] as const) {
+    const got = await exported({ duckstreamEngine, computations: [{ name: "analytics", file: "duckstream/program.js", feldera: "duckstream/feldera.json", to: ["metric"], wasm: [] }] }, "surface.targets");
+    assert.equal(got.ok, true, got.stderr);
+    const { compute, feldera } = got.value;
+    assert.equal(compute.compose.environment.DUCKSTREAM_ENGINE, "${DUCKSTREAM_ENGINE:-" + duckstreamEngine + "}");
+    assert.equal(JSON.parse(compute.compose.environment.COMPUTATIONS)[0].feldera, "/app/computations/analytics.feldera.json");
+    assert.ok(compute.srcs.globs.includes("duckstream/feldera.json"));
+    assert.ok(compute.dockerfile.copy.some((copy: { srcs: string[]; dst: string }) => copy.srcs[0] === "duckstream/feldera.json" && copy.dst === "/app/computations/analytics.feldera.json"));
+    if (duckstreamEngine === "feldera") {
+      assert.equal(feldera.dockerfile.from.name, "images.feldera.com/feldera/pipeline-manager:0.367.0@sha256:42819714d16f7d5d37c17c87812ce98fb23efd2b1bfbf95b4889877f14693272");
+      assert.match(feldera.dockerfile.preamble.join("\n"), /\[profile\.unoptimized\].*strip = "symbols"/);
+      assert.deepEqual(feldera.compose.healthcheck.test, ["CMD", "httpcheck", "http://127.0.0.1:8080/healthz"]);
+      assert.equal(feldera.compose.ports, undefined);
+      assert.equal(compute.compose.depends_on.feldera.condition, "service_healthy");
+      assert.equal(compute.compose.environment.FELDERA_URL, "http://feldera:8080");
+      assert.equal(feldera.compose.environment.FELDERA_DATABASE_URL, compute.compose.environment.DATABASE_URL);
+      assert.match(feldera.compose.environment.FELDERA_DATABASE_URL, /\$\{POSTGRES_PASSWORD:-postgres\}/);
+    } else {
+      assert.equal(feldera, undefined);
+      assert.equal(compute.compose.depends_on.feldera, undefined);
+      assert.equal(compute.compose.environment.FELDERA_URL, undefined);
+    }
+  }
+});
+
 Deno.test("an AI effect or capability turns on the tsbifrost gateway on airlock-out", async () => {
   const got = await exported(
     { effects: [{ name: "draft", ai: "text", tier: "cheap" }], effectInterpreters: "SELECT 1;" },
@@ -682,4 +833,51 @@ Deno.test("an AI effect or capability turns on the tsbifrost gateway on airlock-
   assert.deepEqual(got.value.tsbifrost.compose.networks, ["airlock-out", "default", "airlock-egress"]);
   assert.ok(got.value["airlock-mesh"].compose.depends_on.tsbifrost, "airlock-mesh depends on tsbifrost");
   assert.match(got.value["airlock-mesh"].compose.environment.AIRLOCK_BRIDGES, /\btsbifrost\b/);
+});
+
+Deno.test("an explicit tenancy baseline replaces the image floor once", async () => {
+  const baseline = "services/database/migrations/003_rls.sql";
+  const generated = await copied({ migrations: [baseline, "m/004_types.sql"] });
+  assert.equal(generated.ok, true, generated.stderr);
+  assert.deepEqual(generated.value, [baseline, "m/004_types.sql"]);
+  const duplicate = await copied({ migrations: [baseline, baseline] });
+  assert.equal(duplicate.ok, false);
+  assert.match(duplicate.stderr, /duplicate migration/);
+  const collision = await copied({ migrations: [baseline, "other/003_rls.sql"] });
+  assert.equal(collision.ok, false);
+  assert.match(collision.stderr, /_initdb\."003": conflicting values/);
+});
+
+// Every docker app's appliance compiled the same toolchain in a stage of its
+// own, its server headers pinned apart from the server it ran: one image now,
+// against the appliance's one PostgreSQL version.
+Deno.test("the appliance's extensions build once, against the appliance's own PostgreSQL", async () => {
+  const out = await new Deno.Command("cue", { args: ["export", ".:cluster", "-e", "#AppliancePostgres"], cwd: MECHA, stdout: "piped" }).output();
+  assert.equal(out.success, true);
+  const version: string = JSON.parse(new TextDecoder().decode(out.stdout));
+  const build = await Deno.readTextFile(`${MECHA}.bayt/Dockerfile.extensions-build`);
+  for (const s of [`postgresql18-server-devel=${version}`, "github.com/plv8/pljs.git", "plv8.control", "sha256sum -c", "/pg-extensions/lib/"]) {
+    assert.ok(build.includes(s), `${s} missing from the extensions build`);
+  }
+  assert.ok(!build.includes("zig"), "a second toolchain");
+});
+
+// The published extensions image was its build stage: the toolchain every
+// appliance pulled to copy two libraries and their extension files.
+Deno.test("the published extensions image holds the extensions alone", async () => {
+  const dockerfile = await Deno.readTextFile(`${MECHA}.bayt/Dockerfile.extensions-image`);
+  const stage = dockerfile.split(/\n(?=FROM )/)[1];
+  assert.match(stage, /^FROM scratch AS extensions-image\n/);
+  assert.ok(stage.includes("COPY --link --from=libraries_mecha-extensions-build /pg-extensions /pg-extensions"), stage);
+  assert.ok(!/zypper|gcc|postgresql18-server-devel/.test(stage), `the toolchain ships: ${stage}`);
+});
+
+// A bridge's container built for the appliance lost its build dependencies
+// with the stack's waits: one copying from a sibling target built without it.
+Deno.test("a bridge's appliance build keeps its own dependencies, without the stack's waits", async () => {
+  const state = {effects: [{name: "fetch", bridge: "crawl"}], bridges: [{name: "crawl", container: "crawler", targets: ["docker"], appliance: {srcs: ["/usr/local/bin/crawl"], command: ["/usr/local/bin/crawl"], port: 8091}}]};
+  const got = await runtimeWith(state, `{support: {dockerfile: from: name: "support@sha256:fixture", compose: {}}, crawler: {deps: [":support:outs"], dockerfile: {from: name: "crawler@sha256:fixture", copy: [{from: ref: ":support", srcs: ["/lib/x"], dst: "/lib/x"}]}}}`);
+  assert.equal(got.ok, true, got.stderr);
+  assert.deepEqual(got.value["crawler-appliance"].deps, [":support:outs"]);
+  assert.equal(got.value["crawler-appliance"].compose.manual, true);
 });
