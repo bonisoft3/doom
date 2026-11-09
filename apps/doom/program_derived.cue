@@ -7,11 +7,13 @@ code: surface: screens: {
 			{table: "frag", kind: "live", nested: false, lists: [], route: "whole", clauses: [], embeds: [], orders: ["tick"]},
 			{table: "match", kind: "live", nested: false, lists: [], route: "view", clauses: [{"col":"id","op":"eq"}], embeds: [], orders: []},
 			{table: "match", kind: "live", nested: false, lists: [], route: "view", clauses: [{"col":"id","op":"eq"}], embeds: [], orders: []},
+			{table: "match", kind: "live", nested: false, lists: [], route: "view", clauses: [{"col":"id","op":"eq"}], embeds: [], orders: []},
 			{table: "player", kind: "live", nested: false, lists: [], route: "view", clauses: [{"col":"id","op":"eq"}], embeds: [], orders: []},
 			{table: "match", kind: "reads", nested: false, lists: [], route: "whole", clauses: [], embeds: [], orders: []},
 		]
 		writes: [
 			{table: "match", op: "reduce"},
+			{table: "player", op: "reduce"},
 		]
 		charts: []
 		files: {handlers: ["shell/handlers/match_control.js"], adapters: []}

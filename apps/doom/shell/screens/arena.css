@@ -485,3 +485,184 @@ body:has(.screen[data-screen="arena"]:not([hidden])) > #app {
 .act.ghost:hover {
   color: var(--primary);
 }
+
+/* Title, Difficulty, Pause & Intermission Menu Overlay */
+.doom-menu-overlay {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 45%, rgba(65, 10, 10, 0.86) 0%, rgba(10, 8, 8, 0.94) 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 35;
+  padding: var(--sp-lg);
+}
+
+.doom-menu-overlay[hidden] {
+  display: none !important;
+}
+
+.doom-menu-card {
+  inline-size: min(460px, 92vw);
+  background: linear-gradient(180deg, #1b1111 0%, #0e0909 100%);
+  border: var(--border-size-2) solid #8a2015;
+  box-shadow: var(--shadow-3);
+  padding: 28px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.doom-menu-card[hidden] {
+  display: none !important;
+}
+
+.doom-menu-logo {
+  font-size: 3.2rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-align: center;
+  color: var(--danger);
+  line-height: 1;
+  margin-block-end: var(--border-size-2);
+}
+
+.doom-menu-header {
+  font-size: 1.5rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-align: center;
+  color: var(--accent);
+  margin-block-end: var(--size-1);
+}
+
+.doom-menu-sub {
+  font-size: var(--type-caption);
+  letter-spacing: 0.18em;
+  text-align: center;
+  color: var(--secondary);
+  margin-block-end: 14px;
+  text-transform: uppercase;
+}
+
+.doom-intermission-finished {
+  color: #55ff55;
+}
+
+.doom-intermission-grid {
+  margin-block: 14px;
+}
+
+.doom-menu-item {
+  background: rgba(34, 18, 18, 0.85);
+  border: var(--border-size-1) solid #4d221c;
+  color: var(--primary);
+  padding: 11px 16px;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-align: start;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: all 90ms ease;
+  text-transform: uppercase;
+}
+
+.doom-menu-item .skull-cursor {
+  opacity: 0;
+  color: var(--accent);
+  font-size: 1rem;
+  transition: opacity 90ms ease;
+}
+
+.doom-menu-item:hover,
+.doom-menu-item:focus-visible,
+.doom-menu-item.selected {
+  background: linear-gradient(90deg, #5c140e 0%, #2a0d0a 100%);
+  border-color: var(--danger);
+  color: #fff3d6;
+  outline: none;
+}
+
+.doom-menu-item:hover .skull-cursor,
+.doom-menu-item:focus-visible .skull-cursor,
+.doom-menu-item.selected .skull-cursor {
+  opacity: 1;
+}
+
+.doom-menu-back {
+  margin-block-start: var(--sp-sm);
+  align-self: center;
+  background: transparent;
+  border: var(--border-size-1) solid var(--border);
+  color: var(--secondary);
+  padding: 7px 18px;
+  font-family: inherit;
+  font-size: var(--type-caption);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  text-transform: uppercase;
+}
+
+.doom-menu-back:hover {
+  color: var(--primary);
+  border-color: var(--danger);
+}
+
+.doom-menu-hint {
+  margin-block-start: 10px;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  color: var(--secondary);
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.doom-controls-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--sp-sm) var(--sp-md);
+  font-size: 0.78rem;
+  margin: 6px 0 10px;
+  padding: var(--sp-md);
+  background: rgba(0, 0, 0, 0.45);
+  border: var(--border-size-1) solid var(--border);
+}
+
+.doom-controls-grid > div:nth-child(odd) {
+  color: var(--accent);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.doom-controls-grid > div:nth-child(even) {
+  color: var(--primary);
+}
+
+.doom-credits-body {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--primary);
+  background: rgba(0, 0, 0, 0.45);
+  border: var(--border-size-1) solid var(--border);
+  padding: 12px 14px;
+}
+
+.doom-credits-body p {
+  margin: 0 0 var(--sp-sm);
+}
+
+.doom-credits-body p:last-child {
+  margin-block-end: 0;
+}
+
+.doom-credits-body strong {
+  color: var(--accent);
+  letter-spacing: 0.06em;
+}
+

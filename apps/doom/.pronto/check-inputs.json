@@ -480,7 +480,15 @@
       "durability": "tab",
       "level": "ephemeral",
       "server": false,
-      "writers": [],
+      "writers": [
+        {
+          "by": "arena",
+          "kind": "screen",
+          "ops": [
+            "reduce"
+          ]
+        }
+      ],
       "cel": {
         "checks": {},
         "enums": {

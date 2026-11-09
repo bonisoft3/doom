@@ -48,7 +48,8 @@
       "path": "/",
       "screen": "arena",
       "nav": {
-        "label": "Arena"
+        "label": "Arena",
+        "strip": false
       },
       "files": {
         "adapters": [],
@@ -71,7 +72,8 @@
       "path": "/lobby",
       "screen": "lobby",
       "nav": {
-        "label": "Lobby"
+        "label": "Lobby",
+        "strip": false
       },
       "files": {
         "adapters": [],

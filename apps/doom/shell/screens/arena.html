@@ -34,6 +34,78 @@
         <p class="winner-text">Winner: <b data-text="{winner}">US</b></p>
         <button type="button" id="btn-rematch" class="act hot" data-on-click="match_control">PLAY AGAIN</button>
       </div>
+
+      <div id="doom-menu-overlay" class="doom-menu-overlay" data-live="match" data-filter="id=eq.match-01" data-empty-row='{"id":"match-01","map":"e1m1","status":"warmup","frag_limit":10,"frags_us":0,"frags_them":0,"winner":""}'>
+        <div class="doom-menu-card" id="doom-title-card">
+          <div class="doom-menu-logo">DOOM</div>
+          <div class="doom-menu-sub">ARENA DEATHMATCH // E1M1 HANGAR</div>
+          <button type="button" class="doom-menu-item selected" id="menu-newgame" data-on-click="match_control"><span class="skull-cursor">💀</span> NEW GAME</button>
+          <button type="button" class="doom-menu-item" id="menu-controls" data-on-click="match_control"><span class="skull-cursor">💀</span> CONTROLS</button>
+          <button type="button" class="doom-menu-item" id="menu-credits" data-on-click="match_control"><span class="skull-cursor">💀</span> CREDITS</button>
+          <div class="doom-menu-hint">CLICK NEW GAME TO CHOOSE DIFFICULTY</div>
+        </div>
+
+        <div class="doom-menu-card" id="doom-skill-card" hidden>
+          <div class="doom-menu-header">NEW GAME</div>
+          <div class="doom-menu-sub">CHOOSE SKILL LEVEL:</div>
+          <button type="button" class="doom-menu-item" id="skill-0" data-skill="0" data-on-click="match_control"><span class="skull-cursor">💀</span> I'M TOO YOUNG TO DIE.</button>
+          <button type="button" class="doom-menu-item" id="skill-1" data-skill="1" data-on-click="match_control"><span class="skull-cursor">💀</span> HEY, NOT TOO ROUGH.</button>
+          <button type="button" class="doom-menu-item selected" id="skill-2" data-skill="2" data-on-click="match_control"><span class="skull-cursor">💀</span> HURT ME PLENTY.</button>
+          <button type="button" class="doom-menu-item" id="skill-3" data-skill="3" data-on-click="match_control"><span class="skull-cursor">💀</span> ULTRA-VIOLENCE.</button>
+          <button type="button" class="doom-menu-item" id="skill-4" data-skill="4" data-on-click="match_control"><span class="skull-cursor">💀</span> NIGHTMARE!</button>
+          <button type="button" class="doom-menu-back" id="skill-back" data-on-click="match_control">◀ BACK</button>
+        </div>
+
+        <div class="doom-menu-card" id="doom-pause-card" hidden>
+          <div class="doom-menu-header">GAME PAUSED</div>
+          <div class="doom-menu-sub" id="pause-map-label">E1M1: HANGAR</div>
+          <button type="button" class="doom-menu-item selected" id="pause-resume" data-on-click="match_control"><span class="skull-cursor">💀</span> RESUME GAME</button>
+          <button type="button" class="doom-menu-item" id="pause-restart" data-on-click="match_control"><span class="skull-cursor">💀</span> RESTART LEVEL</button>
+          <button type="button" class="doom-menu-item" id="pause-skill" data-on-click="match_control"><span class="skull-cursor">💀</span> CHANGE DIFFICULTY</button>
+          <button type="button" class="doom-menu-item" id="pause-controls" data-on-click="match_control"><span class="skull-cursor">💀</span> CONTROLS</button>
+          <button type="button" class="doom-menu-item" id="pause-title" data-on-click="match_control"><span class="skull-cursor">💀</span> QUIT TO TITLE</button>
+        </div>
+
+        <div class="doom-menu-card" id="doom-controls-card" hidden>
+          <div class="doom-menu-header">CONTROLS</div>
+          <div class="doom-controls-grid">
+            <div>W / S / ↑ / ↓</div><div>MOVE FORWARD / BACK</div>
+            <div>A / D</div><div>STRAFE LEFT / RIGHT</div>
+            <div>← / → / MOUSE</div><div>TURN LEFT / RIGHT</div>
+            <div>SPACE / L-CLICK</div><div>FIRE WEAPON</div>
+            <div>E</div><div>USE SWITCH / OPEN DOOR</div>
+            <div>1 – 7</div><div>SELECT WEAPON</div>
+            <div>SHIFT</div><div>RUN (HOLD)</div>
+            <div>TAB</div><div>AUTOMAP OVERLAY</div>
+            <div>ESC</div><div>PAUSE / GAME MENU</div>
+          </div>
+          <div class="doom-menu-sub">CHEAT CODES: IDDQD · IDKFA · IDCLIP · IDCLEV11–19</div>
+          <button type="button" class="doom-menu-back" id="controls-back" data-on-click="match_control">◀ BACK</button>
+        </div>
+
+        <div class="doom-menu-card" id="doom-credits-card" hidden>
+          <div class="doom-menu-header">DOOM ARENA</div>
+          <div class="doom-credits-body">
+            <p><strong>ORIGINAL GAME (1993)</strong><br>id Software — John Carmack, John Romero, Adrian Carmack, Kevin Cloud, Tom Hall, Sandy Petersen, Dave Taylor, Bobby Prince.</p>
+            <p><strong>WAD &amp; ASSETS</strong><br>DOOM1.WAD Shareware Episode 1 (Knee-Deep in the Dead) + SoundFont GM Synth.</p>
+            <p><strong>BABYLON.JS 9 + PRONTO</strong><br>Full 9-map E1 campaign parser, Doom linedef/sector specials, monster AI, spatial WebAudio + MIDI player, and 4x xBRZ pixel-art upscaler.</p>
+          </div>
+          <button type="button" class="doom-menu-back" id="credits-back" data-on-click="match_control">◀ BACK</button>
+        </div>
+
+        <div class="doom-menu-card" id="doom-intermission-card" hidden>
+          <div class="doom-menu-header" id="intermission-map-title">E1M1: HANGAR</div>
+          <div class="doom-menu-sub doom-intermission-finished">FINISHED!</div>
+          <div class="doom-controls-grid doom-intermission-grid">
+            <div>KILLS</div><div id="intermission-kills">0 / 0 (0%)</div>
+            <div>ITEMS</div><div id="intermission-items">0 / 0 (0%)</div>
+            <div>SECRETS</div><div id="intermission-secrets">0 / 0 (0%)</div>
+            <div>TIME</div><div id="intermission-time">0:00</div>
+          </div>
+          <div class="doom-menu-sub" id="intermission-next-label">ENTERING: E1M2 NUCLEAR PLANT</div>
+          <button type="button" class="doom-menu-item selected" id="intermission-continue" data-on-click="match_control"><span class="skull-cursor">💀</span> CONTINUE [SPACE / ENTER]</button>
+        </div>
+      </div>
     </div>
 
     <footer class="doom-hud" data-live="player" data-filter="id=eq.player-local" data-reads="match" data-empty-row='{"id":"player-local","handle":"Doomguy","health":100,"armor":50,"ammo":50,"weapon":"shotgun","in_pain":"false","is_god":"false","health_tier":"healthy"}'>
@@ -77,7 +149,7 @@
       </div>
 
       <div class="hud-actions">
-        <a class="act ghost" data-route="lobby">LOBBY</a>
+        <button type="button" id="game-menu-btn" class="act ghost" data-on-click="match_control">MENU [ESC]</button>
       </div>
     </footer>
   </div>

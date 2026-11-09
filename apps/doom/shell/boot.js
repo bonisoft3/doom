@@ -425,6 +425,79 @@ async function checkAndMountArena() {
 
     const isArenaActive = () => canvas.isConnected && (!screenEl || !screenEl.hidden);
 
+    const MAP_TITLES = {
+      e1m1: "E1M1: HANGAR",
+      e1m2: "E1M2: NUCLEAR PLANT",
+      e1m3: "E1M3: TOXIN REFINERY",
+      e1m4: "E1M4: COMMAND CONTROL",
+      e1m5: "E1M5: PHOBOS LAB",
+      e1m6: "E1M6: CENTRAL PROCESSING",
+      e1m7: "E1M7: COMPUTER STATION",
+      e1m8: "E1M8: PHOBOS ANOMALY",
+      e1m9: "E1M9: MILITARY BASE"
+    };
+
+    const menuOverlay = document.getElementById("doom-menu-overlay");
+    const menuCards = {
+      title: document.getElementById("doom-title-card"),
+      skill: document.getElementById("doom-skill-card"),
+      pause: document.getElementById("doom-pause-card"),
+      controls: document.getElementById("doom-controls-card"),
+      credits: document.getElementById("doom-credits-card"),
+      intermission: document.getElementById("doom-intermission-card")
+    };
+    let previousMenuCard = "title";
+    let isGamePaused = false;
+
+    const requestPointerLockSafe = () => {
+      try {
+        canvas.requestPointerLock?.();
+      } catch (_err) {
+        // Ignore pointer lock rejection in headless browsers.
+      }
+    };
+
+    const showMenuCard = (cardName) => {
+      if (!menuOverlay) return;
+      menuOverlay.hidden = false;
+      for (const [k, el] of Object.entries(menuCards)) {
+        if (el) el.hidden = k !== cardName;
+      }
+      if (cardName === "pause") {
+        const lbl = document.getElementById("pause-map-label");
+        const curMap = bridge.getMapName();
+        if (lbl) lbl.textContent = MAP_TITLES[curMap] || curMap.toUpperCase();
+      }
+      if (document.pointerLockElement === canvas) {
+        document.exitPointerLock?.();
+      }
+    };
+
+    const closeMenu = (resumeMatch = false) => {
+      if (menuOverlay) menuOverlay.hidden = true;
+      isGamePaused = false;
+      if (resumeMatch && bridge.getMatch().status === "active") {
+        bridge.play();
+      }
+    };
+
+    const togglePauseMenu = () => {
+      if (bridge.getMatch().status === "warmup") {
+        showMenuCard("title");
+        return;
+      }
+      if (bridge.getMatch().status !== "active") return;
+      if (isGamePaused) {
+        closeMenu(true);
+        requestPointerLockSafe();
+      } else {
+        isGamePaused = true;
+        bridge.pause();
+        previousMenuCard = "pause";
+        showMenuCard("pause");
+      }
+    };
+
     const ensureAudioAndWarmup = (autoStart = false) => {
       cachedSfx.resume().catch(() => {});
       if (autoStart && bridge.getMatch().status === "warmup") {
@@ -435,11 +508,20 @@ async function checkAndMountArena() {
 
     const onKeyDown = (e) => {
       if (!isArenaActive()) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        togglePauseMenu();
+        return;
+      }
+      if (menuOverlay && !menuOverlay.hidden) return;
       ensureAudioAndWarmup(["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright", " ", "enter"].includes(e.key.toLowerCase()));
       bridge.setKey(e.key, true);
       if (e.key === " " || e.code === "Space") {
         e.preventDefault();
         bridge.fireWeapon();
+      }
+      if (e.key.toLowerCase() === "e") {
+        bridge.useAction();
       }
       if (e.key.toLowerCase() === "r") {
         bridge.reloadWeapon();
@@ -454,16 +536,27 @@ async function checkAndMountArena() {
     let lastMouseX = 0;
     const onMouseDown = (e) => {
       if (!isArenaActive()) return;
+      if (menuOverlay && !menuOverlay.hidden) return;
       ensureAudioAndWarmup(true);
-      isDragging = true;
-      lastMouseX = e.clientX;
-      bridge.fireWeapon();
+      if (document.pointerLockElement === canvas) {
+        if (e.button === 0) bridge.fireWeapon();
+      } else {
+        requestPointerLockSafe();
+        isDragging = true;
+        lastMouseX = e.clientX;
+        if (e.button === 0) bridge.fireWeapon();
+      }
     };
     const onMouseMove = (e) => {
-      if (!isDragging || !isArenaActive()) return;
-      const deltaX = e.clientX - lastMouseX;
-      lastMouseX = e.clientX;
-      bridge.addMouseLook(deltaX * 0.003);
+      if (!isArenaActive()) return;
+      if (menuOverlay && !menuOverlay.hidden) return;
+      if (document.pointerLockElement === canvas) {
+        bridge.addMouseRotation(e.movementX || 0);
+      } else if (isDragging) {
+        const deltaX = e.clientX - lastMouseX;
+        lastMouseX = e.clientX;
+        bridge.addMouseLook(deltaX * 0.003);
+      }
     };
     const onMouseUp = () => {
       isDragging = false;
@@ -472,7 +565,75 @@ async function checkAndMountArena() {
     const onDocClick = (e) => {
       if (!isArenaActive()) return;
       cachedSfx.resume().catch(() => {});
-      const slot = e.target?.closest?.(".arm-slot[data-has]");
+      const target = e.target;
+      const btn = target?.closest?.("button");
+      if (btn) {
+        if (btn.id === "game-menu-btn") {
+          togglePauseMenu();
+          return;
+        }
+        if (btn.id === "menu-newgame") {
+          previousMenuCard = "title";
+          showMenuCard("skill");
+          return;
+        }
+        if (btn.id === "menu-controls") {
+          previousMenuCard = "title";
+          showMenuCard("controls");
+          return;
+        }
+        if (btn.id === "menu-credits") {
+          previousMenuCard = "title";
+          showMenuCard("credits");
+          return;
+        }
+        if (btn.id === "skill-back" || btn.id === "controls-back" || btn.id === "credits-back") {
+          showMenuCard(previousMenuCard);
+          return;
+        }
+        if (btn.hasAttribute("data-skill")) {
+          const s = parseInt(btn.getAttribute("data-skill"), 10);
+          document.querySelectorAll("#doom-skill-card .doom-menu-item[data-skill]").forEach((b) => {
+            b.classList.toggle("selected", b === btn);
+          });
+          bridge.setSkill(s);
+          closeMenu(false);
+          requestPointerLockSafe();
+          if (bridge.getMatch().status !== "warmup") {
+            bridge.play();
+          }
+          return;
+        }
+        if (btn.id === "pause-resume") {
+          closeMenu(true);
+          requestPointerLockSafe();
+          return;
+        }
+        if (btn.id === "pause-restart") {
+          closeMenu(false);
+          requestPointerLockSafe();
+          bridge.restartMatch(bridge.getMatch().frag_limit, { mapName: bridge.getMapName() }).catch(onFatal);
+          return;
+        }
+        if (btn.id === "pause-skill") {
+          previousMenuCard = "pause";
+          showMenuCard("skill");
+          return;
+        }
+        if (btn.id === "pause-controls") {
+          previousMenuCard = "pause";
+          showMenuCard("controls");
+          return;
+        }
+        if (btn.id === "pause-title") {
+          isGamePaused = false;
+          bridge.pause();
+          previousMenuCard = "title";
+          showMenuCard("title");
+          return;
+        }
+      }
+      const slot = target?.closest?.(".arm-slot[data-has]");
       if (slot) {
         const slotNum = slot.getAttribute("data-has");
         if (slotNum) bridge.setKey(slotNum, true);
@@ -521,12 +682,16 @@ async function checkAndMountArena() {
           const m = rows?.[0];
           if (!m) throw new Error("boot: match row match-01 missing from store");
           if (m.status === "active" && bridge.getMatch().status === "warmup") {
+            closeMenu(false);
             await bridge.startMatch();
             if (isArenaActive()) bridge.play();
           } else if (m.status === "warmup" && (bridge.getMatch().status !== "warmup" || bridge.getMatch().frags_us !== 0 || bridge.getMatch().frags_them !== 0)) {
             await bridge.resetMatch(m.frag_limit);
             render3D(bridge.host.getState(), canvas, cachedAssets);
             updateArenaOverlay(bridge.host.getState(), 1, 0);
+            showMenuCard("title");
+          } else if (m.status === "over") {
+            closeMenu(false);
           }
         } while (syncQueued);
       } catch (err) {

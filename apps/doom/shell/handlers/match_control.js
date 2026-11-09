@@ -8,10 +8,11 @@
     throw new TypeError("match_control: match id must be string");
   }
   if (event.type !== "click") return { updates: [] };
-  if (event.from === "btn-start" && match.status === "warmup") {
+  const starts = ["btn-start", "skill-0", "skill-1", "skill-2", "skill-3", "skill-4"];
+  if (starts.includes(event.from) && match.status === "warmup") {
     return { updates: [{ op: "patch", entity: "match", id: match.id, row: { status: "active" } }] };
   }
-  if (event.from === "btn-rematch") {
+  if (event.from === "btn-rematch" || event.from === "pause-title") {
     return {
       updates: [{
         op: "patch",

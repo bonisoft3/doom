@@ -109,3 +109,14 @@ Deno.test("accept-offline: service worker script caches static assets and screen
   assert(swSrc.includes('addEventListener("install"'), "offline-first-sw.js must handle install event");
   assert(swSrc.includes('addEventListener("fetch"'), "offline-first-sw.js must handle fetch event for offline cache");
 });
+
+Deno.test("accept-title-difficulty-menu: arena renders title modal and 5 skill levels without lobby nav link", () => {
+  const { document } = loadArenaDoc();
+  const titleCard = document.getElementById("doom-title-card");
+  assert(titleCard !== null, "Title menu card must exist");
+  assert(document.getElementById("menu-newgame") !== null, "New Game button must exist");
+
+  const skillButtons = document.querySelectorAll("#doom-skill-card [data-skill]");
+  assertEquals(skillButtons.length, 5, "Skill menu card must offer all 5 Doom skill levels (0..4)");
+  assertEquals(document.querySelector('[data-route="lobby"]'), null, "HUD must not link out to a separate lobby route");
+});
