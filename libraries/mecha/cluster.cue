@@ -255,6 +255,8 @@ _jobKeySql: _ @embed(file="services/airlock/job_key.sql", type=text)
 // An environment variable's name: where a secret reaches the airlock.
 #SecretName: "^[A-Z][A-Z0-9_]*$"
 
+#BridgeInstanceType: "lite" | "basic" | "standard-1" | "standard-2" | "standard-3" | "standard-4"
+
 // An Airlock endpoint supplied by a container hatch. The role grants no
 // database credential or protocol-specific confinement.
 #Bridge: {
@@ -270,6 +272,8 @@ _jobKeySql: _ @embed(file="services/airlock/job_key.sql", type=text)
 	// a Cloudflare Container the airlock's dispatcher Worker owns; a container
 	// pulled rather than built is refused there.
 	targets: *[] | [...=~#EffectName]
+	// Cloudflare Containers instance tier; unset keeps Wrangler's default.
+	instance_type?: #BridgeInstanceType
 	// What the compose cluster, the local stack launch and the checks bring up,
 	// runs in the container's place: its fields replace the container target's
 	// of the same name, so it serves under the container's name, port and
@@ -361,11 +365,35 @@ _jobKeySql: _ @embed(file="services/airlock/job_key.sql", type=text)
 	image?: {for t in ["browser", "cheap", "heavy"] {(t)?: #AiModelSpec | (string & !="")}}
 }
 
+// A deployment's choice among declared models: the edge's dispatcher reads
+// `secret` from its environment before each call and calls the route it
+// names, refusing an unset or undeclared one (services/airlock/ai-models.ts).
+// Only the edge's airlock reads its environment per call, so only cloudflare
+// routes; a stack's environment is fixed when it starts.
+#AiRouted: close({
+	secret: =~"^[A-Z][A-Z0-9_]*$"
+	routes: {[=~"^[a-z][a-z0-9-]*$"]: #AiModelSpec | (string & !="")}
+})
+
+#AiEdgeOverrides: {
+	text?: {
+		browser?: #AiModelSpec | (string & !="")
+		for t in ["cheap", "heavy"] {(t)?: #AiModelSpec | (string & !="") | #AiRouted}
+	}
+	image?: {
+		browser?: #AiModelSpec | (string & !="")
+		for t in ["cheap", "heavy"] {(t)?: #AiModelSpec | (string & !="") | #AiRouted}
+	}
+}
+
 #AiCapability: {
-	text?:    [...#AiTier]
-	image?:   [...#AiTier]
-	models?:  #AiTierOverrides
-	targets?: {for t in ["browser", "pages", "docker", "local", "cloudflare", "gcp", "k8s", "aws"] {(t)?: #AiTierOverrides}}
+	text?:   [...#AiTier]
+	image?:  [...#AiTier]
+	models?: #AiTierOverrides
+	targets?: {
+		for t in ["browser", "pages", "docker", "local", "gcp", "k8s", "aws"] {(t)?: #AiTierOverrides}
+		cloudflare?: #AiEdgeOverrides
+	}
 }
 
 // An external effect as the cluster places it: its name, the one origin it
@@ -2294,7 +2322,9 @@ _devAuthenticatorPassword: "dev-authenticator-password"
 		for b in R.cluster.state.bridges if list.Contains(b.targets, "cloudflare") if R._live[b.container].dockerfile.from == null {
 			("\(b.container)-appliance"): error("bridge \(b.name) names cloudflare but its container \(b.container) builds no image from a Dockerfile: Cloudflare Containers ships what the publish builds")
 		}
-
+		for b in R.cluster.state.bridges if b.instance_type != _|_ if !list.Contains(b.targets, "cloudflare") {
+			("\(b.container)-appliance"): error("bridge \(b.name) sets instance_type, which sizes a Cloudflare Container, without naming cloudflare in targets")
+		}
 		// Bridges share a container on its one port; on cloudflare a container
 		// is one bridge's, since each bridge is a class with a container of its
 		// own, and two would build two containers from one image.
