@@ -21,5 +21,5 @@ idiomatic_version_file_enable_tools = ["python"]
 "github:nektos/act" = "v0.2.89"
 "github:casey/just" = "1.59.0"
 "github:nushell/nushell" = "0.116.1"
-"github:cue-lang/cue" = "0.16.1"
+"github:cue-lang/cue" = "0.18.0-rc.4"
 "github:astral-sh/uv" = "0.13.4"

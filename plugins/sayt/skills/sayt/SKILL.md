@@ -60,7 +60,7 @@ sayt does **not** invent new configuration formats: each verb runs the tool that
 
 ## Configuring sayt
 
-`.say.yaml` (or `.say.toml`, `.say.json`), `.say.cue` and `.say.nu` (a nushell script whose output is merged in) unify with sayt's `config.cue`: one block for sayt itself (`self`) and one per verb, validated, with each verb's built-in behavior a default you can replace. `say.self.version` pins the sayt a repository expects; an invoked sayt of another version re-execs itself through the colocated `saytw` with `SAYT_VERSION` set to the pin.
+`.say.yaml` (or `.say.toml`, `.say.json`), `.say.cue` and `.say.nu` (a nushell script whose last value, a record, is merged in) unify with sayt's `config.cue`: one block for sayt itself (`self`) and one per verb, validated, with each verb's built-in behavior a default you can replace. `say.self.version` pins the sayt a repository expects; an invoked sayt of another version re-execs itself through the colocated `saytw` with `SAYT_VERSION` set to the pin.
 
 **Rules.** `do:` under a verb replaces its built-in. Underneath, every verb is an ordered map of rules, each a list of commands:
 
@@ -84,7 +84,7 @@ Rules run in `priority` order (lower first, default 0, stable by name); referenc
 | `--platform` (`-w`), or `verb@platform` | which rules run: those whose `platform` matches | the same operation landing elsewhere |
 | a verb in `say.self.verbs` | what the action means | an operation no built-in verb fits |
 
-Platform defaults per pair: `setup`/`doctor` → `bare`, `generate`/`lint` → `repo`, `build`/`test` → `local`, `launch`/`integrate` → `docker`, `release`/`verify` → `preview`. Any string names a platform, and a rule with no `platform` runs only on its verb's default. Precedence: `--platform`, then `verb@platform`, then `say.<verb>.flags: "--platform x"`, then `say.self.flags`, then the default; the result is `$env.SAYT_PLATFORM` for the verb script. A custom verb is configured like a built-in one:
+Platform defaults per pair: `setup`/`doctor` → `bare`, `generate`/`lint` → `repo`, `build`/`test` → `host`, `launch`/`integrate` → `compose`, `release`/`verify` → `preview`. Any string names a platform, and a rule with no `platform` runs only on its verb's default. Precedence: `--platform`, then `verb@platform`, then `say.<verb>.flags: "--platform x"`, then `say.self.flags`, then the default; the result is `$env.SAYT_PLATFORM` for the verb script. A custom verb is configured like a built-in one:
 
 ```yaml
 say:

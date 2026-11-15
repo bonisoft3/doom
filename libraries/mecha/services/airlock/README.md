@@ -119,8 +119,8 @@ export async function reconcile(input, sink) {
   (`../compute/language.ts`'s `ENDOWABLE`), as an omnishell module declares `Intl`: a
   handler that signs declares `Crypto`, WebCrypto's operations that are deterministic by
   their specification (`../compute/crypto.ts`), and `TextEncoder`; one that writes a PDF
-  declares `Pdf` ([pdf.ts](pdf.ts)). An endowment it uses without declaring throws where
-  it is used.
+  declares `Pdf` ([pdf.ts](pdf.ts)), and one that writes a spreadsheet `Xlsx`
+  ([xlsx.ts](xlsx.ts)). An endowment it uses without declaring throws where it is used.
 - A throw, or no answer within 60 seconds, is no answer.
 - Bytes are answered as `{"$blob": {base64, type}}` anywhere in the answer (`blobs.ts`),
   or as `{"$blob": {bytes, type}}` with a `Uint8Array` a handler made itself, since the
@@ -207,7 +207,7 @@ the service token the ticker writes with:
 | `airlock` | This service, FROM mecha's `airlock-image`, with the program's `effects.json` and handlers copied to `/airlock` and watched. Its own `--allow-net` is the database, its daprd and port 9997, the healthcheck's and the ticker's wake (`GET /healthz`). |
 | `airlock-mesh` | Its daprd, holding one HTTPEndpoint per effect, the wall, and a breaker per endpoint (`#AirlockResiliency`). Declaring a policy turns off daprd's built-in retries, so a call is made once and `entered` counts every attempt; a sink's 4xx counts toward the trip, which no policy can filter. It runs under [dapr.yaml](dapr.yaml) and goes out on `airlock-egress`, a network nothing else joins. |
 | Bridge container | `state.bridges` names an existing container target and its HTTP port (default 8080). The daprd waits on that target and calls `http://<container>:<port>`. Runtime lowering attaches the target to `airlock-out` and `bridge-<name>-egress`; it grants no default network, database credential or callback permission. |
-| `011_graphile_worker.sql`, `012_airlock.sql` | Graphile's schema; then the ticker's schedule table with its `airlock` row, the tables above and `airlock_wake`, staged in the database image. They take the first digits after the steps a caller opens with, so every caller step that can write a row, held seed included, runs after them and finds the table its interpreter re-arms ([the order](../../docs/schema.md#how-a-schema-reaches-the-database)). A cluster that also declares a schedule runs the schedule table's text again at 020, where every statement holds. |
+| `011_graphile_worker.sql`, `012_airlock.sql`, `013_airlock_job_key.sql` | Graphile's schema; then the ticker's schedule table with its `airlock` row, the tables above and `airlock_wake`; then `airlock.job_key`, the ledger key's digest every enqueue keys its job by (Graphile caps a key at 512 bytes), staged in the database image. They take the first digits after the steps a caller opens with, so every caller step that can write a row, held seed included, runs after them and finds the table its interpreter re-arms ([the order](../../docs/schema.md#how-a-schema-reaches-the-database)). A cluster that also declares a schedule runs the schedule table's text again at 020, where every statement holds. |
 
 **The wall keeps mistakes in.** Its purpose is that declared destinations are the
 only ones reached by accident; it guards against mistakes in trusted code and is

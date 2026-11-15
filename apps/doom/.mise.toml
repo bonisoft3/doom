@@ -15,7 +15,7 @@ aqua.minisign = false
 
 [tools]
 # The repo-wide CUE pin; exports must be byte-identical everywhere.
-"github:cue-lang/cue" = "0.16.1"
+"github:cue-lang/cue" = "0.18.0-rc.4"
 
 # Compares every proto the app does not withhold against its own git history
 # (plugins/pronto/check-proto.ts). Ships windows-x64 and windows-arm64.
@@ -25,6 +25,9 @@ aqua.minisign = false
 "github:terrastruct/d2" = "v0.9.0"
 # Runs write.ts and the pronto/omnishell checkers.
 "github:denoland/deno" = "v2.9.7"
+# Generated checks run `mise x -- nu`; without this pin `nu` is lazybox's stub,
+# which drops the tools `mise x` put on PATH (apps/platform_pins.nu checks it).
+"github:nushell/nushell" = "0.116.1"
 # Lint + config validator for the emitted pipeline files.
 "github:redpanda-data/connect" = "4.114.0"
 # The cluster's own lint check validates docker/Caddyfile.

@@ -178,8 +178,16 @@ async function verifyEdgeSecrets(appDir: string, mecha: string) {
   // The wrangler publish-edge.ts deploys with, resolved the same way.
   const { wranglerTools } = await import(pathToFileURL(path.join(workerd, "wrangler-tools.ts")).href);
   const { wrangler, env } = await wranglerTools();
+  const configPath = path.join(appDir, "dist/cloudflare/airlock/wrangler.jsonc");
+  const hasConfig = await Deno.stat(configPath).then(() => true, (e) => {
+    if (e instanceof Deno.errors.NotFound) return false;
+    throw e;
+  });
+  const targetArgs = hasConfig
+    ? ["--config", configPath]
+    : ["--name", `${JSON.parse(await Deno.readTextFile(path.join(appDir, "shell/shell.json"))).app}-airlock`];
   const listed = await new Deno.Command(wrangler, {
-    args: ["secret", "list", "--config", path.join(appDir, "dist/cloudflare/airlock/wrangler.jsonc"), "--format", "json"],
+    args: ["secret", "list", ...targetArgs, "--format", "json"],
     env,
     stdin: "null",
     stdout: "piped",
@@ -329,7 +337,6 @@ export async function main(argv = Deno.args) {
 
     console.log(`  - ${browserResult.journeysRun} user journeys executed`);
     console.log(`  - ${browserResult.screensChecked} unique screens verified`);
-    console.log("  - Zero-tolerance network trap: zero 4xx/5xx or request aborts");
 
     if (!browserResult.passed) {
       console.error("\nTier 2 Verification Failed:");
@@ -338,6 +345,7 @@ export async function main(argv = Deno.args) {
       }
       Deno.exit(1);
     }
+    console.log("  - Network trap: no HTTP failures, failed Electric recoveries, or transport errors");
     console.log("  ✔ Tier 2 passed cleanly.");
   }
 

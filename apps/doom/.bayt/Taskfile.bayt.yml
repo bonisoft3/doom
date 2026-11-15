@@ -44,16 +44,16 @@ includes:
     taskfile: ./Taskfile.ci.yaml
     dir: ../
     optional: true
+  ci-boot:
+    taskfile: ./Taskfile.ci-boot.yaml
+    dir: ../
+    optional: true
   launch-action:
     taskfile: ./Taskfile.launch-action.yaml
     dir: ../
     optional: true
   integrate-action:
     taskfile: ./Taskfile.integrate-action.yaml
-    dir: ../
-    optional: true
-  ci-boot:
-    taskfile: ./Taskfile.ci-boot.yaml
     dir: ../
     optional: true
 version: "3"

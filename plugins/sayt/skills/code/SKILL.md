@@ -12,7 +12,7 @@ user-invocable: false
 
 `sayt generate` runs code-generation rules. `sayt lint` runs static checks. Both are driven by configuration in `.say.{cue,yaml,yml,json,toml,nu}` files merged with sayt's built-in `config.cue`.
 
-`.say.nu` files are executed and their output is piped into the CUE evaluator. All other files are `cue export`-merged directly.
+A `.say.nu` file is run and its last value, a record, is merged as JSON; it prints diagnostics with `print -e`, since stdout is not config. All other files are `cue export`-merged directly.
 
 ## Rule Shape
 
@@ -111,7 +111,7 @@ The regex is extracted from every file. Missing matches fail; differing captured
 
 ### `vet` — `cue vet` for CUE-generated files
 
-For every `X.cue` whose stem `X` is an existing file, runs `cue vet X.cue <ext>:X` to confirm the generated file still satisfies the CUE schema. This is the static counterpart to `auto-cue` generate.
+For every `X.cue` whose stem `X` is an existing file, runs `cue vet -c X.cue <ext>: X` to confirm the generated file still satisfies the CUE schema. This is the static counterpart to `auto-cue` generate.
 
 All three checks run as the single built-in `auto-cue` lint rule. Disable with `rulemap: { "auto-cue": null }`.
 
@@ -181,17 +181,17 @@ CUE unifies rather than overwrites, so you can split rules across multiple `.say
 
 ## `.say.nu` — Dynamic Rules
 
-For configuration that needs runtime logic, write a nushell file that outputs YAML/JSON. Its output is merged with the other `.say.*` files:
+For configuration that needs runtime logic, write a nushell file whose last value is the config record — plain nuon works too. sayt converts that value to JSON and merges it with the other `.say.*` files:
 
 ```nushell
 # .say.nu
 {
-  say: generate: rulemap: {
+  say: { generate: { rulemap: {
     dynamic: {
       cmds: [{ do: $"echo (date now | format date '%Y')" }]
     }
-  }
-} | to yaml
+  } } }
+}
 ```
 
 ## `--force`

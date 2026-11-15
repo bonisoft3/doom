@@ -76,10 +76,15 @@ export async function renderEffects(app: string, appDir: string, mecha: string, 
     declared.push(`  ${JSON.stringify(name)}: { declaration: ${JSON.stringify(decl)}, target: ${JSON.stringify(target)} },`)
   }
   // A handler here runs in the Worker's own realm, so the endowments it declares
-  // past the platform's globals are defined for it: Pdf, mecha's one frozen call.
-  if (names.some((n) => effects[n].endowments?.includes('Pdf'))) {
-    imports.push(`import { Pdf } from ${JSON.stringify(fromSrc(path.join(mecha, 'services/airlock/pdf.ts')))}`)
-    imports.push(`Object.defineProperty(globalThis, 'Pdf', { value: Object.freeze(Pdf) })`)
+  // past the platform's globals are defined for it: Pdf and Xlsx, each one
+  // frozen call of mecha's.
+  for (const [endowment, file] of [['Pdf', 'pdf.ts'], ['Xlsx', 'xlsx.ts']]) {
+    if (!names.some((n) => effects[n].endowments?.includes(endowment))) continue
+    imports.push(`import { ${endowment} } from ${JSON.stringify(fromSrc(path.join(mecha, 'services/airlock', file)))}`)
+    // Its calls are frozen with it, or one handler's write to a call would
+    // outlive the invocation in the isolate the next one shares.
+    imports.push(`Object.values(${endowment}).forEach(Object.freeze)`)
+    imports.push(`Object.defineProperty(globalThis, '${endowment}', { value: Object.freeze(${endowment}) })`)
   }
 
   const harden = `const harden = (value, seen = new WeakSet()) => {

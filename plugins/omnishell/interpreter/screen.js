@@ -4,7 +4,7 @@
 import { parseMarkup } from "./markup.js";
 import { resolveMachineReferences } from "./row-attachments.js";
 import { renderInto } from "./render.js";
-import { mountHatch, selfSrc } from "./hatch.js";
+import { mountHatch, selfSrc, subdomainSrc } from "./hatch.js";
 import {
   ABSENT,
   binding,
@@ -972,7 +972,7 @@ export function localDate(value, ctx) {
 //
 // A money column is an INTEGER count of minor units and says so on the column
 // (schema.cue #Field.money), never in the markup: the integer alone does not
-// say what it counts — xpense stores whole reais where the ordinary convention
+// say what it counts — whole reais are valid where the ordinary convention
 // is cents — and a scale spelled into an attribute is a second place to look
 // for the same fact. check-markup grades every such binding against the
 // emitted schema for exactly that reason.
@@ -1576,6 +1576,10 @@ function bindText(el, ctx, renderers) {
   // Written only where it differs: a served row already saying it keeps
   // its text node, and the reader's selection in it.
   const write = (text) => {
+    if (el.hasAttribute("data-auth-field")) {
+      el._prontoAuthAnonymous = text;
+      if (el._prontoAuthOverride !== undefined) text = el._prontoAuthOverride;
+    }
     if (el.textContent !== text) el.textContent = text;
   };
   if (VALUE_FORMATS.has(format)) {
@@ -2309,7 +2313,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         }
         el._prontoHatch = mountHatch(el, {
           unit,
-          src: unit.self ? selfSrc(name) : new URL(unit.src, appBase).href,
+          src: unit.self ? selfSrc(name) : unit.subdomain ? subdomainSrc(unit.subdomain, unit.src, appBase) : new URL(unit.src, appBase).href,
           store,
           // A unit's named event becomes a real DOM event on the mount, so the
           // ordinary data-on-* path carries it the rest of the way: bind
@@ -2698,7 +2702,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         if (!fromId || fromId === toId) return;
         try {
           const state = { items: getRows().map((r) => ({ id: r.id, position: r.position })) };
-          const result = reduce(state, { type: "move", fromId, toId });
+          const result = reduce({ context: state, event: { type: "move", fromId, toId } });
           await apply(result.updates ?? [], deliver);
         } catch (err) {
           report(err);
@@ -2743,7 +2747,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
     // what it was given.
     const reads = (region.dataset.reads ?? "").split(",").map((t) => t.trim()).filter(Boolean);
     // data-read-<name>="table?fragment": an auxiliary read in the one grammar
-    // — filter parts and order= — landing in state.rows under <name>. It goes
+    // — filter parts and order= — landing in context.rows under <name>. It goes
     // to query in the same (order, {filter, order}) shape a region's own read
     // carries, so a read some region already subscribes is served by that
     // region's maintained view. Placeholders resolve against the region's own
@@ -2986,7 +2990,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           event = { ...event, visit: seat.visitEpoch !== visitEpoch };
           seat.visitEpoch = visitEpoch;
         }
-        const result = reduce({ items, rows, params: { ...ctx.params }, locale: currentLocale, ssr: opts.mountUnits === false }, event);
+        const result = reduce({ context: { items, rows, params: { ...ctx.params }, locale: currentLocale, ssr: opts.mountUnits === false }, event });
         // A promise is not a continuation command and cannot be a reduce.
         if (typeof result?.then === "function") {
           throw new Error(`handler for "${event.type}" returned a promise; a reduce returns its updates`);
@@ -3217,12 +3221,12 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         return value;
       };
       const leafVal = (v, world, event) => {
-        if (typeof v === "string" && handlers.has(v)) return leafResult(v, handlers.get(v)(world, event));
+        if (typeof v === "string" && handlers.has(v)) return leafResult(v, handlers.get(v)({ context: world, event }));
         // The {type, params} object form (#Ref) is always a reference;
         // loading already threw at hydration for a name no module carries.
         if (v !== null && typeof v === "object") {
           if (v.type === "event") return eventField(event, v.params?.field);
-          return leafResult(v.type, handlers.get(v.type)(world, event, v.params));
+          return leafResult(v.type, handlers.get(v.type)({ context: world, event }, v.params));
         }
         return v;
       };
@@ -3343,7 +3347,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           const name = typeof ref === "string" ? ref : ref.type;
           const g = handlers.get(name);
           if (g === undefined) throw new Error(`machine guard "${name}" names no module`);
-          const value = g({ items: [{ ...(run.effective ?? run.row), [machine.field]: run.guardState }] }, run.event, typeof ref === "object" ? ref.params : undefined);
+          const value = g({ context: { items: [{ ...(run.effective ?? run.row), [machine.field]: run.guardState }] }, event: run.event }, typeof ref === "object" ? ref.params : undefined);
           if (value && typeof value.then === "function") throw new Error(`machine guard "${name}" returned a promise`);
           return value;
         },
@@ -3388,7 +3392,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
 
       const machineRow = (state) => region._prontoMachineRow ?? state.items[0];
 
-      const machineReduce = (state, event) => {
+      const machineReduce = ({ context: state, event }) => {
         const row = machineRow(state);
         if (row === undefined) return { updates: [] };
         return apply(row, event);
@@ -3419,7 +3423,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             send: async (event, attached) => {
               let delivered = false;
               const receiver = (region._prontoMachineRow ?? getRows()[0])?.id;
-              const reduce = (world, fired) => {
+              const reduce = ({ context: world, event: fired }) => {
                 const row = world.items[0];
                 if (!row || row.id !== receiver || !mutationActive() || !attached(row)) return { updates: [] };
                 delivered = true;
@@ -3450,7 +3454,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
         for (const [key, t] of Object.entries(spec)) {
           const row = region._prontoMachineRow ?? getRows()[0];
           const world = { items: row === undefined ? [] : [row] };
-          const ms = /^\d+$/.test(key) ? Number(key) : handlers.get(key)?.(world, { type: "after" });
+          const ms = /^\d+$/.test(key) ? Number(key) : handlers.get(key)?.({ context: world, event: { type: "after" } });
           if (typeof ms !== "number") {
             throw new Error(`machine after "${key}" is neither milliseconds nor a module returning them`);
           }
@@ -3458,10 +3462,10 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
           // A raise from an after transition routes through the full lookup;
           // only the timer's own event applies the armed transition, and only
           // while the machine still stands in the state that armed it.
-          const timerReduce = (state, event) =>
+          const timerReduce = ({ context: state, event }) =>
             event.type === `after:${key}`
               ? apply(machineRow(state), event, [`after:${key}`], stateName)
-              : machineReduce(state, event);
+              : machineReduce({ context: state, event });
           actorOf.set(timerReduce, machine.field);
           // Periodic when every arrow the timer can take lands back in the
           // state that armed it and raises nothing: a metronome re-arms
@@ -3581,7 +3585,7 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
             // Asked of the row in hand first: a step reads the region's whole world, on every refresh.
             // Held to the state it was asked in, which a gesture may have left by the time it runs,
             // and a raise it chains is an ordinary event.
-            if (fire(standing, { type: "always" }, ["always"], true)?.taken === true) runMachine((state, event) => event.type === "always" ? apply(machineRow(state), event, ["always"], current) : machineReduce(state, event), { type: "always" }).catch((err) => {
+            if (fire(standing, { type: "always" }, ["always"], true)?.taken === true) runMachine(({ context: state, event }) => event.type === "always" ? apply(machineRow(state), event, ["always"], current) : machineReduce({ context: state, event }), { type: "always" }).catch((err) => {
               failed(err);
               report(err);
             });
@@ -4173,9 +4177,11 @@ export async function interpretScreen(mount, appBase, route, store, params = {},
       if (stopped) return;
       // A tab's own table with nothing in it has not been derived yet, which
       // says nothing of the rows a served document drew from the server's: the
-      // adoption wiped them, and a deck's title blinked out for a second.
+      // adoption wiped them, and a deck's title blinked out for a second. A
+      // per-row list standing in empty while its subset loads holds its served
+      // items the same way until the load settles.
       if (first && served !== undefined && templates.length > 0 && stored.length === 0 && region.children.length > 0 &&
-          cfg.schema?.[table]?.durability === "tab" && (await store.query(table, null, {})).length === 0) {
+          (stored.fillsIn === true || (cfg.schema?.[table]?.durability === "tab" && (await store.query(table, null, {})).length === 0))) {
         if (stopped) return;
         finishOwn();
         return;

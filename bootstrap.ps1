@@ -1,4 +1,4 @@
-$MiseVersion = "v2026.8.11"
+$MiseVersion = "v2026.11.8"
 $MiseDir = Join-Path $env:LOCALAPPDATA "mise\bin"
 $Mise = Join-Path $MiseDir "mise.exe"
 

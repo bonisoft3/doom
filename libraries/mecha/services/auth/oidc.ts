@@ -35,7 +35,7 @@ export const PRESETS: Record<string, Preset> = {
     issuer: "https://accounts.google.com",
     // Google's ID tokens name it either way.
     issuers: ["https://accounts.google.com", "accounts.google.com"],
-    scope: "openid profile",
+    scope: "openid profile email",
     params: { prompt: "select_account" },
   },
 };
@@ -111,7 +111,7 @@ export function discovery(fetcher: typeof fetch = fetch): (p: Provider) => Promi
       hit = (async () => {
         const res = await fetcher(`${p.internal.replace(/\/$/, "")}/.well-known/openid-configuration`);
         if (!res.ok) throw new Error(`${p.issuer}'s discovery: ${res.status}`);
-        const d = await res.json();
+        const d = (await res.json()) as { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri: string };
         // OpenID Connect Discovery 1.0 §4.3: the document names the issuer it was asked of.
         if (d.issuer !== p.issuer) throw new Error(`${p.issuer}'s discovery names the issuer ${d.issuer}`);
         return { authorize: d.authorization_endpoint, token: inside(p, d.token_endpoint), jwks: inside(p, d.jwks_uri) };
@@ -133,21 +133,24 @@ export function keySource(fetcher: typeof fetch = fetch): (jwks: string, kid: st
     if (find()) return find();
     const res = await fetcher(jwks);
     if (!res.ok) throw new Error(`${jwks}: ${res.status}`);
-    held.set(jwks, (await res.json()).keys);
+    held.set(jwks, ((await res.json()) as { keys: JsonWebKey[] }).keys);
     return find();
   };
 }
 
-export type Profile = { provider: string; issuer: string; sub: string; name: string | null; picture: string | null };
-export type User = { id: string; handle: string };
+export type Profile = { provider: string; issuer: string; sub: string; name: string | null; picture: string | null; email: string | null };
+/** The person as the app shows them: the handle always, the link's name and
+ * email while a provider vouches for them. */
+export type User = { id: string; handle: string; name?: string | null; email?: string | null };
 
 /** What the service needs of Postgres. */
 export interface Links {
   /** The user linked to this subject, made with its link when there is none;
    * the link's name and picture refreshed either way. */
   userFor(p: Profile): Promise<User>;
-  /** The user's handle while a link of `provider` still names them. */
-  handleOf(provider: string, issuer: string, id: string): Promise<string | null>;
+  /** The user, with the link's name and email, while a link of `provider`
+   * still names them. */
+  handleOf(provider: string, issuer: string, id: string): Promise<Omit<User, "id"> | null>;
 }
 
 export type Config = {
@@ -213,7 +216,9 @@ export async function verifyIdToken(
   if (typeof c.sub !== "string" || c.sub === "" || c.sub.length > 255) return null;
   const name = typeof c.name === "string" && c.name.trim() !== "" ? c.name.trim().slice(0, 120) : null;
   const picture = typeof c.picture === "string" && c.picture.startsWith("https://") ? c.picture : null;
-  return { provider, issuer: p.issuer, sub: c.sub, name, picture };
+  // An address the provider has not verified is nobody's to prefill.
+  const email = typeof c.email === "string" && c.email_verified === true && c.email.includes("@") ? c.email.trim().toLowerCase().slice(0, 254) : null;
+  return { provider, issuer: p.issuer, sub: c.sub, name, picture, email };
 }
 
 /** A same-origin path to come back to, or the root: never another origin, and
@@ -239,6 +244,12 @@ const redirect = (to: string, cookies: string[]) => {
 };
 const refuse = (status: number, error: string) =>
   new Response(JSON.stringify({ error }), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+// Speculative GETs (an inherited Service-Worker-Navigation-Preload or link prefetch)
+// are discarded when /auth/* bypasses the worker; answering them would spend a
+// single-use OAuth code or overwrite the browser's PKCE state cookie.
+const speculative = (req: Request) =>
+  req.headers.has("service-worker-navigation-preload") ||
+  /\b(prefetch|preview)\b/i.test(`${req.headers.get("sec-purpose") ?? ""},${req.headers.get("purpose") ?? ""}`);
 
 /** The routes under PREFIX, or null for a path that is not one of them. */
 export function oidc(cfg: Config): (req: Request) => Promise<Response> | null {
@@ -308,7 +319,7 @@ export function oidc(cfg: Config): (req: Request) => Promise<Response> | null {
       }),
     });
     if (!exchanged.ok) return refuse(401, "the provider refused the code");
-    const idToken = (await exchanged.json()).id_token;
+    const idToken = ((await exchanged.json()) as { id_token?: unknown }).id_token;
     if (typeof idToken !== "string") return refuse(401, "no id token");
     const profile = await verifyIdToken(name, idToken, (kid) => keys(ends.jwks, kid), { issuer: p.issuer, issuers: p.issuers, client, nonce: state.nonce });
     if (profile === null) return refuse(401, "id token refused");
@@ -335,9 +346,9 @@ export function oidc(cfg: Config): (req: Request) => Promise<Response> | null {
     // An issuer replacement cannot inherit the previous issuer's sessions.
     if (!Object.hasOwn(cfg.providers, c.provider) || cfg.providers[c.provider].issuer !== c.issuer) return refuse(401, "not signed in");
     // A link removed since is a sign-in revoked.
-    const handle = await cfg.links.handleOf(c.provider, c.issuer, c.sub);
-    if (handle === null) return refuse(401, "not signed in");
-    const user = { id: c.sub, handle };
+    const who = await cfg.links.handleOf(c.provider, c.issuer, c.sub);
+    if (who === null) return refuse(401, "not signed in");
+    const user: User = { id: c.sub, ...who };
     return new Response(JSON.stringify({ token: await cfg.issue(user), user }), {
       status: 200,
       headers: { "content-type": "application/json", "cache-control": "no-store" },
@@ -360,6 +371,7 @@ export function oidc(cfg: Config): (req: Request) => Promise<Response> | null {
     if (req.method === "POST" && path === `${PREFIX}/signout`) return Promise.resolve(signout(req));
     const m = /^\/auth\/oidc\/([a-z][a-z0-9]*)\/(start|callback)$/.exec(path);
     if (m === null || !Object.hasOwn(cfg.providers, m[1]) || req.method !== "GET") return null;
+    if (speculative(req)) return Promise.resolve(refuse(400, "not a navigation"));
     return m[2] === "start" ? start(req, m[1]) : callback(req, m[1]);
   };
 }

@@ -1,6 +1,6 @@
 // Pure Jessie handler for lobby configuration and match entry.
-(state, _event) => {
-  const match = state.rows?.match?.[0] ?? state.items?.[0];
+({ context }) => {
+  const match = context.rows?.match?.[0] ?? context.items?.[0];
   if (!match) throw new Error("enter_arena: match row is required");
   if (typeof match.id !== "string") {
     throw new TypeError("enter_arena: match id must be string");

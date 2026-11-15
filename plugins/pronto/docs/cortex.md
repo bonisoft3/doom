@@ -56,7 +56,7 @@ signals they send and hold the chart to hearing each one.
 
 ## Affordances, Commands, and Intents
 
-To prevent overlap with [[../../omnishell/docs/machines#Omnishell machines|Omnishell machines]],
+To prevent overlap with [[../../omnishell/docs/machines#Machines|Omnishell machines]],
 Cortex does not listen to raw DOM gestures (`click@<id>`, keyboard events).
 Local UI widget concerns — modal visibility, selected tab, input field values,
 and hover states — remain strictly in **Omnishell `#Machine`** on `tab` rows (Level ≤ 2).
@@ -97,7 +97,7 @@ Declarative invocations allow the compiler to derive surface row writes
 verifying Mecha's admission rules as precondition guards on the transition.
 Where custom client entropy or multi-machine aggregation is needed, `handler`
 supplies the fold: `write.ts` emits `shell/handlers/<actor>.js` from the app's
-Jessie module `(state, event, machine, machines)`.
+Jessie module `({context, event}, {machine, machines})`.
 
 ### Through rows
 

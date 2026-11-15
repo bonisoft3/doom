@@ -1,5 +1,4 @@
 ---
-preset: press
 colors:
   neutral: "#0D0F11"
   surface: "#181B1F"
@@ -20,6 +19,8 @@ dark:
   accent: "#FFAA22"
   danger: "#FF4444"
   attention: "#44FF77"
+shell:
+  nav: "topbar"
 ---
 
 # Doom Arena — UAC Phobos Terminal

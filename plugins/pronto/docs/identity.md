@@ -32,8 +32,13 @@ A tenant is an app's origin, which is also its client id: a public client with
 PKCE and one exact redirect per provider, mecha's
 `<origin>/auth/oidc/<provider>/callback`. The subject the broker vouches for is
 pairwise (a keyed hash of tenant, provider and the provider's subject), so one
-person is a stranger to every other app. `identity/broker/core.ts` decides all
-of it apart from the network.
+person is a stranger to every other app. An operator-owned tenant that publishes
+the HMAC TXT record `identity/serve.sh txt` mints at `_pronto-identity.<host>`
+skips the broker's confirmation page, `302`-redirects straight to the
+provider, and receives requested `profile` and verified `email` claims;
+unverified origins see the origin-naming confirmation page first and receive
+`sub` alone.
+`identity/broker/core.ts` decides all of it apart from the network.
 
 ## The broker on Ory Hydra
 
@@ -53,10 +58,10 @@ Hydra holds those, with a store that can outlive a restart.
 
 | Where | How | Broker |
 | --- | --- | --- |
-| an app's `launch@local` | `identity-hydra` and `identity` as host processes via mise and Deno directly | Hydra in memory; Google with the operator's `broker.env`, else a stand-in signing in `tester` |
+| an app's `launch@host` | `identity-hydra` and `identity` as host processes via mise and Deno directly | Hydra in memory; Google with the operator's `broker.env`, else a stand-in signing in `tester` |
 | an app's `launch` | the same two services from their pinned base images | as above, the stand-in unless `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set |
 | the operator's machine | `identity/serve.sh` | Hydra on SQLite |
-| Cloud Run / k8s | `identity/serve.sh release` (operator), `release@gcp` / `release@k8s` (apps) | Hydra backed by PostgreSQL with private admin API; apps connect via `origin` public client |
-| `pages` / `cloudflare` | refused at compile time (`_authTargetRefusal`) | browser tier runs guest sessions; social providers require container/cloud tiers |
+| Cloud Run / k8s / Cloudflare | `identity/serve.sh release` (operator), `release@gcp` / `release@k8s` / `release@cloudflare` (apps) | Hydra backed by PostgreSQL with private admin API; apps connect via `origin` public client or direct `OIDC_<NAME>_CLIENT_ID` |
+| `pages` | refused at compile time (`_authTargetRefusal`) | browser tier runs guest sessions; social providers require edge, container or cloud tiers |
 
 An app naming `signin: broker: <url>` runs no local broker. Pronto publishes no custom runtime image: local runs use the host's Deno and Hydra binaries, and Docker launches use pinned base images.

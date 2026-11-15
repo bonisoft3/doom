@@ -7,8 +7,10 @@
 # `cue vet` is lenient about some schema-incomplete errors, so we use
 # `cue eval` which is strict. Exit non-zero if any expectation diverges.
 
+use ../runtime/tools.nu [run-cue]
+
 def eval-pass [label: string, files: list<string>]: nothing -> int {
-	let r = (do { ^cue eval ...$files } | complete)
+	let r = (do { run-cue eval ...$files } | complete)
 	if $r.exit_code == 0 {
 		print $"  PASS  ($label)"
 		0
@@ -20,7 +22,7 @@ def eval-pass [label: string, files: list<string>]: nothing -> int {
 }
 
 def eval-fail [label: string, files: list<string>]: nothing -> int {
-	let r = (do { ^cue eval ...$files } | complete)
+	let r = (do { run-cue eval ...$files } | complete)
 	if $r.exit_code != 0 {
 		print $"  PASS  ($label) exit=($r.exit_code) as expected"
 		0
@@ -34,7 +36,7 @@ def eval-fail [label: string, files: list<string>]: nothing -> int {
 # `cue eval` tolerates — `cue export` rejects them, and export is what
 # `bayt generate` pass-2 actually runs.
 def export-fail [label: string, files: list<string>]: nothing -> int {
-	let r = (do { ^cue export ...$files } | complete)
+	let r = (do { run-cue export ...$files } | complete)
 	if $r.exit_code != 0 {
 		print $"  PASS  ($label) exit=($r.exit_code) as expected"
 		0
@@ -45,7 +47,7 @@ def export-fail [label: string, files: list<string>]: nothing -> int {
 }
 
 def export-fail-msg [label: string, files: list<string>, msg: string]: nothing -> int {
-	let r = (do { ^cue export ...$files } | complete)
+	let r = (do { run-cue export ...$files } | complete)
 	if $r.exit_code != 0 and ($r.stderr | str contains $msg) {
 		print $"  PASS  ($label)"
 		0
@@ -59,7 +61,7 @@ def export-fail-msg [label: string, files: list<string>, msg: string]: nothing -
 # An interpolation over a field that is not there leaves the value
 # incomplete, which `cue eval` passes; only an export proves it renders.
 def export-pass [label: string, files: list<string>]: nothing -> int {
-	let r = (do { ^cue export ...$files } | complete)
+	let r = (do { run-cue export ...$files } | complete)
 	if $r.exit_code == 0 {
 		print $"  PASS  ($label)"
 		0
@@ -74,7 +76,7 @@ def export-pass [label: string, files: list<string>]: nothing -> int {
 # unrelated break in the fixture keeps a bare eval-fail green while the
 # message regresses to something that locates nothing.
 def eval-fail-msg [label: string, files: list<string>, msg: string]: nothing -> int {
-	let r = (do { ^cue eval ...$files } | complete)
+	let r = (do { run-cue eval ...$files } | complete)
 	if $r.exit_code != 0 and ($r.stderr | str contains $msg) {
 		print $"  PASS  ($label) exit=($r.exit_code) as expected"
 		0
@@ -100,6 +102,8 @@ def main [] {
 	let mise  = ["./stacks/mise/"]
 	let deno  = ["./stacks/deno/"]
 	let cargo = ["./stacks/cargo/"]
+	let npm   = ["./stacks/npm/"]
+	let composer = ["./stacks/composer/"]
 	let neg  = ["./tests/_negative/"]
 	let neg_add = ["./tests/_negative_add/"]
 	let neg_view = ["./tests/_negative_from_view/"]
@@ -113,6 +117,7 @@ def main [] {
 	let neg_then_empty = ["./tests/_negative_then_empty/"]
 	let neg_then_multiline = ["./tests/_negative_then_multiline/"]
 	let neg_unpinned = ["./tests/_negative_unpinned_zypper/"]
+	let neg_composer_scripts = ["./tests/_negative_composer_scripts/"]
 	let neg_unpinned_lock = ["./tests/_negative_unpinned_lock/"]
 	let neg_reserved = ["./tests/_negative_reserved_name/"]
 	let neg_nonascii = ["./tests/_negative_nonascii_scope/"]
@@ -140,11 +145,17 @@ def main [] {
 	print "positive suites"
 	$failed = $failed + (eval-pass "core bayt" $core)
 	$failed = $failed + (export-pass "host probe of an embedded http check" [...$core "-e" "_proc_embedded"])
+	$failed = $failed + (export-pass "multi-copy and multi-cmd render" [...$core "-e" "_d31_render"])
 	$failed = $failed + (eval-pass "stacks/sayt" $sayt)
+	$failed = $failed + (export-pass "sayt.go two-phase render" [...$sayt "-e" "_go1_render"])
 	$failed = $failed + (eval-pass "stacks/go" $go)
 	$failed = $failed + (eval-pass "stacks/mise" $mise)
 	$failed = $failed + (eval-pass "stacks/deno" $deno)
 	$failed = $failed + (eval-pass "stacks/cargo" $cargo)
+	$failed = $failed + (eval-pass "stacks/npm" $npm)
+	$failed = $failed + (eval-pass "stacks/composer" $composer)
+	$failed = $failed + (export-pass "composer install + autoload render" [...$composer "-e" "_c1_render"])
+	$failed = $failed + (export-pass "sayt.npm render" [...$sayt "-e" "_n2_render"])
 	$failed = $failed + (eval-pass "ci `:X:bayt` with `:X:srcs` must pass" $pos_ci_srcs)
 	$failed = $failed + (eval-pass "distros fragment in both positions" $pos_preamble)
 	print "negative suites"
@@ -158,6 +169,7 @@ def main [] {
 	$failed = $failed + (eval-fail "a multi-line `then` entry must fail" $neg_then_multiline)
 	$failed = $failed + (eval-fail "an unpinned zypper package must fail" $neg_unpinned)
 	$failed = $failed + (eval-fail "an unpinned zypper lock entry must fail" $neg_unpinned_lock)
+	$failed = $failed + (eval-fail "a composer install without --no-scripts must fail" $neg_composer_scripts)
 	$failed = $failed + (eval-fail-msg "a target name colliding with a synthetic must fail, naming the key" $neg_reserved "_reservedNames.thing_srcs")
 	$failed = $failed + (eval-fail-msg "a scope outside the tag charset must hit the budget bound, not SliceRunes" $neg_nonascii "out of bound >=18")
 	$failed = $failed + (eval-fail-msg "a peer port the peer does not expose has no host spelling" $neg_undeclared_port "names port admin of crud, which crud does not expose")

@@ -1,9 +1,14 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { evaluateRole } from "../omnishell/interpreter/jessie.js";
 
+// The assertions below state a leaf's world and its event side by side; the
+// leaf itself takes them as XState's one argument.
+// deno-lint-ignore no-explicit-any
+const positional = (leaf: any) => (state: any, event?: any, ...rest: any[]) => leaf({ context: state, event }, ...rest);
+
 const source = Deno.readTextFileSync(new URL("../shell/handlers/referee.js", import.meta.url));
 // deno-lint-ignore no-explicit-any
-const reduce = (await evaluateRole(source, "handler")) as (state: any, action: any) => any;
+const reduce = (positional(await evaluateRole(source, "handler"))) as (state: any, action: any) => any;
 
 Deno.test("referee rejects missing match row", () => {
   assertThrows(() => reduce(null, { type: "START" }), Error);

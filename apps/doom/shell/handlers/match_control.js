@@ -1,8 +1,8 @@
 // Pure Jessie handler for the arena's match controls. START starts a match in
 // warmup and PLAY AGAIN resets one; the engine follows the match row through
 // boot.js's store sync, so the row is all this writes.
-(state, event) => {
-  const match = state.rows?.match?.[0] ?? state.items?.[0];
+({ context, event }) => {
+  const match = context.rows?.match?.[0] ?? context.items?.[0];
   if (!match) throw new Error("match_control: match row is required");
   if (typeof match.id !== "string") {
     throw new TypeError("match_control: match id must be string");

@@ -79,43 +79,43 @@ url = "https://github.com/casey/just/releases/download/1.59.0/just-1.59.0-x86_64
 url_api = "https://api.github.com/repos/casey/just/releases/assets/643131303"
 
 [[tools."github:cue-lang/cue"]]
-version = "0.16.1"
+version = "0.18.0-rc.4"
 backend = "github:cue-lang/cue"
 
 [tools."github:cue-lang/cue"."platforms.linux-arm64"]
-checksum = "sha256:3cc715a9e969f87b93c4fa34cfaef5388b93e96efa20b248e8ad6826abd25a83"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_arm64.tar.gz"
-url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/391635253"
+checksum = "sha256:3ef06173e42984e395c02f6665f6ac640767d5ce3c389f0d9ffb5f5812a3cfbd"
+url = "https://github.com/cue-lang/cue/releases/download/v0.18.0-rc.4/cue_v0.18.0-rc.4_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/735914772"
 
 [tools."github:cue-lang/cue"."platforms.linux-arm64-musl"]
-checksum = "sha256:3cc715a9e969f87b93c4fa34cfaef5388b93e96efa20b248e8ad6826abd25a83"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_arm64.tar.gz"
-url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/391635253"
+checksum = "sha256:3ef06173e42984e395c02f6665f6ac640767d5ce3c389f0d9ffb5f5812a3cfbd"
+url = "https://github.com/cue-lang/cue/releases/download/v0.18.0-rc.4/cue_v0.18.0-rc.4_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/735914772"
 
 [tools."github:cue-lang/cue"."platforms.linux-x64"]
-checksum = "sha256:5d644c1305a2b86504c8dcd2ec829cf5b4999efc2cf51ee375624e0455f774ae"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/391635258"
+checksum = "sha256:08958dff38118e7461e6bf689e329ff547f090217010f5689109fb95eacb7366"
+url = "https://github.com/cue-lang/cue/releases/download/v0.18.0-rc.4/cue_v0.18.0-rc.4_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/735914776"
 
 [tools."github:cue-lang/cue"."platforms.linux-x64-musl"]
-checksum = "sha256:5d644c1305a2b86504c8dcd2ec829cf5b4999efc2cf51ee375624e0455f774ae"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/391635258"
+checksum = "sha256:08958dff38118e7461e6bf689e329ff547f090217010f5689109fb95eacb7366"
+url = "https://github.com/cue-lang/cue/releases/download/v0.18.0-rc.4/cue_v0.18.0-rc.4_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/735914776"
 
 [tools."github:cue-lang/cue"."platforms.macos-arm64"]
-checksum = "sha256:a72b0cddb377c52d1b003bed9a335d893b70cd75a182cd5e3fee8bae30ddb6d6"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/391635257"
+checksum = "sha256:38db5a5fe02bca48f18d664170d4e2f655745e93711b8df30e5e37ed71f04f51"
+url = "https://github.com/cue-lang/cue/releases/download/v0.18.0-rc.4/cue_v0.18.0-rc.4_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/735914775"
 
 [tools."github:cue-lang/cue"."platforms.macos-x64"]
-checksum = "sha256:97b0d78e4c5ee49ff72145fd6ef4f4bab0bb332d55f29660de3fec2af5ec96a9"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_darwin_amd64.tar.gz"
-url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/391635256"
+checksum = "sha256:35ba0bd4c9a2ff4ce67d3f16bb907427ab76785b2dd278f7da9c4a94321d811b"
+url = "https://github.com/cue-lang/cue/releases/download/v0.18.0-rc.4/cue_v0.18.0-rc.4_darwin_amd64.tar.gz"
+url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/735914778"
 
 [tools."github:cue-lang/cue"."platforms.windows-x64"]
-checksum = "sha256:2f24123f458229fcf283db534bd86692ad1074da806defee0f0cc62976c0397c"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_windows_amd64.zip"
-url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/391635255"
+checksum = "sha256:6fdc4794bf45718f5c7b30638c69a947dfa468c82cd09616f1ab246a2af303ae"
+url = "https://github.com/cue-lang/cue/releases/download/v0.18.0-rc.4/cue_v0.18.0-rc.4_windows_amd64.zip"
+url_api = "https://api.github.com/repos/cue-lang/cue/releases/assets/735914777"
 
 [[tools."github:go-task/task"]]
 version = "v3.54.0"
@@ -233,249 +233,3 @@ url_api = "https://api.github.com/repos/nushell/nushell/releases/assets/61003981
 checksum = "sha256:6658c9e61fe42c88326c1caa99e8dc9ad99bec6c0bc353e6ecb7c5d3f79feed7"
 url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/nushell/nushell/releases/assets/610069956"
-
-[[tools."github:ory/hydra"]]
-version = "26.2.0"
-backend = "github:ory/hydra"
-
-[tools."github:ory/hydra"."platforms.linux-arm64"]
-checksum = "sha256:18e73ac632d2081b76fbceb03130803a63bdb9b8e2ecc3f06f4a6e6820cabe26"
-url = "https://github.com/ory/hydra/releases/download/v26.2.0/hydra_26.2.0-linux_sqlite_arm64.tar.gz"
-
-[tools."github:ory/hydra"."platforms.linux-x64"]
-checksum = "sha256:28baf98c6d5da617c905d5ca77826fe863db9f9edab8f72664c69a56bde56b5a"
-url = "https://github.com/ory/hydra/releases/download/v26.2.0/hydra_26.2.0-linux_sqlite_64bit.tar.gz"
-
-[tools."github:ory/hydra"."platforms.macos-arm64"]
-checksum = "sha256:d45f26be758196e66e98dff06a9eaefcd21d719123f74f43a0f1fabcfb71da60"
-url = "https://github.com/ory/hydra/releases/download/v26.2.0/hydra_26.2.0-macOS_sqlite_arm64.tar.gz"
-
-[tools."github:ory/hydra"."platforms.macos-x64"]
-checksum = "sha256:ede453fa15c82cfb23e61b138a0b4d9558127a26ebf51eead97d0c58a7eff422"
-url = "https://github.com/ory/hydra/releases/download/v26.2.0/hydra_26.2.0-macOS_sqlite_64bit.tar.gz"
-
-[tools."github:ory/hydra"."platforms.windows-x64"]
-checksum = "sha256:f76a5e605551a2c89c24ffc189b9f2faba0c1288632d086366e137084f75b815"
-url = "https://github.com/ory/hydra/releases/download/v26.2.0/hydra_26.2.0-windows_sqlite_64bit.zip"
-
-[[tools."http:cue.toml"]]
-version = "0.16.1"
-backend = "http:cue.toml"
-
-[tools."http:cue.toml"."platforms.linux-arm64"]
-checksum = "blake3:6e042cbfd4b5a298424dfdc22d25ea8f735a0bcc7982f7c2333d8c7ddbfb67fd"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_arm64.tar.gz"
-
-[tools."http:cue.toml"."platforms.linux-arm64-musl"]
-checksum = "blake3:6e042cbfd4b5a298424dfdc22d25ea8f735a0bcc7982f7c2333d8c7ddbfb67fd"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_arm64.tar.gz"
-
-[tools."http:cue.toml"."platforms.linux-x64"]
-checksum = "blake3:77b53047de2b6fa1be826fd16929312b9ea85d916a9dfe0db55575d7a10460b3"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_amd64.tar.gz"
-
-[tools."http:cue.toml"."platforms.linux-x64-musl"]
-checksum = "blake3:77b53047de2b6fa1be826fd16929312b9ea85d916a9dfe0db55575d7a10460b3"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_amd64.tar.gz"
-
-[tools."http:cue.toml"."platforms.macos-arm64"]
-checksum = "blake3:2b6f5f61ca1520da8210cdff50bebf8ca49c160bb5374b53e7f50900349594bb"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_darwin_arm64.tar.gz"
-
-[tools."http:cue.toml"."platforms.macos-x64"]
-checksum = "blake3:9875a11616f208732afff23b6f7808b5b0fb07dd4c77d507ec4c4d9f5685db64"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_darwin_amd64.tar.gz"
-
-[tools."http:cue.toml"."platforms.windows-x64"]
-checksum = "blake3:4243c99802d6fdb58c60d572f26d77fa7ef4980cf290001a84558e50f605e3b4"
-url = "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_windows_amd64.zip"
-
-[[tools."http:curl.toml"]]
-version = "8.23.0"
-backend = "http:curl.toml"
-
-[tools."http:curl.toml"."platforms.linux-arm64"]
-checksum = "sha256:4db6c9b5e7f61f6a8cfa7f83e8c24e54259334bbb46743f6207ffb67bc0d1c3a"
-url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-linux-aarch64-musl-8.23.0.tar.xz"
-
-[tools."http:curl.toml"."platforms.linux-arm64-musl"]
-checksum = "sha256:4db6c9b5e7f61f6a8cfa7f83e8c24e54259334bbb46743f6207ffb67bc0d1c3a"
-url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-linux-aarch64-musl-8.23.0.tar.xz"
-
-[tools."http:curl.toml"."platforms.linux-x64"]
-checksum = "sha256:049f982cb7db34e745cc0be0bdce2246b51fbf7ef17fc95ce37980f711ca91bb"
-url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-linux-x86_64-musl-8.23.0.tar.xz"
-
-[tools."http:curl.toml"."platforms.linux-x64-musl"]
-checksum = "sha256:049f982cb7db34e745cc0be0bdce2246b51fbf7ef17fc95ce37980f711ca91bb"
-url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-linux-x86_64-musl-8.23.0.tar.xz"
-
-[tools."http:curl.toml"."platforms.macos-arm64"]
-checksum = "sha256:d4e58f2ca3ca88970888dd513243da2336339e4021aaccd1041566564d278f01"
-url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-macos-arm64-8.23.0.tar.xz"
-
-[tools."http:curl.toml"."platforms.macos-x64"]
-checksum = "sha256:9021e95516ca1835560cac46718d6c957d1f4b5fae48a56cd9d267d6663169c0"
-url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-macos-x86_64-8.23.0.tar.xz"
-
-[tools."http:curl.toml"."platforms.windows-x64"]
-checksum = "sha256:6fbaf750e89b143068dcef9a0a6f2c84fafbf03d652fc7476ff443e88a6deda5"
-url = "https://github.com/stunnel/static-curl/releases/download/8.23.0/curl-windows-x86_64-8.23.0.tar.xz"
-
-[[tools."http:httpcheck.toml"]]
-version = "1.4.0"
-backend = "http:httpcheck.toml"
-
-[tools."http:httpcheck.toml"."platforms.linux-arm64"]
-checksum = "sha256:5994f3e13c9b0a5be72587efd4649b5c90fcd90a3ae1b35ff8e5549222ba3e85"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/linux-arm64-v8.tar.gz"
-
-[tools."http:httpcheck.toml"."platforms.linux-arm64-musl"]
-checksum = "sha256:5994f3e13c9b0a5be72587efd4649b5c90fcd90a3ae1b35ff8e5549222ba3e85"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/linux-arm64-v8.tar.gz"
-
-[tools."http:httpcheck.toml"."platforms.linux-x64"]
-checksum = "sha256:f94dc1606045a8992bae774cc94f81ba7c704032f9b960007f5d796b872a63eb"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/linux-amd64.tar.gz"
-
-[tools."http:httpcheck.toml"."platforms.linux-x64-musl"]
-checksum = "sha256:f94dc1606045a8992bae774cc94f81ba7c704032f9b960007f5d796b872a63eb"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/linux-amd64.tar.gz"
-
-[tools."http:httpcheck.toml"."platforms.macos-arm64"]
-checksum = "blake3:c63cb468bad56fd3efbf5efd00a7aef20033b7e7565019523ee27ac3b6eabd21"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/macos-arm64.tar.gz"
-
-[tools."http:httpcheck.toml"."platforms.macos-x64"]
-checksum = "sha256:941e4aca58de95848358a0f75624ee673e8180453aff083b3aea24013a5ed630"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/macos-x86-64.tar.gz"
-
-[[tools."http:nu.musl.toml"]]
-version = "0.116.1"
-backend = "http:nu.musl.toml"
-
-[tools."http:nu.musl.toml".options]
-strip_components = "1"
-
-[tools."http:nu.musl.toml"."platforms.linux-arm64"]
-checksum = "sha256:b103770c00bf322c409caa007aad44882d1cc5d24d82f719f877812ac33d6ad1"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-aarch64-unknown-linux-musl.tar.gz"
-
-[tools."http:nu.musl.toml"."platforms.linux-arm64-musl"]
-checksum = "sha256:b103770c00bf322c409caa007aad44882d1cc5d24d82f719f877812ac33d6ad1"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-aarch64-unknown-linux-musl.tar.gz"
-
-[tools."http:nu.musl.toml"."platforms.linux-x64"]
-checksum = "sha256:13ef75df08df30f8d7b031df538e82a52c6e74ce839b1a9091c3a3f1969c3742"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-unknown-linux-musl.tar.gz"
-
-[tools."http:nu.musl.toml"."platforms.linux-x64-musl"]
-checksum = "sha256:13ef75df08df30f8d7b031df538e82a52c6e74ce839b1a9091c3a3f1969c3742"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-unknown-linux-musl.tar.gz"
-
-[tools."http:nu.musl.toml"."platforms.macos-arm64"]
-checksum = "sha256:302fb3dfc5d44e7fe0d5b8227be8e75b4c3956ca8d4804234e5c68fbdd3e4917"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-aarch64-apple-darwin.tar.gz"
-
-[tools."http:nu.musl.toml"."platforms.macos-x64"]
-checksum = "sha256:44306f0766f2be0e763d0c7a6a6774537589a335797a199d8e5b473d766ec6bd"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-apple-darwin.tar.gz"
-
-[tools."http:nu.musl.toml"."platforms.windows-x64"]
-checksum = "sha256:6658c9e61fe42c88326c1caa99e8dc9ad99bec6c0bc353e6ecb7c5d3f79feed7"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-pc-windows-msvc.zip"
-
-[[tools."http:nu.toml"]]
-version = "0.116.1"
-backend = "http:nu.toml"
-
-[tools."http:nu.toml".options]
-strip_components = "1"
-
-[tools."http:nu.toml"."platforms.linux-arm64"]
-checksum = "sha256:e7bbb1639253fb83e2391600b957ba3e918f04a2c81850e9f30a68cb1ef20ef8"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-aarch64-unknown-linux-gnu.tar.gz"
-
-[tools."http:nu.toml"."platforms.linux-arm64-musl"]
-checksum = "sha256:e7bbb1639253fb83e2391600b957ba3e918f04a2c81850e9f30a68cb1ef20ef8"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-aarch64-unknown-linux-gnu.tar.gz"
-
-[tools."http:nu.toml"."platforms.linux-x64"]
-checksum = "sha256:d6d8ace4be491ed8abba4026e73b60c0470b4671d7039307e7d772282ef863da"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-unknown-linux-gnu.tar.gz"
-
-[tools."http:nu.toml"."platforms.linux-x64-musl"]
-checksum = "sha256:d6d8ace4be491ed8abba4026e73b60c0470b4671d7039307e7d772282ef863da"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-unknown-linux-gnu.tar.gz"
-
-[tools."http:nu.toml"."platforms.macos-arm64"]
-checksum = "sha256:302fb3dfc5d44e7fe0d5b8227be8e75b4c3956ca8d4804234e5c68fbdd3e4917"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-aarch64-apple-darwin.tar.gz"
-
-[tools."http:nu.toml"."platforms.macos-x64"]
-checksum = "sha256:44306f0766f2be0e763d0c7a6a6774537589a335797a199d8e5b473d766ec6bd"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-apple-darwin.tar.gz"
-
-[tools."http:nu.toml"."platforms.windows-x64"]
-checksum = "sha256:6658c9e61fe42c88326c1caa99e8dc9ad99bec6c0bc353e6ecb7c5d3f79feed7"
-url = "https://github.com/nushell/nushell/releases/download/0.116.1/nu-0.116.1-x86_64-pc-windows-msvc.zip"
-
-[[tools."http:oras.toml"]]
-version = "1.3.5"
-backend = "http:oras.toml"
-
-[tools."http:oras.toml"."platforms.linux-arm64"]
-checksum = "sha256:d5d4e5afd5c0781c93eda5ea1976e654e1fdee202c1ddaeaf5f91a8c4fd67d46"
-url = "https://github.com/oras-project/oras/releases/download/v1.3.5/oras_1.3.5_linux_arm64.tar.gz"
-
-[tools."http:oras.toml"."platforms.linux-arm64-musl"]
-checksum = "sha256:d5d4e5afd5c0781c93eda5ea1976e654e1fdee202c1ddaeaf5f91a8c4fd67d46"
-url = "https://github.com/oras-project/oras/releases/download/v1.3.5/oras_1.3.5_linux_arm64.tar.gz"
-
-[tools."http:oras.toml"."platforms.linux-x64"]
-checksum = "sha256:f48a73ea6d026a862c3919fc773da9a8c86fc259c2c737d5baed3b8b9614ad22"
-url = "https://github.com/oras-project/oras/releases/download/v1.3.5/oras_1.3.5_linux_amd64.tar.gz"
-
-[tools."http:oras.toml"."platforms.linux-x64-musl"]
-checksum = "sha256:f48a73ea6d026a862c3919fc773da9a8c86fc259c2c737d5baed3b8b9614ad22"
-url = "https://github.com/oras-project/oras/releases/download/v1.3.5/oras_1.3.5_linux_amd64.tar.gz"
-
-[tools."http:oras.toml"."platforms.macos-arm64"]
-checksum = "sha256:bd164bc9d08e9c5edb918f76e0cf92ecc61f6a50a4a6709b1cb06cf6721b4610"
-url = "https://github.com/oras-project/oras/releases/download/v1.3.5/oras_1.3.5_darwin_arm64.tar.gz"
-
-[tools."http:oras.toml"."platforms.macos-x64"]
-checksum = "sha256:0e8a0b4b0bb7179442097152f8b49d7cb22d15f023371a2d30b40914d9ba3ac3"
-url = "https://github.com/oras-project/oras/releases/download/v1.3.5/oras_1.3.5_darwin_amd64.tar.gz"
-
-[tools."http:oras.toml"."platforms.windows-x64"]
-checksum = "sha256:3e72bf9f4361625d68dc96a10f485c4bf9973f9f9b170652ab78220a0bc7092c"
-url = "https://github.com/oras-project/oras/releases/download/v1.3.5/oras_1.3.5_windows_amd64.zip"
-
-[[tools."http:portcheck.toml"]]
-version = "1.4.0"
-backend = "http:portcheck.toml"
-
-[tools."http:portcheck.toml"."platforms.linux-arm64"]
-checksum = "sha256:5994f3e13c9b0a5be72587efd4649b5c90fcd90a3ae1b35ff8e5549222ba3e85"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/linux-arm64-v8.tar.gz"
-
-[tools."http:portcheck.toml"."platforms.linux-arm64-musl"]
-checksum = "sha256:5994f3e13c9b0a5be72587efd4649b5c90fcd90a3ae1b35ff8e5549222ba3e85"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/linux-arm64-v8.tar.gz"
-
-[tools."http:portcheck.toml"."platforms.linux-x64"]
-checksum = "sha256:f94dc1606045a8992bae774cc94f81ba7c704032f9b960007f5d796b872a63eb"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/linux-amd64.tar.gz"
-
-[tools."http:portcheck.toml"."platforms.linux-x64-musl"]
-checksum = "sha256:f94dc1606045a8992bae774cc94f81ba7c704032f9b960007f5d796b872a63eb"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/linux-amd64.tar.gz"
-
-[tools."http:portcheck.toml"."platforms.macos-arm64"]
-checksum = "blake3:c63cb468bad56fd3efbf5efd00a7aef20033b7e7565019523ee27ac3b6eabd21"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/macos-arm64.tar.gz"
-
-[tools."http:portcheck.toml"."platforms.macos-x64"]
-checksum = "sha256:941e4aca58de95848358a0f75624ee673e8180453aff083b3aea24013a5ed630"
-url = "https://github.com/tarampampam/microcheck/releases/download/v1.4.0/macos-x86-64.tar.gz"

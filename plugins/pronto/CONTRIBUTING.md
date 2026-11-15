@@ -64,11 +64,12 @@ bonisoft3/pronto and tags it there. The release PR carries:
   sayt lines, and the `sayt`, `omnishell` and `mecha` pins in
   `.mirror/cue.mod/module.cue`.
 - **The runtime images, by digest**: `published: runtime:` in
-  `terminals/omnishell.cue` and the eight `bonitao/mecha-*` in
+  `terminals/omnishell.cue` and the ten `bonitao/mecha-*` in
   `clusters/mecha.cue`, re-pinned with
   `docker buildx imagetools inspect bonitao/<image>:<version>` after an
-  omnishell or mecha release. No check ties them to `cue.mod`: stale pins
-  shipped v0.13.0 a caddy without the cortex interpreter.
+  omnishell or mecha release. `bootstrap_test.ts` holds them to the tool and
+  `cue.mod` pins: stale pins shipped v0.13.0 a caddy without the cortex
+  interpreter.
 - **The idioms regenerated**: their generated `.github/workflows/cd.yml`
   pins sayt.
 

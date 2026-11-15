@@ -28,7 +28,7 @@ import { addressEdgeAssets, edgeRoutingRules, releaseAddresses } from './edge-ad
 import { builtRelease, holdIceServers } from './edge-ice.ts'
 import { ASSET_CACHE_RULE, seedBlobFiles, writeEdgeAssets as writeSeedAssets } from './edge-blobs.ts'
 import { databaseScript, writeEdgeSsr } from './edge-ssr.ts'
-import { realmDocumentsOf } from './edge-templates.ts'
+import { realmDocumentsOf, subdomainRealmsOf } from './edge-templates.ts'
 import { type Reducers, renderMachines } from './edge-machines.ts'
 import { computationPackages } from './compute.ts'
 import { writeEdgeCompute } from './edge-compute.ts'
@@ -83,7 +83,7 @@ const shell = JSON.parse(await Deno.readTextFile(path.join(app, 'shell/shell.jso
   schema?: Record<string, { durability?: string }>
   migrations: string[]
   routes?: { files: { html: string } }[]
-  units?: Record<string, { role?: string; isolation?: string; src?: string }>
+  units?: Record<string, { role?: string; isolation?: string; subdomain?: string; src?: string }>
   presenter?: { policy: string; scripted: string[] }
 }
 const clustered = shell.migrations.length > 0
@@ -100,9 +100,9 @@ if (hatches.length && !clustered) fail('edge hatches run in the cluster, which a
 const drains = clustered ? await clusterDrains(path.join(app, '.pronto/cluster.json')) : []
 
 // Asked before anything is cleared: a refused release leaves the last one's output standing.
-const seedOut = await new Deno.Command('cue', { args: ['export', '.', '-e', '{assets: *code.capabilities.seedAssets | null, seedBlobs: *code.capabilities.seedBlobs | null, blobs: *code.capabilities.blobs | false, images: *code.capabilities.edgeImages | null}', '--out', 'json'], cwd: app, stdout: 'piped', stderr: 'inherit' }).output()
+const seedOut = await new Deno.Command('cue', { args: ['export', '.', '-e', '{assets: *code.capabilities.seedAssets | null, seedBlobs: *code.capabilities.seedBlobs | null, blobs: *code.capabilities.blobs | false, images: *code.capabilities.edgeImages | null, signIn: *cluster.capabilities.signIn | {}, providerRelease: *code.capabilities.auth.provider | {}}', '--out', 'json'], cwd: app, stdout: 'piped', stderr: 'inherit' }).output()
 if (!seedOut.success) fail('cue export of code.capabilities failed')
-const { assets, seedBlobs, blobs, images } = JSON.parse(new TextDecoder().decode(seedOut.stdout)) as { assets: { manifest: string; origin: string } | null; seedBlobs: { dir: string } | null; blobs: boolean; images: { sourceBucket?: string; plan: 'free' | 'paid' } | null }
+const { assets, seedBlobs, blobs, images, signIn, providerRelease } = JSON.parse(new TextDecoder().decode(seedOut.stdout)) as { assets: { manifest: string; origin: string } | null; seedBlobs: { dir: string } | null; blobs: boolean; images: { sourceBucket?: string; plan: 'free' | 'paid' } | null; signIn: Record<string, { client?: string; issuer?: string; scope?: string; params?: string }>; providerRelease: Record<string, { releaseIssuer?: string }> }
 const routeScreens: Record<string, string> = {}
 for (const { files } of shell.routes ?? []) routeScreens[files.html] = await Deno.readTextFile(path.join(app, files.html))
 const imagePlan = imagePlanRefusal(routeScreens, images)
@@ -141,7 +141,7 @@ if (!statics.success) fail('cue export of public assets failed')
 const { statics: terminalStatics, clusterStatics } = JSON.parse(new TextDecoder().decode(statics.stdout)) as { statics: StaticAsset[]; clusterStatics: StaticAsset[] }
 await writeEdgeAssets(app, omnishell, publicDir, [...terminalStatics, ...clusterStatics])
 await applyHatchAttributes(publicDir, hatches)
-const hints = await addressEdgeAssets(addresses, publicDir, { previous: retainedFrom, iceServers })
+const hints = await addressEdgeAssets(addresses, publicDir, { previous: retainedFrom, iceServers, domain: domain || undefined })
 if (tempRetained) await Deno.remove(tempRetained, { recursive: true }).catch(() => {})
 await holdIceServers(builtRelease(publicDir), iceServers, publicDir)
 await Deno.writeTextFile(path.join(out, 'src/hints.json'), JSON.stringify(hints))
@@ -151,6 +151,30 @@ const blobVars: Record<string, string> = blobs ? {
   BLOB_URL: images ? '/img/insecure/plain/s3://mecha-objects/' : '/blobs/mecha-objects/',
   ...(images?.sourceBucket ? { IMAGE_SOURCE_BUCKET: images.sourceBucket } : {}),
 } : {}
+const authProviders = Object.keys(signIn)
+const authVars: Record<string, string> = authProviders.length ? {
+  OIDC_PROVIDERS: authProviders.join(','),
+  ...Object.fromEntries(authProviders.flatMap((p) => {
+    const upper = p.toUpperCase()
+    const cfg = signIn[p] ?? {}
+    const localIssuer = cfg.issuer === 'http://localhost:28443'
+    const entries: [string, string][] = []
+    const issuer = Deno.env.get(`OIDC_${upper}_ISSUER`) || (localIssuer ? providerRelease[p]?.releaseIssuer : cfg.issuer)
+    if (issuer) entries.push([`OIDC_${upper}_ISSUER`, issuer])
+    const client = Deno.env.get(`OIDC_${upper}_CLIENT_ID`) || (!localIssuer || issuer ? cfg.client : undefined)
+    if (client) entries.push([`OIDC_${upper}_CLIENT_ID`, client])
+    const scope = Deno.env.get(`OIDC_${upper}_SCOPE`) || (!localIssuer || issuer ? cfg.scope : undefined)
+    if (scope) entries.push([`OIDC_${upper}_SCOPE`, scope])
+    const params = Deno.env.get(`OIDC_${upper}_AUTHORIZE_PARAMS`) || (!localIssuer || issuer ? cfg.params : undefined)
+    if (params) entries.push([`OIDC_${upper}_AUTHORIZE_PARAMS`, params])
+    return entries
+  })),
+} : {}
+const workerVars: Record<string, string> = {
+  ...blobVars,
+  ...authVars,
+  ...(domain ? { ORIGIN: `https://${domain}` } : {}),
+}
 const blobBindings = blobs ? {
   r2_buckets: [{ binding: 'BLOB_OBJECTS', bucket_name: `${name}-mecha-objects` }],
   vars: blobVars,
@@ -172,20 +196,24 @@ if (seedBlobs) {
 
 // A realm's document, served at its own address ([[edge-templates.ts]]).
 const realmDocuments = realmDocumentsOf(shell)
+const subdomainRealms = subdomainRealmsOf(shell)
+const subdomainArgs = Object.keys(subdomainRealms).length ? `, ${JSON.stringify(subdomainRealms)}` : ''
+const subdomains = [...new Set(Object.values(shell.units ?? {}).flatMap((unit) => unit.isolation === 'realm' && unit.subdomain ? [unit.subdomain] : []))].sort()
+const customDomains = domain ? [domain, ...subdomains.map((sub) => `${sub}.${domain}`)].map((pattern) => ({ pattern, custom_domain: true })) : undefined
 if (!clustered) {
   const worker = path.relative(path.join(out, 'src'), path.join(here, 'edge-static.ts')).replaceAll('\\', '/')
   const staticWorker = worker.startsWith('.') ? worker : `./${worker}`
   const imageWorker = path.relative(path.join(out, 'src'), path.join(here, 'edge-images.ts')).replaceAll('\\', '/')
   const fragment = path.relative(path.join(out, 'src'), path.join(omnishell, 'interpreter/fragment.js')).replaceAll('\\', '/')
   await Deno.writeTextFile(path.join(out, 'src/index.ts'), blobs
-    ? `import { staticWorker as serveStatic } from '${staticWorker}'\nconst staticWorker = serveStatic(${JSON.stringify(realmDocuments)})\nimport { edgeImage } from '${imageWorker.startsWith('.') ? imageWorker : `./${imageWorker}`}'\nimport { IMAGE_WIDTHS } from '${fragment.startsWith('.') ? fragment : `./${fragment}`}'\nexport default { async fetch(req, env, ctx) { return await edgeImage(req, env, caches.default, ctx, IMAGE_WIDTHS) ?? staticWorker.fetch(req, env) } }\n`
-    : `import { staticWorker } from '${staticWorker}'\nexport default staticWorker(${JSON.stringify(realmDocuments)})\n`)
+    ? `import { staticWorker as serveStatic } from '${staticWorker}'\nconst staticWorker = serveStatic(${JSON.stringify(realmDocuments)}${subdomainArgs})\nimport { edgeImage } from '${imageWorker.startsWith('.') ? imageWorker : `./${imageWorker}`}'\nimport { IMAGE_WIDTHS } from '${fragment.startsWith('.') ? fragment : `./${fragment}`}'\nexport default { async fetch(req, env, ctx) { return await edgeImage(req, env, caches.default, ctx, IMAGE_WIDTHS) ?? staticWorker.fetch(req, env) } }\n`
+    : `import { staticWorker } from '${staticWorker}'\nexport default staticWorker(${JSON.stringify(realmDocuments)}${subdomainArgs})\n`)
   await Deno.writeTextFile(path.join(out, 'wrangler.jsonc'), JSON.stringify({
     name, main: 'src/index.ts', compatibility_date: '2026-09-01',
     assets: { directory: './public', binding: 'ASSETS', run_worker_first: await edgeRoutingRules(publicDir), html_handling: 'drop-trailing-slash', not_found_handling: 'none' },
     observability: { enabled: true },
     ...blobBindings,
-    ...(domain ? { routes: [{ pattern: domain, custom_domain: true }] } : { workers_dev: true }),
+    ...(customDomains ? { routes: customDomains } : { workers_dev: true }),
   }, null, 2) + '\n')
   console.error(`edge: ${out}`)
   Deno.exit(0)
@@ -295,7 +323,7 @@ export const Cluster = edgeObject({
 export default {
   scheduled: edgeWorker.scheduled,
   async fetch(req, env, ctx) {
-    env = { ...env, ASSETS: originAssets(env.ASSETS, ${JSON.stringify(realmDocuments)}) }
+    env = { ...env, ASSETS: originAssets(env.ASSETS, ${JSON.stringify(realmDocuments)}${subdomainArgs}) }
     if (${JSON.stringify(hatches.map(h => h.edge.route))}.some(route => new URL(req.url).pathname === route || new URL(req.url).pathname.startsWith(route + '/'))) return env.CLUSTER.get(env.CLUSTER.idFromName('cluster')).fetch(req)
 ${blobs ? '    const image = await edgeImage(req, env, caches.default, ctx, IMAGE_WIDTHS)\n    if (image) return image\n' : ''}
 ${shell.presenter ? `    // A presenter's module import of this origin is answered by a static
@@ -356,6 +384,7 @@ ${shell.presenter ? `    // A presenter's module import of this origin is answer
     }
     const response = await edgeWorker.fetch(req, env, ctx)
     if (req.method !== 'GET' || response.status !== 200 ||
+        /^\\/(?:_immutable-|(?:shell|omnishell|messages|docs)\\/)/.test(url.pathname) ||
         !(response.headers.get('content-type') ?? '').includes('text/html') ||
         !(req.headers.get('sec-fetch-mode') === 'navigate' || (req.headers.get('accept') ?? '').includes('text/html'))) return response
     const result = new Response(response.body, response)
@@ -383,9 +412,9 @@ await Deno.writeTextFile(path.join(out, 'wrangler.jsonc'), JSON.stringify({
   observability: { enabled: true },
   ...blobBindings,
   // A handler's sink.origin: the release's domain, never the host a request came by.
-  ...(domain ? { vars: { ...blobVars, ORIGIN: `https://${domain}` } } : {}),
+  ...(Object.keys(workerVars).length ? { vars: workerVars } : {}),
   ...(pokes ? { triggers: { crons: [POKE_CRON] } } : {}),
-  ...(domain ? { routes: [{ pattern: domain, custom_domain: true }] } : { workers_dev: true }),
+  ...(customDomains ? { routes: customDomains } : { workers_dev: true }),
   rules: [
     { type: 'CompiledWasm', globs: ['**/*.wasm'], fallthrough: false },
     { type: 'Data', globs: ['**/*.data', '**/*.tgz'], fallthrough: false },

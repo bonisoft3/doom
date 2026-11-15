@@ -22,7 +22,7 @@ check_and_install() {
 	}
 }
 
-mise_version=v2026.8.11
+mise_version=v2026.11.8
 mise_install_path="$HOME/.local/bin/mise"
 
 # Each step returns its failure rather than exiting: sourced, an exit would

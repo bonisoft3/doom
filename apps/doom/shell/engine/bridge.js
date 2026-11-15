@@ -184,7 +184,7 @@ export function createDoomBridge({
     try {
       for (const killer of killers) {
         if (stagedMatch.status === "over") break;
-        const nextMatch = referee(stagedMatch, { type: "FRAG", killer });
+        const nextMatch = referee({ context: stagedMatch, event: { type: "FRAG", killer } });
         stagedMatch = { ...stagedMatch, ...nextMatch };
         const fragNum = fragCounter + frags.length + 1;
         const feedEntry = world.feed?.[0];
@@ -402,7 +402,7 @@ export function createDoomBridge({
           await pending;
           if (disposed) throw new BridgeDisposedError();
           if (failure) throw failure;
-          const nextMatch = referee(matchState, { type: "START" });
+          const nextMatch = referee({ context: matchState, event: { type: "START" } });
           pending = pending
             .then(async () => {
               await store.write("match", [{ key: matchState.id, row: nextMatch }], handleRefused);
@@ -432,7 +432,7 @@ export function createDoomBridge({
         currentSkill = options.skill;
       }
       if (options.mapName) currentMapName = options.mapName;
-      const nextMatch = referee(matchState, { type: "RESET", frag_limit: fragLimit });
+      const nextMatch = referee({ context: matchState, event: { type: "RESET", frag_limit: fragLimit } });
       const nextPlayer = { ...DEFAULT_PLAYER, id: playerState.id, handle: playerState.handle };
       const resetOptions = { fragLimit, mapName: currentMapName, skill: currentSkill, phase: options.phase ?? "active" };
       engine.initState(seed, resetOptions);

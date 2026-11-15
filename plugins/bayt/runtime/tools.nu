@@ -25,14 +25,22 @@ def stub-path [name: string]: nothing -> path {
 	if ((libc-flavor) == "musl") and ($musl | path exists) { $musl } else { $base }
 }
 
+# The stubs' lock sits beside them, under mise.toml; mise reads a lock only
+# from a trusted config.
+def --wrapped run-stub [name: string, ...args] {
+	let input = $in
+	let trusted = ([$bayt_root] ++ ($env.MISE_TRUSTED_CONFIG_PATHS? | default "" | split row (char esep) | where $it != "")) | uniq | str join (char esep)
+	with-env {MISE_TRUSTED_CONFIG_PATHS: $trusted} { $input | ^mise tool-stub (stub-path $name) ...$args }
+}
+
 export def --wrapped run-cue [...args] {
 	let input = $in
-	with-env { MISE_LOCKED: "0" } { $input | ^mise tool-stub (stub-path "cue") ...$args }
+	$input | run-stub "cue" ...$args
 }
 
 export def --wrapped run-nu [...args] {
 	let input = $in
-	with-env { MISE_LOCKED: "0" } { $input | ^mise tool-stub (stub-path "nu") ...$args }
+	$input | run-stub "nu" ...$args
 }
 
 # The static musl curl binary carries no compiled-in host CA path and fails if
@@ -40,17 +48,17 @@ export def --wrapped run-nu [...args] {
 export def --wrapped run-curl [...args] {
 	let input = $in
 	let ca = (["/etc/ssl/certs/ca-certificates.crt" "/var/lib/ca-certificates/ca-bundle.pem" "/etc/ssl/ca-bundle.pem" "/etc/ssl/cert.pem"] | where {|p| $p | path exists } | get -o 0 | default "")
-	mut env_map = { MISE_LOCKED: "0", OPENSSL_CONF: ($env.OPENSSL_CONF? | default "/dev/null") }
+	mut env_map = { OPENSSL_CONF: ($env.OPENSSL_CONF? | default "/dev/null") }
 	if ($ca | is-not-empty) {
 		if (($env.CURL_CA_BUNDLE? | default "") == "") { $env_map = ($env_map | insert CURL_CA_BUNDLE $ca) }
 		if (($env.SSL_CERT_FILE? | default "") == "") { $env_map = ($env_map | insert SSL_CERT_FILE $ca) }
 	}
-	with-env $env_map { $input | ^mise tool-stub (stub-path "curl") ...$args }
+	with-env $env_map { $input | run-stub "curl" ...$args }
 }
 
 export def --wrapped run-oras [...args] {
 	let input = $in
-	with-env { MISE_LOCKED: "0" } { $input | ^mise tool-stub (stub-path "oras") ...$args }
+	$input | run-stub "oras" ...$args
 }
 
 # The checkers the healthcheck templates copy into images, for host probes.
@@ -93,12 +101,12 @@ export def --wrapped run-microcheck [checker: string, ...args] {
 	}
 	let input = $in
 	if ("--help" in $args) or ("-h" in $args) {
-		with-env { MISE_LOCKED: "0" } { $input | ^mise tool-stub (stub-path $checker) ...$args }
+		$input | run-stub $checker ...$args
 		return
 	}
 	mut last_err = ""
 	for _ in 1..10 {
-		let res = (with-env { MISE_LOCKED: "0" } { do { $input | ^mise tool-stub (stub-path $checker) ...$args } | complete })
+		let res = (do { $input | run-stub $checker ...$args } | complete)
 		if $res.exit_code == 0 { return }
 		$last_err = ($res.stderr | str trim)
 		sleep 50ms

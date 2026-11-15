@@ -5,9 +5,15 @@ import { doomKineticEngine } from "../shell/engine/simulation.js";
 import { facingLine, level } from "./engine_fixtures.ts";
 import { evaluateRole } from "../omnishell/interpreter/jessie.js";
 
+// The assertions below state a leaf's world and its event side by side; the
+// leaf itself takes them as XState's one argument.
+// deno-lint-ignore no-explicit-any
+
 const refereeSource = Deno.readTextFileSync(new URL("../shell/handlers/referee.js", import.meta.url));
 // deno-lint-ignore no-explicit-any
-const referee = (await evaluateRole(refereeSource, "handler")) as (state: any, action: any) => any;
+// The leaf as boot.js hands it to the bridge: unwrapped, so the bridge's own
+// calls are the ones under test.
+const referee = (await evaluateRole(refereeSource, "handler")) as (step: { context: any; event: any }) => any;
 const defaultOnFatal = (_err: any) => {};
 
 // Kills, a death and stat changes on command, so these tests exercise the
@@ -650,12 +656,12 @@ Deno.test("renderer: render3D enforces fail-loud invariant on invalid inputs", (
 
 Deno.test("bridge: rejected step in onStep with staged milestone does not leak side-effects to store or matchState", async () => {
   const store = createMockStore();
-  const customReferee = (m: any, a: any) => {
+  const customReferee = ({ context: m, event: a }: { context: any; event: any }) => {
     if (a.type === "START") return { ...m, status: "active" };
     if (a.type === "FRAG") {
       return { ...m, frags_us: 99 };
     }
-    return referee(m, a);
+    return referee({ context: m, event: a });
   };
   let fatalError: any = null;
   const bridge = createDoomBridge({ engine: scripted,

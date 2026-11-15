@@ -1,6 +1,6 @@
 // Match referee reducer written in pure Jessie (SES Compartment).
-(match, action) => {
-  if (!match || typeof match !== "object") {
+({ context, event: action }) => {
+  if (!context || typeof context !== "object") {
     throw new Error("referee: match row object is required");
   }
   if (!action || typeof action.type !== "string") {
@@ -16,35 +16,35 @@
 
   switch (actionType) {
     case "START": {
-      if (match.status !== "warmup") {
-        throw new Error(`referee: cannot START from status ${match.status}`);
+      if (context.status !== "warmup") {
+        throw new Error(`referee: cannot START from status ${context.status}`);
       }
       return {
-        ...match,
+        ...context,
         status: "active"
       };
     }
 
     case "FRAG": {
-      if (match.status !== "active") {
-        throw new Error(`referee: cannot FRAG from status ${match.status}`);
+      if (context.status !== "active") {
+        throw new Error(`referee: cannot FRAG from status ${context.status}`);
       }
       if (action.killer !== "us" && action.killer !== "them") {
         throw new RangeError(`referee: killer must be 'us' or 'them', got ${action.killer}`);
       }
 
       const isUs = action.killer === "us";
-      const nextUs = isUs ? match.frags_us + 1 : match.frags_us;
-      const nextThem = !isUs ? match.frags_them + 1 : match.frags_them;
-      const isCampaign = match.mode === "campaign";
-      const limit = match.frag_limit;
+      const nextUs = isUs ? context.frags_us + 1 : context.frags_us;
+      const nextThem = !isUs ? context.frags_them + 1 : context.frags_them;
+      const isCampaign = context.mode === "campaign";
+      const limit = context.frag_limit;
       if (!Number.isInteger(limit) || limit <= 0) {
         throw new RangeError(`referee: invalid frag_limit ${limit}`);
       }
       const isOver = isCampaign ? !isUs : (nextUs >= limit || nextThem >= limit);
 
       return {
-        ...match,
+        ...context,
         frags_us: nextUs,
         frags_them: nextThem,
         status: isOver ? "over" : "active",
@@ -53,12 +53,12 @@
     }
 
     case "RESET": {
-      const limit = action.frag_limit ?? match.frag_limit;
+      const limit = action.frag_limit ?? context.frag_limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
         throw new RangeError(`referee: invalid frag_limit ${limit}`);
       }
       return {
-        ...match,
+        ...context,
         frags_us: 0,
         frags_them: 0,
         frag_limit: limit,

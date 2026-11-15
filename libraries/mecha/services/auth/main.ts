@@ -108,7 +108,8 @@ export async function migrate(): Promise<void> {
     await tx`SELECT pg_advisory_xact_lock(hashtext('mecha auth: migrate'))`;
     await tx.unsafe(prepareAuthTables(["webauthn_credential", "identity_link"]));
     await tx`ALTER TABLE mecha_auth.identity_link ADD COLUMN IF NOT EXISTS issuer text,
-      ADD COLUMN IF NOT EXISTS name text, ADD COLUMN IF NOT EXISTS picture text`;
+      ADD COLUMN IF NOT EXISTS name text, ADD COLUMN IF NOT EXISTS picture text,
+      ADD COLUMN IF NOT EXISTS email text`;
     // A legacy provider label may have named any issuer. Its owner must supply
     // that issuer before these accounts can safely accept another sign-in.
     const [legacy] = await tx`SELECT EXISTS (SELECT 1 FROM mecha_auth.identity_link WHERE issuer IS NULL) AS unassigned`;
@@ -135,12 +136,19 @@ export const verifyJwt = (token: string) => verify(JWT_SECRET, token);
 
 // A guest's token says so, so a policy can keep writes to the people who
 // signed in (`request.jwt.claims ->> 'guest'`).
-export function issueUserToken(id: string, handle: string, guest = false): Promise<string> {
+export function issueUserToken(
+  id: string,
+  handle: string,
+  guest = false,
+  profile?: { name?: string | null; email?: string | null },
+): Promise<string> {
   return signJwt({
     role: "app_user",
     sub: id,
     handle,
     guest,
+    ...(profile?.name ? { name: profile.name } : {}),
+    ...(profile?.email ? { email: profile.email } : {}),
     exp: Math.floor(Date.now() / 1000) + USER_TOKEN_TTL_S,
   });
 }
@@ -442,12 +450,27 @@ async function readState(
   return st;
 }
 
-const ADJECTIVES = ["amber", "brisk", "calm", "dusk", "ember", "fern", "gold", "hazel", "ivory", "jade", "kind", "lunar", "mellow", "noble", "ochre", "pale", "quiet", "rustic", "sage", "tidal"];
-const NOUNS = ["fox", "wren", "otter", "pine", "reed", "moth", "lark", "moss", "dune", "cove", "elk", "finch", "heron", "ibis", "kite", "lynx", "newt", "orca", "quail", "seal"];
-function generateHandle(): string {
-  const a = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-  const n = NOUNS[Math.floor(Math.random() * NOUNS.length)];
-  return `${a}-${n}-${10 + Math.floor(Math.random() * 90)}`;
+const FRUITS = [
+  "acerola", "amora", "avocado", "banana", "caju", "carambola", "cherry", "citrus",
+  "coconut", "cupuacu", "fig", "guava", "jabuticaba", "jackfruit", "kiwi", "lemon",
+  "lime", "lychee", "mango", "maracuja", "melon", "nectarine", "olive", "orange",
+  "papaya", "peach", "pear", "persimmon", "pineapple", "pitanga", "plum", "tangerine",
+];
+const ANIMALS = [
+  "albatross", "armadillo", "badger", "capybara", "chameleon", "condor", "dolphin", "falcon",
+  "flamingo", "fox", "gecko", "heron", "hummingbird", "ibis", "iguana", "jaguar",
+  "kingfisher", "koala", "lemur", "lynx", "macaw", "manatee", "meerkat", "ocelot",
+  "otter", "owl", "panda", "pelican", "penguin", "quokka", "tapir", "toucan",
+];
+export function guestHandle(id: string): string {
+  const hex = id.replaceAll("-", "").toLowerCase();
+  const fruit = FRUITS[(parseInt(hex.slice(0, 2), 16) || 0) % FRUITS.length];
+  const animal = ANIMALS[(parseInt(hex.slice(2, 4), 16) || 0) % ANIMALS.length];
+  const slug = hex.slice(-4) || "0000";
+  return `${fruit}-${animal}-${slug}`;
+}
+function generateHandle(id = crypto.randomUUID()): string {
+  return guestHandle(id);
 }
 
 async function registerStart(req: Request): Promise<Response> {
@@ -539,7 +562,8 @@ async function registerVerify(req: Request): Promise<Response> {
 }
 
 async function loginStart(_req: Request): Promise<Response> {
-  // Discoverable credentials: the authenticator offers the resident passkey.
+  // Usernameless by doctrine: allowCredentials is empty so the authenticator
+  // surfaces its discoverable (resident) credentials for this RP.
   const options = await generateAuthenticationOptions({
     rpID: RP_ID,
     allowCredentials: [],
@@ -567,7 +591,7 @@ async function loginVerify(req: Request): Promise<Response> {
     from mecha_auth.webauthn_credential c join app_user u on u.id = c.user_id
     where c.id = ${response.id}`;
   if (creds.length === 0) {
-    return jsonError(401, "authentication verification failed");
+    return json(401, { error: "authentication verification failed", unknownCredential: true });
   }
   const cred = creds[0];
   let verification;
@@ -604,11 +628,12 @@ async function guest(_req: Request): Promise<Response> {
   // Origin-independent by terminal doctrine: no WebAuthn, no origin check —
   // this door must open from any origin the cluster is reachable on.
   const userId = crypto.randomUUID();
-  let handle = generateHandle();
+  let handle = generateHandle(userId);
   let inserted = false;
   for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
     try {
-      await sql`insert into app_user (id, handle) values (${userId}, ${handle})`;
+      const [row] = await sql`insert into app_user (id, handle) values (${userId}, ${handle}) returning handle`;
+      if (row?.handle) handle = String(row.handle);
       inserted = true;
     } catch (e) {
       if ((e as { code?: string }).code === "23505") handle = generateHandle();
@@ -625,7 +650,12 @@ async function whoami(req: Request): Promise<Response> {
   const subject = await subjectOf(req);
   if (subject === "refused" || subject.claims === null) return jsonError(401, "invalid token");
   const claims = subject.claims;
-  return json(200, { id: claims.sub, handle: claims.handle });
+  return json(200, {
+    id: claims.sub,
+    handle: claims.handle,
+    ...(typeof claims.name === "string" ? { name: claims.name } : {}),
+    ...(typeof claims.email === "string" ? { email: claims.email } : {}),
+  });
 }
 
 export const links: Links = {
@@ -634,11 +664,11 @@ export const links: Links = {
       // One sign-in at a time per subject, so two tabs signing in at once make
       // one person, not two.
       await tx`select pg_advisory_xact_lock(hashtext(${JSON.stringify([p.provider, p.issuer, p.sub])}))`;
-      const [link] = await tx`update mecha_auth.identity_link set name = ${p.name}, picture = ${p.picture}
+      const [link] = await tx`update mecha_auth.identity_link set name = ${p.name}, picture = ${p.picture}, email = ${p.email}
         where provider = ${p.provider} and issuer = ${p.issuer} and sub = ${p.sub} returning user_id`;
       if (link) {
         const [u] = await tx`select handle from app_user where id = ${link.user_id}`;
-        return { id: link.user_id as string, handle: u.handle as string };
+        return { id: link.user_id as string, handle: u.handle as string, name: p.name, email: p.email };
       }
       const id = crypto.randomUUID();
       // Generated handles can collide; regenerate and retry — never a user error.
@@ -650,17 +680,18 @@ export const links: Links = {
           if ((e as { code?: string }).code === "23505") continue;
           throw e;
         }
-        await tx`insert into mecha_auth.identity_link (provider, issuer, sub, user_id, name, picture)
-          values (${p.provider}, ${p.issuer}, ${p.sub}, ${id}, ${p.name}, ${p.picture})`;
-        return { id, handle };
+        await tx`insert into mecha_auth.identity_link (provider, issuer, sub, user_id, name, picture, email)
+          values (${p.provider}, ${p.issuer}, ${p.sub}, ${id}, ${p.name}, ${p.picture}, ${p.email})`;
+        return { id, handle, name: p.name, email: p.email };
       }
       throw new Error("could not allocate identity");
     });
   },
   async handleOf(provider: string, issuer: string, id: string) {
-    const [u] = await sql`select u.handle from app_user u
-      where u.id = ${id} and exists (select 1 from mecha_auth.identity_link l where l.user_id = u.id and l.provider = ${provider} and l.issuer = ${issuer})`;
-    return u ? (u.handle as string) : null;
+    const [u] = await sql`select u.handle, l.name, l.email from app_user u
+      join mecha_auth.identity_link l on l.user_id = u.id and l.provider = ${provider} and l.issuer = ${issuer}
+      where u.id = ${id}`;
+    return u ? { handle: u.handle as string, name: (u.name as string | null) ?? null, email: (u.email as string | null) ?? null } : null;
   },
 };
 
@@ -669,7 +700,7 @@ const providerSignIn = oidc({
   origin: (req) => ceremonyOrigin(ORIGIN, req.headers.get("host")),
   providers: OIDC_PROVIDERS,
   links,
-  issue: (user) => issueUserToken(user.id, user.handle),
+  issue: (user) => issueUserToken(user.id, user.handle, false, user),
 });
 
 export async function handler(req: Request): Promise<Response> {
@@ -710,5 +741,5 @@ export async function handler(req: Request): Promise<Response> {
 
 if (import.meta.main) {
   await migrate();
-  Deno.serve({ hostname: ["local", "host"].includes(Deno.env.get("SAYT_PLATFORM") ?? "") ? "127.0.0.1" : "0.0.0.0", port: Number(Deno.env.get("PORT") || 9999) }, handler);
+  Deno.serve({ hostname: Deno.env.get("SAYT_PLATFORM") === "host" ? "127.0.0.1" : "0.0.0.0", port: Number(Deno.env.get("PORT") || 9999) }, handler);
 }
