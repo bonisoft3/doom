@@ -212,9 +212,8 @@ by writing the row whose state invokes it, and sees the answer land in that row.
   than hand back an answer to another request; a replay settles no dead job. A row made
   again under a deleted one's key is another incarnation, so its keys are its own. The
   housekeeping sweep drops the entries of incarnations that are gone, which have no
-  history left to re-run. The table is in
-  [job_key.sql](job_key.sql), which also runs at every release (#AirlockUpgradeSql), so a
-  database built before it takes it.
+  history left to re-run. The table (`READ_JOURNAL_SQL` in [read.ts](read.ts)) is brought
+  at every airlock start, so `job_key.sql` stays byte-for-byte for retained edge databases.
 
 ## Sealed values
 
@@ -264,15 +263,20 @@ the dispatcher's key (pronto's `bundle/edge-seal.ts`).
 
 ## A bridge not deployed
 
-An effect whose sink is a bridge carries where the bridge runs in `effects.json`
-(`bridge: {name, targets, simulated}`): the release targets its container is
-deployed on, and whether the local stack runs a simulator in its place. The
+An effect whose sink is a bridge, its own or the one it names for
+cloudflare or k8s, carries where it can be called in `effects.json`
+(`bridge: {name, targets, simulated}`): the release targets where its sink
+is reachable, which are those the bridge's container is deployed on and
+those where the effect names an origin or another deployed bridge in its
+place, and whether the local stack calls it, an origin or a bridge it runs a
+simulator of. The
 airlock knows its own target: `AIRLOCK_TARGET` in a cluster, which compose sets to
 `local`, and `cloudflare` at the edge. An airlock told none refuses to start
 where any bridge names its targets. Locally a bridge is deployed as its
 simulator; on a release target, where it names that target: as a process of
-the docker appliance, or as a Cloudflare Container of the edge's dispatcher
-Worker, called through its binding
+the docker appliance, as a Deployment the airlock's daprd calls on k8s, or as
+a Cloudflare Container of the edge's dispatcher Worker, called through its
+binding
 ([container bridges](../../../../plugins/pronto/docs/container-bridges.md#targets)).
 Where it is not, a claimed effect settles at once, before its run is counted:
 outcome `failed`, data `{bridge, target, reason: "not deployed"}`, target
@@ -327,7 +331,7 @@ the service token the ticker writes with:
 | `airlock` | This service, FROM mecha's `airlock-image`, with the program's `effects.json` and handlers copied to `/airlock` and watched. Its own `--allow-net` is the database, its daprd and port 9997, the healthcheck's and the ticker's wake (`GET /healthz`). |
 | `airlock-mesh` | Its daprd, holding one HTTPEndpoint per effect, the wall, and a breaker per endpoint (`#AirlockResiliency`). Declaring a policy turns off daprd's built-in retries, so a call is made once and `entered` counts every attempt; a sink's 4xx counts toward the trip, which no policy can filter. It runs under [dapr.yaml](dapr.yaml) and goes out on `airlock-egress`, a network nothing else joins. |
 | Bridge container | `state.bridges` names an existing container target and its HTTP port (default 8080). The daprd waits on that target and calls `http://<container>:<port>`. Runtime lowering attaches the target to `airlock-out` and `bridge-<name>-egress`; it grants no default network, database credential or callback permission. |
-| `011_graphile_worker.sql`, `012_airlock.sql`, `013_airlock_job_key.sql` | Graphile's schema; then the ticker's schedule table with its `airlock` row, the tables above and `airlock_wake`; then `airlock.job_key`, the ledger key's digest every enqueue keys its job by (Graphile caps a key at 512 bytes), and the read journal, staged in the database image. They take the first digits after the steps a caller opens with, so every caller step that can write a row, held seed included, runs after them and finds the table its interpreter re-arms ([the order](../../docs/schema.md#how-a-schema-reaches-the-database)). A cluster that also declares a schedule runs the schedule table's text again at 020, where every statement holds. |
+| `011_graphile_worker.sql`, `012_airlock.sql`, `013_airlock_job_key.sql` | Graphile's schema; then the ticker's schedule table with its `airlock` row, the tables above and `airlock_wake`; then `airlock.job_key`, the ledger key's digest every enqueue keys its job by (Graphile caps a key at 512 bytes), staged in the database image. They take the first digits after the steps a caller opens with, so every caller step that can write a row, held seed included, runs after them and finds the table its interpreter re-arms ([the order](../../docs/schema.md#how-a-schema-reaches-the-database)). A cluster that also declares a schedule runs the schedule table's text again at 020, where every statement holds. |
 
 **The wall keeps mistakes in.** Its purpose is that declared destinations are the
 only ones reached by accident; it guards against mistakes in trusted code and is
