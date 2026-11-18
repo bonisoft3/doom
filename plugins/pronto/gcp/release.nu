@@ -11,7 +11,7 @@ alias release-gke = release
 # Cloud Run has no durable filesystem for the native pipeline services.
 const runtime = ["database" "crud" "electric" "auth" "caddy"]
 # compose's clock is not one of them: Cloud Scheduler is the ticker's clock here.
-const unbuilt = ["feldera" "redis" "mesh-events" "conduit" "transform" "compute" "rclone-s3" "imgproxy"]
+const unbuilt = ["risingwave" "redis" "mesh-events" "conduit" "transform" "compute" "rclone-s3" "imgproxy"]
 
 def render [cue_path: string, data?: string]: nothing -> record {
 	let inputs = [$cue_path] | append (if ($data | is-not-empty) { [$data] } else { [] })
@@ -100,6 +100,15 @@ def ensure-infrastructure [plan: record] {
 	ensure-secret $marker $plan.project $key | ignore
 }
 
+# Combine tier and flag changes so reconciling one instance needs only one restart.
+def sql-drift [live: record, plan: record]: nothing -> list<string> {
+	let flags = ($live | get settings.databaseFlags? | default [] | each {|f| $"($f.name)=($f.value)" } | sort | str join ",")
+	[
+		(if $live.settings.tier != $plan.sqlTier { [--tier $plan.sqlTier] } else { [] })
+		(if $flags != ($plan.sqlFlags | split row "," | sort | str join ",") { [--database-flags $plan.sqlFlags] } else { [] })
+	] | flatten
+}
+
 def set-up-project [plan: record] {
 	let p = $plan.project
 	let n = $plan.names
@@ -159,11 +168,11 @@ def set-up-project [plan: record] {
 		print $"gcp: (stamp) creating Cloud SQL ($n.instance) \(several minutes\)"
 		gc sql instances create $n.instance --project $p --region $plan.region --database-version POSTGRES_18 --edition enterprise --tier $plan.sqlTier --storage-size 10 --storage-type HDD --database-flags $plan.sqlFlags --root-password $pg | ignore
 	}
-	# Flags an earlier release set differently are patched, which restarts it.
-	let flags = (gc sql instances describe $n.instance --project $p --format json | from json | get settings.databaseFlags? | default [] | each {|f| $"($f.name)=($f.value)" } | sort | str join ",")
-	if $flags != ($plan.sqlFlags | split row "," | sort | str join ",") {
-		print $"gcp: (stamp) setting ($plan.sqlFlags) on ($n.instance) \(it restarts\)"
-		gc sql instances patch $n.instance --project $p --database-flags $plan.sqlFlags --quiet | ignore
+	let live = (gc sql instances describe $n.instance --project $p --format json | from json)
+	let patch = (sql-drift $live $plan)
+	if ($patch | is-not-empty) {
+		print $"gcp: (stamp) updating ($n.instance): ($patch | str join ' ') \(it restarts\)"
+		gc sql instances patch $n.instance --project $p ...$patch --quiet | ignore
 	}
 	# The password the URLs carry is the user's, whichever came first.
 	gc sql users set-password postgres --instance $n.instance --project $p --password $pg | ignore

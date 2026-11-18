@@ -1819,7 +1819,7 @@
         "manual": true,
         "build": {
           "additional_contexts": {
-            "plugins_omnishell-runtime-image": "${MONOREPO_COMPOSE_MODE:-docker-image://bonitao/omnishell:0.25.1@sha256:a807d1ac0bc336c8a6ecfaf2700cb5cad55404468716a4a5791ede8c3d1c1329}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image}"
+            "plugins_omnishell-runtime-image": "${MONOREPO_COMPOSE_MODE:-docker-image://bonitao/omnishell:0.25.2@sha256:a807d1ac0bc336c8a6ecfaf2700cb5cad55404468716a4a5791ede8c3d1c1329}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image}"
           },
           "secrets": [],
           "args": {}
@@ -2178,8 +2178,7 @@
           "ARG MONOREPO_COMPOSE_MODE",
           "ENV MONOREPO_COMPOSE_MODE=$MONOREPO_COMPOSE_MODE",
           "ARG BAYT_RUNTIME",
-          "ENV BAYT_RUNTIME=$BAYT_RUNTIME",
-          "ENV FELDERA_COMPILATION_PROFILE=unoptimized"
+          "ENV BAYT_RUNTIME=$BAYT_RUNTIME"
         ],
         "defaultPreamble": {
           "bayt-runtime": {
@@ -3027,8 +3026,7 @@
           "ARG MONOREPO_COMPOSE_MODE",
           "ENV MONOREPO_COMPOSE_MODE=$MONOREPO_COMPOSE_MODE",
           "ARG BAYT_RUNTIME",
-          "ENV BAYT_RUNTIME=$BAYT_RUNTIME",
-          "ENV FELDERA_COMPILATION_PROFILE=unoptimized"
+          "ENV BAYT_RUNTIME=$BAYT_RUNTIME"
         ],
         "defaultPreamble": {
           "bayt-runtime": {
@@ -3692,7 +3690,7 @@
         "manual": true,
         "build": {
           "additional_contexts": {
-            "plugins_omnishell-runtime-image": "${MONOREPO_COMPOSE_MODE:-docker-image://bonitao/omnishell:0.25.1@sha256:a807d1ac0bc336c8a6ecfaf2700cb5cad55404468716a4a5791ede8c3d1c1329}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image}"
+            "plugins_omnishell-runtime-image": "${MONOREPO_COMPOSE_MODE:-docker-image://bonitao/omnishell:0.25.2@sha256:a807d1ac0bc336c8a6ecfaf2700cb5cad55404468716a4a5791ede8c3d1c1329}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image}"
           },
           "secrets": [],
           "args": {}
@@ -4058,8 +4056,7 @@
           "ARG MONOREPO_COMPOSE_MODE",
           "ENV MONOREPO_COMPOSE_MODE=$MONOREPO_COMPOSE_MODE",
           "ARG BAYT_RUNTIME",
-          "ENV BAYT_RUNTIME=$BAYT_RUNTIME",
-          "ENV FELDERA_COMPILATION_PROFILE=unoptimized"
+          "ENV BAYT_RUNTIME=$BAYT_RUNTIME"
         ],
         "defaultPreamble": {
           "bayt-runtime": {
@@ -6422,7 +6419,7 @@
         "manual": false,
         "build": {
           "additional_contexts": {
-            "plugins_omnishell-runtime-image": "${MONOREPO_COMPOSE_MODE:-docker-image://bonitao/omnishell:0.25.1@sha256:a807d1ac0bc336c8a6ecfaf2700cb5cad55404468716a4a5791ede8c3d1c1329}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image}"
+            "plugins_omnishell-runtime-image": "${MONOREPO_COMPOSE_MODE:-docker-image://bonitao/omnishell:0.25.2@sha256:a807d1ac0bc336c8a6ecfaf2700cb5cad55404468716a4a5791ede8c3d1c1329}${MONOREPO_COMPOSE_MODE:+:plugins_omnishell-runtime-image}"
           },
           "secrets": [],
           "args": {}
