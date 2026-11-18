@@ -6,6 +6,7 @@ const k8s_dir = path self .
 const fixtures_dir = path self testdata
 
 use std/assert
+use ../release-schema.nu [fresh-schema-runtime]
 
 use release.nu [
 	OPERATORS
@@ -201,6 +202,8 @@ def test_trusted_keys [] {
 	let plain = (render-manifests $app.cue_path "kind" | from yaml | where kind == "Deployment" and metadata.name == "sample-crud" | first | get spec.template)
 	assert equal ($plain.spec.containers.0.env | where name == "PGRST_JWT_SECRET" | first | get valueFrom.secretKeyRef) {name: "sample-auth-secrets", key: "PGRST_JWT_SECRET"}
 	assert ($plain.spec.containers.0.env | where name == "PGRST_JWT_AUD" | is-empty)
+	# crud tells the floor the roles the program declares, none here.
+	assert equal ($plain.spec.containers.0.env | where name == "PGRST_APP_SETTINGS_TOKEN_ROLES" | first | get value) ""
 	let digest = ("{\"keys\":[]}" | hash sha256)
 	let data = (mktemp --suffix .json)
 	{App: {trustedKeysDigest: $digest, trustedAudience: ""}} | to json | save -f $data
@@ -401,6 +404,8 @@ def test_pods_hand_over [] {
 	print "test a replaced pod keeps serving while the mesh learns of its successor..."
 	let app = (resolve-app ($fixtures_dir | path join "sample"))
 	let docs = (render-manifests $app.cue_path "kind" | from yaml | where kind == "Deployment")
+	let crud = (fresh-schema-runtime ($docs | where metadata.name == sample-crud | first | to yaml) | from yaml)
+	assert equal ($crud.spec.template.spec.containers | where name == crud | first | get readinessProbe.httpGet.path) "/ready"
 	for c in ["crud" "electric" "auth" "caddy" "render"] {
 		let d = ($docs | where metadata.name == $"sample-($c)" | first)
 		assert equal ($d.spec.template.spec.containers | where name == $c | first | get lifecycle.preStop.sleep.seconds) 15 $"($c) pauses before it stops"
@@ -679,6 +684,9 @@ def test_airlock_manifests [] {
 	assert equal ($vars | where name == AIRLOCK_SEAL_KEY | first | get valueFrom.secretKeyRef) {name: effects-airlock, key: AIRLOCK_SEAL_KEY}
 	assert equal ($vars | where name == AIRLOCK_SEAL_KEY_PREVIOUS | first | get valueFrom.secretKeyRef) {name: effects-airlock, key: AIRLOCK_SEAL_KEY_PREVIOUS, optional: true}
 	assert ($vars | where name == AIRLOCK_SEAL_DEV | is-empty)
+	# A release's airlock, which refuses the development key by its id
+	# however the release spells it, where the byte check above sees bytes.
+	assert equal (do $value AIRLOCK_RELEASE) k8s
 	# The ledger's upgrade runs as a Job on its own image, after initdb.
 	let jobs = ($docs | where kind == Job | get metadata.name)
 	assert equal $jobs [effects-initdb effects-airlock-upgrade]

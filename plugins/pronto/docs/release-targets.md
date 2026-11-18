@@ -294,7 +294,8 @@ imported pictures and `seedBlobs` alike, and `/blobs/mecha-objects/<key>` answer
 raw, read-only. R2 may ask for a card on the account.
 
 `code.capabilities.edgeImages` adds the image service above it, Cloudflare Images:
-`/img/insecure/plain/s3://mecha-objects/<key>` reads `<key>` and returns WebP.
+`/img/insecure/plain/s3://mecha-objects/<key>` (or `s3:/` behind a slash-merging
+reverse proxy) reads `<key>` and returns WebP.
 `mecha-objects` is the plane's logical name on every target, so a row's URL does not
 depend on where it was written; `sourceBucket` keeps a physical name older rows
 spelled. All objects in this bucket are public through those routes; it must not
@@ -802,7 +803,7 @@ preview also deletes its setup marker so recreating it provisions resources.
 | electric's storage | the instance's own: a new instance rebuilds its shapes from Postgres |
 | the stack's secrets | Secret Manager, generated once; the database URLs are composed from the passwords there, since Cloud Run expands no `$(VAR)` |
 
-This is mecha's [bundled unit](https://github.com/bonisoft3/mecha/blob/v0.12.1/docs/deployment.md#the-bundled-unit)
+This is mecha's [bundled unit](../../../libraries/mecha/docs/deployment.md#the-bundled-unit)
 applied to the door: the containers wake together, reach each other on
 localhost, and need no invoker between them. The door dials each upstream at
 its own `PRONTO_UPSTREAM_<SERVICE>`, which a gcp release sets to the
@@ -841,6 +842,10 @@ What bit on a real instance:
   raising `GCP.sqlGeneration` starts it on a new, empty instance
   (`<app>-db-<n>`); the earlier one keeps its data and its replication slot,
   untouched, until its owner deletes it.
+- **Every schema job is followed by a fresh service revision**, even when its
+  images and configuration are unchanged. PostgREST starts after migrations
+  finish and its `/ready` startup probe checks the new schema cache. The
+  release waits for that revision; it does not rely on a reload notification.
 - **The smallest tier admits about 25 connections**, so the instance is raised
   to 50. Crud's pool is capped at 5; Electric defaults to 5 and can be set with
   `GCP.electric.pool`. Its CPU and memory use `GCP.electric.cpu` (millicpu)
@@ -1195,6 +1200,10 @@ upgrade and the bridges named for k8s
   sink its endpoint on k8s names, inside the same wall; its journal is
   created by the ledger's upgrade below, on a fresh database and an older one
   alike.
+- **CRUD rolls after all schema Jobs complete**, even when its image and
+  configuration are unchanged. The release waits for the fresh Deployment
+  to pass PostgREST's `/ready` probe, which checks its connection and schema
+  cache. A failed rollout fails the release.
 - **The ledger's upgrade is a Job** on its compose image, after initdb and
   before migrate as compose orders them. A database built before the program
   declared its first effect has no queue or ledger, which only a fresh

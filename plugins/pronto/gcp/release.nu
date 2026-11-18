@@ -2,6 +2,7 @@
 # otherwise they run Cloud Run beside Cloud SQL.
 
 use ../k8s/release.nu [resolve-app]
+use ../release-schema.nu [fresh-schema-runtime]
 use verify.nu [start-drivers go-drivers finish-drivers drivers-log cancel-drivers plan-of]
 use build.nu [builder stamp gc exists build-account push-images]
 use ../k8s/release.nu
@@ -342,7 +343,7 @@ def deploy [app_info: record, preview: string, dry_run: bool, snapshot: bool, fr
 	if not ($facts_path | path exists) { error make {msg: $"($facts_path) is missing: generate the app before releasing it"} }
 	let facts = (open $facts_path)
 	if not $facts.server { error make {msg: $"($facts_path): this app has no server tier to release to GCP"} }
-	let base = {GCP: ({database: {tokenRoles: $facts.tokenRoles}} | merge (if ($preview | is-empty) { {} } else { {preview: $preview} }))}
+	let base = {GCP: ({database: {tokenRoles: $facts.tokenRoles, declaredRoles: ($facts.declaredRoles? | default [])}} | merge (if ($preview | is-empty) { {} } else { {preview: $preview} }))}
 	let plan0 = (plan-of $app_info.cue_path $preview)
 	let services = (do { cd $app_info.dir; ^docker compose --profile "*" config --services } | lines)
 	let refused = ($services | where {|s| $s in $unbuilt })
@@ -477,6 +478,7 @@ def deploy [app_info: record, preview: string, dry_run: bool, snapshot: bool, fr
 	# The migrate job an earlier release ran apart, which this one's job does.
 	if (exists run jobs describe $plan.names.migrateJob --region $r --project $p) { gc run jobs delete $plan.names.migrateJob --region $r --project $p | ignore }
 	print $"gcp: (stamp) deploying ($plan.service)"
+	fresh-schema-runtime $plan.serviceYaml | save -f dist/gcp/service.yaml
 	gc run services replace dist/gcp/service.yaml --region $r --project $p | ignore
 	if ($plan.iap? | default false) {
 		# Behind Identity-Aware Proxy only IAP's own agent invokes the service, and

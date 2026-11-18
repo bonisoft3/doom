@@ -115,6 +115,9 @@ import (
 	// Cloud SQL's postgres SET on, since which of them exist is the program's.
 	// Filled by the release.
 	database: tokenRoles: [...string]
+	// Those the program declares for another issuer's tokens, which crud tells
+	// the floor at every request; filled by the release, empty where none.
+	database: declaredRoles: *[] | [...string]
 
 	// Present where the app's compose project runs mecha's ticker: the
 	// environment compose gives it beside CRUD_URL, SERVICE_JWT and PORT, filled
@@ -402,6 +405,7 @@ import (
 						{name: "PGRST_DB_SCHEMA", value: "public"},
 						{name: "PGRST_DB_ANON_ROLE", value: "anon"},
 						{name: "PGRST_DB_PRE_REQUEST", value: "public.app_pre_request"},
+						{name: "PGRST_APP_SETTINGS_TOKEN_ROLES", value: strings.Join(R.database.declaredRoles, ",")},
 						// Cloud Run probes the instance's address, not loopback.
 						{name: "PGRST_SERVER_HOST", value: "*"},
 						{name: "PGRST_DB_POOL", value: "\(#Pools.crud)"},
@@ -483,6 +487,8 @@ import (
 							// bridge names: an effect whose sink here is the gateway
 							// is called, one whose sink is a bridge is not deployed.
 							{name: "AIRLOCK_TARGET", value: "gcp"},
+							// A release, which takes no development seal key (seal.ts sealLocal).
+							{name: "AIRLOCK_RELEASE", value: "gcp"},
 							if R._origin != "" {{name: "ORIGIN", value: R._origin}},
 							if R.airlock.seal {(secretOf & {env: "AIRLOCK_SEAL_KEY", secret: sq.AIRLOCK_SEAL_KEY}).out},
 						], [for k, v in R.airlock.secrets {(secretOf & {env: k, secret: v}).out}]])
@@ -643,7 +649,7 @@ import (
 							fi
 							# Cloud SQL's postgres is no superuser: crud and auth connect as it
 							# and switch into these, which it created but holds no SET on.
-							psql -v ON_ERROR_STOP=1 -XqAc "GRANT \(strings.Join(R.database.tokenRoles, ", ")) TO postgres WITH INHERIT FALSE, SET TRUE"
+							psql -v ON_ERROR_STOP=1 -XqAc \(strconv.Quote("GRANT " + strings.Join([for r in R.database.tokenRoles {"\"\(r)\""}], ", ") + " TO postgres WITH INHERIT FALSE, SET TRUE"))
 							""" + [if R.migrate != _|_ {"\n# Then the pgroll migrations the schema initdb built lacks.\nexec \(strings.Join([for a in R.migrate.command {strconv.Quote(a)}], " "))\n"}, ""][0]]
 						env: list.Concat([initdbEnv, [if R.migrate != _|_ for e in list.Concat([
 							[(secretOf & {env: "DATABASE_URL", secret: sq.MIGRATE_DATABASE_URL}).out],

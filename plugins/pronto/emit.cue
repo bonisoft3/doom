@@ -990,7 +990,7 @@ _sqlType: {
 			// none; the state and count fields are the machine's, which the
 			// answer moves.
 			_fields: [for f in _entity.fields {f.name}]
-			_cols: list.SortStrings([for c, _ in {for f in list.Concat([_pk, list.FlattenN(_named, 1)]) if list.Contains(_fields, f) if f != _field if f != x.count if f != x.incarnation {(f): true}} {c}])
+			_cols:   list.SortStrings([for c, _ in {for f in list.Concat([_pk, list.FlattenN(_named, 1)]) if list.Contains(_fields, f) if f != _field if f != x.count if f != x.incarnation {(f): true}} {c}])
 			"""
 				  IF TG_OP = 'UPDATE' AND OLD."\(_field)" = '\(sName)' AND (\(strings.Join([for c in _cols {"OLD.\"\(c)\" IS DISTINCT FROM NEW.\"\(c)\""}], " OR "))) THEN
 				    RAISE EXCEPTION '% in \(sName) keeps what its read asked until the answer of %', '\(_table)', '\(x.name)' USING ERRCODE = 'check_violation';
@@ -1227,7 +1227,7 @@ _sqlType: {
 #secretStashSql: {
 	let X = self
 	table: string
-	pk: [...string]
+	pk:    [...string]
 	field: #Field & {secret: true}
 	_f:    X.field.name
 	_fn:   "trg_\(X.table)_\(_f)_secret"
@@ -1351,10 +1351,10 @@ _sqlType: {
 		         WHERE "name" = 'airlock' AND "last_tick_at" IS NOT NULL
 		           AND "name" IN (SELECT "name" FROM "public"."schedule" WHERE "name" = 'airlock' FOR UPDATE SKIP LOCKED);
 		"""
-	_input: (#jsonbObjectSql & {values: I.effect.input}).out
-	out:    [if I.effect.request != _|_ {_read}, _claim][0]
-	_n:     [if I.effect.request != _|_ {"NEW.\"\(I.effect.count)\""}, ""][0]
-	_inc:   [if I.effect.request != _|_ {"NEW.\"\(I.effect.incarnation)\""}, ""][0]
+	_input:  (#jsonbObjectSql & {values: I.effect.input}).out
+	out:     [if I.effect.request != _|_ {_read}, _claim][0]
+	_n:      [if I.effect.request != _|_ {"NEW.\"\(I.effect.count)\""}, ""][0]
+	_inc:    [if I.effect.request != _|_ {"NEW.\"\(I.effect.incarnation)\""}, ""][0]
 	_rowKey: [if len(I.pk) == 1 {"NEW.\"\(I.pk[0])\"::text"}, "jsonb_build_array(" + strings.Join([for f in I.pk {"NEW.\"\(f)\"::text"}], ", ") + ")::text"][0]
 	_read: """
 		        IF current_setting('role', true) = 'anon' THEN
@@ -2001,13 +2001,66 @@ _sqlType: {
 // before it has neither.
 #tokenRolesSql: {
 	roles: [...string]
-	let quoted = strings.Join([for r in roles {"'\(r)'"}], ", ")
 	out: mecha.#TenancySql + "\n" +
 		"DO $$ BEGIN\n" + strings.Join([for r in roles {(#tokenRole & {role: r}).out}], "\n") + "END $$;\n" +
 		"GRANT \(strings.Join([for r in roles {"\"\(r)\""}], ", ")) TO authenticator;\n" +
 		strings.Join([for r in roles {(#tokenRoleBounds & {role: r}).out}], "") +
 		"INSERT INTO mecha.token_role VALUES \(strings.Join([for r in roles {"('\(r)')"}], ", ")) ON CONFLICT DO NOTHING;\n" +
-		"DELETE FROM mecha.token_role WHERE role_name NOT IN (\(quoted));\n"
+		(#tokenRolesPrune & {"roles": roles}).out
+}
+
+// A role the program no longer declares: out of `mecha.token_role`, so the
+// floor stops admitting another issuer's token as it, and out of
+// authenticator's reach, so crud can no longer switch to it. Emitted where no
+// role is declared too, since the release that removes the last one is the
+// one that must prune it; a database that never held one is left as it was.
+// One that did keeps the row '', which no role is named: the floor goes on
+// reading a token naming no issuer as anon, since a crud not yet restarted, or
+// an operator's key set, may still hold the issuer's keys, and the stack's own
+// tokens have named its issuer since the app first trusted another.
+//
+// Every direct grant to authenticator is revoked by its grantor, since
+// PostgreSQL revokes only that grantor's grants. An indirect membership
+// refuses the release until authenticator can no longer reach the role.
+// With `restate`, where no role is declared, the floor the marker is read by
+// is restated first, for a database that held a role under an older floor.
+#tokenRolesPrune: {
+	roles:   *[] | [...string]
+	restate: *false | bool
+	_keep:   strings.Join(list.Concat([[for r in roles {"'\(r)'"}], ["''"]]), ", ")
+	_floor: [if restate {"""
+		DO $mecha_floor$ BEGIN
+		  IF to_regclass('mecha.token_role') IS NULL THEN RETURN; END IF;
+		  IF EXISTS (SELECT FROM mecha.token_role) THEN
+		    EXECUTE $mecha_tenancy$\(mecha.#TenancySql)$mecha_tenancy$;
+		  END IF;
+		END $mecha_floor$;
+
+		"""}, ""][0]
+	out: _floor + """
+		DO $$ DECLARE
+		  r text;
+		  m record;
+		  held boolean;
+		BEGIN
+		  IF to_regclass('mecha.token_role') IS NULL THEN RETURN; END IF;
+		  FOR r IN SELECT role_name FROM mecha.token_role WHERE role_name <> ALL (ARRAY[\(_keep)]::text[]) LOOP
+		    IF to_regrole(quote_ident(r)) IS NULL OR to_regrole('authenticator') IS NULL THEN CONTINUE; END IF;
+		    FOR m IN SELECT DISTINCT grantor FROM pg_auth_members WHERE roleid = to_regrole(quote_ident(r)) AND member = to_regrole('authenticator') LOOP
+		      EXECUTE format('REVOKE %I FROM authenticator GRANTED BY %I', r, pg_get_userbyid(m.grantor));
+		    END LOOP;
+		    -- Through any role it belongs to, not its own grants alone: a role
+		    -- authenticator reaches by way of another is one crud can switch to.
+		    held := pg_has_role('authenticator', to_regrole(quote_ident(r)), 'SET');
+		    IF held THEN
+		      RAISE EXCEPTION 'authenticator still holds %, a token role the program no longer declares, and this release could not revoke it', quote_ident(r);
+		    END IF;
+		  END LOOP;
+		  DELETE FROM mecha.token_role WHERE role_name <> ALL (ARRAY[\(_keep)]::text[]);
+		  IF FOUND THEN INSERT INTO mecha.token_role VALUES ('') ON CONFLICT DO NOTHING; END IF;
+		END $$;
+
+		"""
 }
 
 #publicUpdateSql: {
@@ -2402,6 +2455,7 @@ _traceHeader: include_patterns: ["^traceparent$"]
 				if f.pk {pk: true}
 				if f.ref != _|_ {ref: f.ref}
 				if f.unique != _|_ {unique: f.unique}
+
 				// Sealed to the airlock's key at the form (omnishell's
 				// screen.js), never written in the clear.
 				if f.secret != _|_ {secret: true}
@@ -3371,6 +3425,7 @@ _pgrollDir: "services/database/pgroll"
 			}
 			blobs:   D.code.capabilities.blobs
 			issuers: len([if D.code.state.tokenRoles != _|_ for n, _ in D.code.state.tokenRoles {n}]) > 0
+			tokenRoles: list.SortStrings([if D.code.state.tokenRoles != _|_ for n, _ in D.code.state.tokenRoles {n}])
 			if D.code.capabilities.ai != _|_ {
 				ai: D.code.capabilities.ai
 			}
@@ -3391,9 +3446,15 @@ _pgrollDir: "services/database/pgroll"
 				if len(updateOnly) > 0 {
 					public_access: strings.Join([for e in updateOnly {(#publicUpdateSql & {"e": e}).out}], "\n\n")
 				}
-				if D.code.state.tokenRoles != _|_ if len(D.code.state.tokenRoles) > 0 {
-					roles: (#tokenRolesSql & {roles: list.SortStrings([for n, _ in D.code.state.tokenRoles {n}])}).out
-				}
+				let declared = list.SortStrings([if D.code.state.tokenRoles != _|_ for n, _ in D.code.state.tokenRoles {n}])
+				// Where none is declared, the prune rides a migrate step the
+				// release runs anyway, or the one `tokenRoles: {}` asks for, which
+				// is how a program with no other takes its last role back: a step
+				// of its own for every server app would start one for each. The
+				// field comes as a struct the comprehension embeds: one it spelled
+				// with a reference read as incomplete in a cluster an app extends.
+				let rolesReconcile = {roles: [if len(declared) > 0 {(#tokenRolesSql & {roles: declared}).out}, (#tokenRolesPrune & {restate: true}).out][0]}
+				if len(declared) > 0 || ((#serverOn & {servers: [for _, e in D.code.state.entities {e.server}], auth: D.code.capabilities.auth != _|_}).out && (D.code.state.tokenRoles != _|_ || len(updateOnly) > 0 || len([if D.code.state.migrations != _|_ for _, m in D.code.state.migrations {m}])+len(_appMigrations.later) > 0)) {rolesReconcile}
 			}
 			if D.code.state.effects != _|_ if len(D.code.state.effects) > 0 {
 				effectInterpreters: strings.Join([for _, m in D.code.state.mecha.rows if m.states != _|_ if len([for _, st in m.states if st.invoke != _|_ {true}]) > 0 {
@@ -3609,7 +3670,7 @@ _pgrollDir: "services/database/pgroll"
 		// waits on it: a launch is up when its documents can be answered.
 		if D._rendersOnRequest {
 			surface: targets: {
-				render: bayt.healthcheck.http & {
+				render: bayt.healthcheck.http200 & {
 					cmd: "builtin": null
 					activate: ""
 					"process-compose": activate: "mise x --"
@@ -4825,6 +4886,9 @@ _pgrollDir: "services/database/pgroll"
 					if len(E.code.state.mecha.reducers) > 0 {actors: E._steps.actors}
 					tokenRoles: E.files["services/database/migrations/001_roles.sql"]._tokenRoles
 					if len(E._declaredRoles) > 0 {declaredRoles: E._declaredRoles}
+					// Whether this release takes back a role an earlier one declared
+					// (write.ts refuses to drop the last one where it does not).
+					if E.cluster.state.reconcile.roles != _|_ {prunesTokenRoles: true}
 					computations: E.cluster.state.computations
 					drains: list.Concat([
 						[for _, d in E.code.state.drains {name: d.name, on: d.on, call: d.call, body: d.body}],
@@ -5283,6 +5347,7 @@ _pgrollDir: "services/database/pgroll"
 							attempts: i.effect.attempts
 							handler:  "effects/\(i.effect.name).js"
 							if len(i.effect._envSecrets) > 0 {secrets: i.effect._envSecrets}
+
 							// Read from the airlock's secret table at each call,
 							// the row the ledger names and these columns of it.
 							if len(i.effect._fieldSecrets) > 0 {secretFields: i.effect._fieldSecrets}
@@ -5292,6 +5357,7 @@ _pgrollDir: "services/database/pgroll"
 							// Where the edge's airlock goes: it has no daprd to read an endpoint from.
 							let edge = (#SinkAt & {sink: i.effect.sink, target: "cloudflare"}).out
 							if list.Contains(E.code.meta.targets, "cloudflare") if edge != null if edge.origin != _|_ {edgeOrigin: edge.origin}
+
 							// The bridge the effect is settled by: its own, else the one its
 							// sink is on a release target past the compose stack's, where
 							// the airlock settles it not deployed as it would its own.
@@ -5299,8 +5365,10 @@ _pgrollDir: "services/database/pgroll"
 								if i.effect.sink.bridge != _|_ {i.effect.sink.bridge},
 								for t in ["cloudflare", "k8s"] let at = (#SinkAt & {sink: i.effect.sink, target: t}).out if at != null if at.bridge != _|_ {at.bridge},
 							]
+
 							// And the bridge the edge calls, where that is not it.
 							if list.Contains(E.code.meta.targets, "cloudflare") if edge != null if edge.bridge != _|_ if edge.bridge != named[0] {edgeBridge: edge.bridge}
+
 							// Or the AI gateway, where the bridge is another target's.
 							if list.Contains(E.code.meta.targets, "cloudflare") if edge != null if edge.ai != _|_ if len(named) > 0 {edgeAi: true}
 							if i.effect.endowments != _|_ {endowments: i.effect.endowments}
