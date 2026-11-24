@@ -301,6 +301,17 @@ pgTest(
       }, { role: "service" }),
       { sink: { rows: 1, upserted: 1, deleted: 501 } },
     );
+    // The staged ids last until commit; each 500-id batch, bounded by the service
+    // role's statement timeout, must find its rows through the sink's key.
+    const deletes = commands.filter(({ sql }) => sql.startsWith("DELETE"));
+    assertEquals(deletes.length, 2);
+    await db.client.query("SET LOCAL enable_seqscan=off");
+    const plan = await db.client.query(
+      "EXPLAIN (FORMAT JSON) " + deletes[0].sql,
+      deletes[0].values,
+    );
+    const nodes = JSON.stringify(plan.rows);
+    assertEquals(nodes.includes('"Index Name":"sink_pkey"'), true);
     await db.client.query("COMMIT");
     assertEquals(
       (await db.client.query(
@@ -315,22 +326,15 @@ pgTest(
     assertEquals((await db.client.query("SELECT * FROM history")).rows, [{
       count: 1499,
     }]);
-    const deletes = commands.filter(({ sql }) => sql.startsWith("DELETE"));
-    assertEquals(deletes.length, 2);
-    await db.client.query("SET enable_seqscan=off");
-    const plan = await db.client.query(
-      "EXPLAIN (FORMAT JSON) " + deletes[0].sql,
-      deletes[0].values,
-    );
-    const nodes = JSON.stringify(plan.rows);
-    assertEquals(nodes.includes('"Index Name":"sink_pkey"'), true);
-    assertEquals(nodes.includes('"Index Cond"'), true);
+    // An empty delta deletes nothing, so it fires no statement-level delete trigger.
+    commands.length = 0;
+    await db.client.query("BEGIN");
     assertEquals(
-      await db.applyDelta(spec, { sink: { upserts: [], deletes: [] } }),
-      {
-        sink: { rows: 0, upserted: 0, deleted: 0 },
-      },
+      await publishDelta(client, spec, { sink: { upserts: [], deletes: [] } }, { role: "service" }),
+      { sink: { rows: 0, upserted: 0, deleted: 0 } },
     );
+    await db.client.query("COMMIT");
+    assertEquals(commands.filter(({ sql }) => sql.startsWith("DELETE")), []);
     assertEquals(
       (await db.client.query("SELECT count(*)::integer AS n FROM sink")).rows,
       [{ n: 1499 }],
@@ -636,10 +640,50 @@ pgTest(
   },
 );
 
+// The server sent every staged row through INSERT ... ON CONFLICT, locking each
+// unchanged row and firing its insert triggers on every publication; Cloudflare
+// left an equal row untouched, and both do now.
+pgTest("publication applies a sink in id-ordered batches without losing or repeating rows", async () => {
+  await using db = await fixture(`CREATE TABLE a (id text PRIMARY KEY, value integer); GRANT ALL ON a TO service;`);
+  const spec = { name: "batched", to: ["a"] };
+  const rows = Array.from({ length: 1201 }, (_, i) => ({ id: `k${String(i).padStart(4, "0")}`, value: i }));
+  assertEquals(await db.apply(spec, { a: rows }), { a: { rows: 1201, upserted: 1201, deleted: 0 } });
+  const next = rows.slice(1).map((row) => row.id === "k0700" ? { ...row, value: -1 } : row);
+  assertEquals(await db.apply(spec, { a: next }), { a: { rows: 1200, upserted: 1, deleted: 1 } });
+  assertEquals(
+    (await db.client.query("SELECT count(*)::integer AS n, sum(value)::integer AS total FROM a")).rows,
+    [{ n: 1200, total: next.reduce((sum, row) => sum + row.value, 0) }],
+  );
+});
+
+pgTest("publication leaves a row equal to the stored one untouched", async () => {
+  await using db = await fixture(`
+    CREATE TABLE a (id text PRIMARY KEY, value integer, stamped integer NOT NULL DEFAULT 0, scope_id text);
+    CREATE FUNCTION stamp() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.stamped := NEW.stamped + 1; RETURN NEW; END $$;
+    CREATE TRIGGER stamp BEFORE INSERT ON a FOR EACH ROW EXECUTE FUNCTION stamp();
+    INSERT INTO a (id, value) VALUES ('x', 1);
+    GRANT ALL ON a TO service;`);
+  const before = (await db.client.query("SELECT xmin::text, xmax::text, ctid::text, stamped FROM a")).rows;
+  await db.client.query("BEGIN");
+  const summary = await publishPages(db.client, { name: "unchanged", to: ["a"] }, async function* () {
+    yield [{ id: "x", value: 1 }];
+  }, { role: "service" });
+  await db.client.query("COMMIT");
+  assertEquals(summary, { a: { rows: 1, upserted: 0, deleted: 0 } });
+  assertEquals((await db.client.query("SELECT xmin::text, xmax::text, ctid::text, stamped FROM a")).rows, before);
+  // An output published whole follows the same rule and the same column contract.
+  assertEquals(await db.apply({ name: "unchanged", to: ["a"] }, { a: [{ id: "x", value: 1 }] }), {
+    a: { rows: 1, upserted: 0, deleted: 0 },
+  });
+  assertEquals((await db.client.query("SELECT xmin::text, xmax::text, ctid::text, stamped FROM a")).rows, before);
+  await assertRejects(() => db.apply({ name: "unchanged", to: ["a"] }, { a: [{ id: "x", value: 1, scope_id: "s" }] }), Error, "a: invalid output columns");
+});
+
 pgTest("paged publication stages bounded pages atomically", async () => {
   await using db = await fixture(`
-    CREATE TABLE a (id uuid PRIMARY KEY, value integer);
+    CREATE TABLE a (id uuid PRIMARY KEY, value integer, scope_id text);
     CREATE TABLE b (id text PRIMARY KEY, value integer);
+    CREATE TABLE c (id text PRIMARY KEY, needed integer NOT NULL);
     CREATE TABLE history (n integer);
     INSERT INTO a VALUES ('00000000-0000-0000-0000-000000000001', 1);
     INSERT INTO b VALUES ('old', 5);
@@ -672,6 +716,10 @@ pgTest("paged publication stages bounded pages atomically", async () => {
   // not wrap the DatabaseError in an AggregateError.
   await assertRejects(() => run({ a: [[{ id: one, value: 3 }], [{ id: `{${one}}`, value: 4 }]], b: [] }), pg.DatabaseError);
   await assertRejects(() => run({ a: [[{ id: one, value: 1 }], [{ id: two }]], b: [] }), Error, 'rows differ in columns');
+  // Cloudflare's column contract, shared since one publication core: a page names
+  // only writable columns and every required one.
+  await assertRejects(() => run({ a: [[{ id: one, value: 1, scope_id: 'x' }]], b: [] }), Error, 'a: invalid output columns');
+  await assertRejects(() => run({ c: [[{ id: 'x' }]] }, { name: 'paged', to: ['c'] }), Error, 'c: invalid output columns');
   await assertRejects(() => run({ a: [Array.from({ length: 129 }, (_, i) => ({ id: String(i), value: i }))], b: [] }), Error, 'exceeds its bound');
   await assertRejects(() => run({ a: [[{ id: one, value: 9 }]], b: [[{ id: 'new', value: 3 }]] }, { ...spec, onComplete: 'fail_complete' }), pg.DatabaseError, 'hook failed');
   const staged = await stagePages(db.client, spec, async function* (sink) {

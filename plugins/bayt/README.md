@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="bayt" width="360">
+  </picture>
+</p>
+
 # bayt
 
 Bayt gives you cryptographic, content-addressed incremental invalidation on top of the build tools you already use — gradle, pnpm, go, cargo, make, whatever. One CUE declaration per target generates every file your existing tools expect: `Taskfile.yml`, per-target `Dockerfile`s, `compose.yaml`, `skaffold.yaml`, `docker-bake.hcl`, `.vscode/tasks.json`, plus a canonical per-target JSON manifest.
@@ -25,7 +32,7 @@ Pin the release in your project's `.mise.toml`:
 
 ```toml
 [tools]
-"github:bonisoft3/bayt" = "0.73.0"
+"github:bonisoft3/bayt" = "0.73.1"
 ```
 
 `bayt` is then on PATH. Run from any directory containing a `bayt.cue` to get the `.bayt` generated dir with all configuration your build needs:

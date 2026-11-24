@@ -43,6 +43,7 @@ processes:
     - AUTHENTICATOR_PASSWORD=${AUTHENTICATOR_PASSWORD:-dev-authenticator-password}
     - ELECTRIC_PASSWORD=${ELECTRIC_PASSWORD:-dev-electric-password}
     - PGPORT=${DATABASE_PG_PORT:-17726}
+    - PGRST_JWT_SECRET=${PGRST_JWT_SECRET:-mecha-dev-secret-please-override-32ch}
     - POSTGRES_DB=${POSTGRES_DB:-mecha}
     - >-
       POSTGRES_INITDB_ARGS=--no-sync --encoding=UTF8 --auth=trust
@@ -157,10 +158,12 @@ processes:
     availability:
       exit_on_skipped: true
     environment:
+    - ANDROID_APK_KEY_HASHES=${ANDROID_APK_KEY_HASHES:-}
     - AUTH_STATEMENT_TIMEOUT_MS=5000
     - >-
       DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@127.0.0.1:${DATABASE_PG_PORT:-17726}/${POSTGRES_DB:-mecha}
-    - OIDC_PROVIDERS=
+    - NATIVE_SCHEMES=${NATIVE_SCHEMES:-}
+    - OIDC_PROVIDERS=${OIDC_PROVIDERS:-}
     - PGRST_JWT_SECRET=${PGRST_JWT_SECRET:-mecha-dev-secret-please-override-32ch}
     - PORT=${AUTH_HTTP_PORT:-20440}
     - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN:-https://localhost:*}
@@ -451,6 +454,7 @@ processes:
       backoff_seconds: 1
       max_restarts: 15
     environment:
+    - CDC_GROUPS=["rpk-transform"]
     - CRUD_URL=http://127.0.0.1:${CRUD_HTTP_PORT:-31050}
     - REDIS_URL=redis://127.0.0.1:${REDIS_REDIS_PORT:-16525}
     - >-

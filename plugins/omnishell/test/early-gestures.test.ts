@@ -2,10 +2,7 @@ import { describe, expect, it } from "@test/harness"
 import { parseHTML } from "linkedom"
 import { replayEarlyGestures, takeEarlyGestures } from "../interpreter/early-replay.js"
 
-// A reader on a served form typed a title and pressed Create before the terminal arrived:
-// nothing answered, no deck was made, and the binding wiped the title. linkedom has no
-// capture phase, so what holds the gestures (early-gestures.js) is a browser's to check:
-// the release's verify presses Create the moment the screen is in the document.
+// Non-form gestures can still be replayed after a served document is adopted.
 const held = (gestures: unknown[]) => {
   (globalThis as { __prontoEarlyGestures?: () => unknown[] }).__prontoEarlyGestures = () => {
     delete (globalThis as { __prontoEarlyGestures?: unknown }).__prontoEarlyGestures
@@ -15,6 +12,7 @@ const held = (gestures: unknown[]) => {
 const page = () => {
   const { document } = parseHTML(`<!doctype html><html><body><main id="app">
     <input id="title"><button id="create" type="button">Create</button><a id="out" href="/x">Out</a>
+    <button id="signin" type="button" data-auth-action="device"><span id="signin-word">Sign in</span></button>
   </main></body></html>`)
   delete (globalThis as { __prontoLive?: unknown }).__prontoLive
   return { root: document.getElementById("app")!, by: (id: string) => document.getElementById(id) as unknown as HTMLInputElement }
@@ -48,6 +46,18 @@ describe("replaying what was held", () => {
     held([{ type: "click", target: by("out") }, { type: "click", target: by("create") }])
     await replayEarlyGestures(root.ownerDocument, async () => {})
     expect(heard).toEqual([["create", true]])
+  })
+
+  // Regression: a Sign in pressed on the served page was replayed without the
+  // reader's activation, which the device's immediate ask refuses at once, so
+  // a returning reader was told the device had nothing saved.
+  it("never replays a sign-in, whose ceremony needs the reader's own press", async () => {
+    const { root, by } = page()
+    const heard: string[] = []
+    root.addEventListener("click", (e: Event) => heard.push((e.target as Element).id))
+    held([{ type: "click", target: by("signin-word") }, { type: "click", target: by("create") }])
+    await replayEarlyGestures(root.ownerDocument, async () => {})
+    expect(heard).toEqual(["create"])
   })
 
   it("does nothing on a document that holds none, or for a node since gone", async () => {

@@ -138,6 +138,7 @@ function boot(html = SCREEN_HTML, rows = []) {
   const subs = new Set();
   const knobs = { refuseNext: false, refuseUpsert: false, failUpsert: false, slowUpsertMs: 0 };
   const baseStore = {
+    answer: () => rows,
     query: async () => rows,
     subscribe: (_table, cb) => {
       subs.add(cb);
@@ -190,6 +191,7 @@ function boot(html = SCREEN_HTML, rows = []) {
     if (u.endsWith(".css")) return Promise.resolve(new Response(""));
     const mod = Object.keys(MODULES).find((m) => u.endsWith(m));
     if (mod) return Promise.resolve(new Response(MODULES[mod]));
+    if (u.endsWith("/auth/oidc")) return Promise.resolve(Response.json({ providers: ["google", "apple"] }));
     return Promise.reject(new Error(`unexpected fetch ${u}`));
   };
   return { document, Event, store, rows, puts, upserts, creates, knobs };

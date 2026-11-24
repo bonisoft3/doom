@@ -153,6 +153,124 @@ subtly wrong floor, and a correction to the floor reaches every app by
 migration rather than by regeneration. The floor holds even when the
 generator is bypassed.
 
+## Field behaviour
+
+A role decides who may write a row; a field's behaviour decides which of its
+fields any client may write, the same for every caller. The words are Google
+[AIP-203](https://google.aip.dev/203)'s, and the model is Drive's, whose API
+marks a file's `modifiedTime`, `version` and `lastModifyingUser` "Output only".
+No role reaches a column.
+
+- `outputOnly: true`: the server sets it. A value a client sends is cleared
+  and never refused, as AIP-203 asks: a client's insert takes the column's
+  default (the machine's initial for its state field, NULL where none is
+  stated), and its update keeps the column's value.
+- `immutable: true`: set when the row is created and never changed. A client's
+  update stating the value the row holds passes, and one changing it raises
+  SQLSTATE 22023 `invalid_parameter_value`, which PostgREST answers 400. A
+  `json` or `geojson` value is compared as the value it states, as `jsonb`
+  compares it, so an object restated with its keys in another order passes.
+
+A client is a role a token names, the one a write through PostgREST runs as:
+any role `authenticator` may switch to (`001_roles.sql` grants it `anon`,
+`app_user`, `service` and each declared token role), but `service`, whose
+token is the server's own. The trigger asks the membership rather than a
+list, so a token role declared after it was emitted is held too. Each entity
+stating either word gets one BEFORE INSERT OR UPDATE trigger,
+`0_<table>_field_behavior`, whose function is not SECURITY DEFINER, so it
+reads `current_user` as the statement's own role. A write a machine or
+lifecycle trigger makes runs as that trigger's owner, since those are
+SECURITY DEFINER, and no token names the owner; the service, a computation's
+sink, a seed and a migration are no client either: all of them write both
+fields. A database with no `authenticator` takes no write through PostgREST,
+and holds nobody. A table's
+triggers fire in the order of their names, and a digit sorts before every
+name the program gives one, so a machine's interpreter reads NEW after the
+client's values are cleared or refused, and its own assigns stand.
+
+The triggers are `799_field_behavior.sql`, a step of their own beside
+`799_write_permissions.sql`, so no applied step changes; a later entity's
+migration carries its own. Native releases reapply them as
+`field_behavior.sql` in the `migrate` service, as `public_access.sql` is,
+so a database whose initdb ran before a field stated its behaviour holds it.
+Reconciliation also drops the trigger of every server table that states no
+behaviour, so a database that held one agrees with a fresh one; the drop
+locks a table only where its trigger stands. It rides a reconcile the release
+runs anyway, as the token roles' prune does, and starts none of its own: a
+program whose last behaviour goes, with nothing else to reconcile, takes the
+trigger off in an authored migration.
+
+The rest of the app is held to the same words before anything reaches the
+database: `cue vet` refuses either word on a key, a generated or a retired
+field, or a row machine's state field (a client moves the machine by writing
+it, and the interpreter reads the value written as the target, so either word
+would make every move a silent no-op or a refusal; a Cortex machine, whose
+events arrive as command rows, is exempt), both on one field, a form naming an output-only field and an update
+form naming an immutable one; the terminal's markup check refuses a chart
+whose assigns, transitions, empty row or effects write an output-only field
+or change an immutable one, and a form control naming one; the battery
+refuses a handler's update doing the same; and the store drops an output-only
+value and refuses an immutable change before its optimistic row stands,
+which for a `tab` or `device` entity is the whole of the enforcement. A
+server row machine's own `assign` runs in the database as its owner, and is
+no client's.
+
+## Emitted database access model
+
+For a program with a server tier, `#emit.access` exposes the desired database
+roles, role settings, authenticator memberships and schema/table grants as
+CUE data. `001_roles.sql`, `002_grants.sql` and the grant in
+`008_publication.sql` render from this model in [[../emit.cue]]. It is derived
+from the program; it is not an operator-supplied access policy.
+
+### Generated or checked
+
+With `state.provisioning` omitted or set to `"generated"`, Pronto creates
+and grants the roles. Existing roles can retain attributes that differ from
+the model. For example, generated provisioning leaves an existing role's
+`SUPERUSER` attribute alone.
+
+Set `state.provisioning: "checked"` on a server program to generate a check
+for an owner-provisioned PostgreSQL database. The owner runs the emitted
+`services/database/provision.sql` once on a cluster with none of the runtime
+roles. Use a dedicated cluster for each checked app because roles and their
+memberships are cluster-wide.
+
+Run the check as the login that will migrate the database. Fresh initdb runs
+it at the start of `001_roles.sql`. Mecha's migration runner runs the same
+check in `reconcile.roles` before opening its ledger or reconciling token
+roles. On a difference, PostgreSQL reports repair statements in `DETAIL`.
+A database administrator reviews and applies the statements, then the migration
+login reruns the check. If a runtime role owns the database, the suggested
+repair transfers ownership to the migration login. If a runtime role owns
+`public`, the repair restores `pg_database_owner` as the schema owner.
+Migrations continue to manage tables, policies, table grants and default privileges.
+
+| What the check reads | What must hold |
+|---|---|
+| Role attributes and ownership | Each runtime role has the model's login, inheritance, superuser, role creation, database creation, RLS bypass and replication attributes. Database and application schema ownership stay separate from runtime roles. |
+| Memberships | Each declared membership permits `SET`, has the expected inheritance and lacks `ADMIN`. Runtime roles have only their declared memberships. Grants of `authenticator`, RLS-bypassing roles and replication roles are restricted to declared members. PostgreSQL's admin-only grants to a delegated database owner can remain when issued by a superuser. |
+| Role settings | Timeout values match the model's spelling and have no override for this database. |
+| Schema privileges | Roles hold the declared privileges on `public`. Neither runtime roles nor `PUBLIC` have a grant of `CREATE` there. |
+| Migration login | A separate login can bypass RLS, has `CREATE` on the database and has `USAGE` and `CREATE` on `public`, the first schema in its effective search path. |
+
+**Requirements.** Membership options require PostgreSQL 16 or later. The
+migration login needs ownership of the app's tables for subsequent migrations.
+Provisioning requires an administrator with permission to create roles with
+`BYPASSRLS` and `REPLICATION`. The owner supplies credentials and installs
+extensions that require elevated privileges. The check covers the catalog
+state listed above. Passwords, other settings, database-level grants,
+table and function ownership, object grants, and installed extensions require
+separate validation.
+
+**Release support.** Current release targets provision their own database.
+On a fresh cluster their initdb reaches the check before the owner can apply
+the provisioning script, and Mecha's password initialization still uses
+`ALTER ROLE`. Checked mode currently supports generating and running the SQL
+against a separately prepared database. On retained Kubernetes and GCP
+databases, the schema job replays policies before the migration runner, so a
+missing role can surface as a PostgreSQL policy error first.
+
 ## Declared token roles
 
 A [declared token role](identity.md#token-roles-and-trusted-issuers) is a

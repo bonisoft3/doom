@@ -22,7 +22,7 @@
 // <out>/src/index.ts, <out>/wrangler.jsonc
 import { readEdgeHatches, applyHatchAttributes } from './edge-hatches.ts'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { writeEdgeAssets, type StaticAsset } from './edge-assets.ts'
 import { addressEdgeAssets, edgeRoutingRules, realmSubdomains, releaseAddresses } from './edge-addresses.ts'
 import { builtRelease, holdIceServers } from './edge-ice.ts'
@@ -30,6 +30,7 @@ import { ASSET_CACHE_RULE, seedBlobFiles, writeEdgeAssets as writeSeedAssets } f
 import { databaseScript, writeEdgeSsr } from './edge-ssr.ts'
 import { realmDocumentsOf, subdomainRealmsOf } from './edge-templates.ts'
 import { type Reducers, renderMachines } from './edge-machines.ts'
+import { type MechaReducerMachine, timed } from '../mecha-reducer.ts'
 import { computationPackages } from './compute.ts'
 import { writeEdgeCompute } from './edge-compute.ts'
 import { writeEdgeReader } from './edge-reader.ts'
@@ -87,6 +88,7 @@ async function run(cmd: string, args: string[], cwd?: string, env?: Record<strin
 
 const shell = JSON.parse(await Deno.readTextFile(path.join(app, 'shell/shell.json'))) as {
   app?: string
+  native?: string[]
   ai?: Record<string, unknown>
   tables: string[]
   schema?: Record<string, { durability?: string }>
@@ -114,7 +116,7 @@ const drains = clustered ? await clusterDrains(path.join(app, '.pronto/cluster.j
 // Asked before anything is cleared: a refused release leaves the last one's output standing.
 const seedOut = await new Deno.Command('cue', { args: ['export', '.', '-e', EDGE_CAPABILITIES_CUE, '--out', 'json'], cwd: app, stdout: 'piped', stderr: 'inherit' }).output()
 if (!seedOut.success) fail('cue export of code.capabilities failed')
-const { assets, seedBlobs, blobs, images, signIn, providerRelease } = JSON.parse(new TextDecoder().decode(seedOut.stdout)) as { assets: { manifest: string; origin: string } | null; seedBlobs: { dir: string } | null; blobs: boolean; images: { sourceBucket?: string; plan: 'free' | 'paid' } | null; signIn: Record<string, { client?: string; issuer?: string; scope?: string; params?: string }>; providerRelease: Record<string, { releaseIssuer?: string }> }
+const { assets, seedBlobs, blobs, images, signIn } = JSON.parse(new TextDecoder().decode(seedOut.stdout)) as { assets: { manifest: string; origin: string } | null; seedBlobs: { dir: string } | null; blobs: boolean; images: { sourceBucket?: string; plan: 'free' | 'paid' } | null; signIn: Record<string, { client?: string; issuer?: string; scope?: string; params?: string; credential?: true }> }
 const routeScreens: Record<string, string> = {}
 for (const { files } of shell.routes ?? []) routeScreens[files.html] = await Deno.readTextFile(path.join(app, files.html))
 const imagePlan = imagePlanRefusal(routeScreens, images)
@@ -153,7 +155,43 @@ if (!statics.success) fail('cue export of public assets failed')
 const { statics: terminalStatics, clusterStatics } = JSON.parse(new TextDecoder().decode(statics.stdout)) as { statics: StaticAsset[]; clusterStatics: StaticAsset[] }
 await writeEdgeAssets(app, omnishell, publicDir, [...terminalStatics, ...clusterStatics])
 await applyHatchAttributes(publicDir, hatches)
-const hints = await addressEdgeAssets(addresses, publicDir, { previous: retainedFrom, iceServers, domain: domain || undefined })
+let nativeBridgeBytes: Uint8Array | undefined
+if (shell.native) {
+  const { projectAppNative } = await import(pathToFileURL(path.join(omnishell, 'project-native.ts')).href) as {
+    projectAppNative: (appDir: URL, options?: { origin?: string }) => Promise<{ screens: Record<string, { divkit: unknown }> }>
+  }
+  const projected = await projectAppNative(pathToFileURL(app + '/'), { origin: domain ? `https://${domain}` : undefined })
+  await Deno.mkdir(path.join(publicDir, 'shell/screens'), { recursive: true })
+  for (const [screenName, spec] of Object.entries(projected.screens)) {
+    await Deno.writeTextFile(path.join(publicDir, `shell/screens/${screenName}.divkit.json`), JSON.stringify(spec.divkit))
+  }
+  const bridgeFiles: string[] = []
+  for (const sub of ['android/src/main/kotlin/com/pronto/omnishell/bridge', 'ios/Sources/Omnishell/bridge']) {
+    const dir = path.join(omnishell, sub)
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (entry.isFile) bridgeFiles.push(path.join(dir, entry.name))
+      }
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) throw e
+    }
+  }
+  bridgeFiles.sort()
+  const parts: Uint8Array[] = []
+  for (const f of bridgeFiles) parts.push(await Deno.readFile(f))
+  const total = parts.reduce((n, b) => n + b.length, 0)
+  nativeBridgeBytes = new Uint8Array(total)
+  let offset = 0
+  for (const b of parts) {
+    nativeBridgeBytes.set(b, offset)
+    offset += b.length
+  }
+}
+const ed25519Pkcs8B64 = Deno.env.get('NATIVE_MANIFEST_ED25519_PKCS8')?.trim() ?? ''
+const ed25519PrivateKey = ed25519Pkcs8B64
+  ? Uint8Array.from(atob(ed25519Pkcs8B64.replaceAll('-', '+').replaceAll('_', '/')), (c) => c.charCodeAt(0))
+  : undefined
+const hints = await addressEdgeAssets(addresses, publicDir, { previous: retainedFrom, iceServers, domain: domain || undefined, nativeBridge: nativeBridgeBytes, ed25519PrivateKey })
 if (tempRetained) await Deno.remove(tempRetained, { recursive: true }).catch(() => {})
 await holdIceServers(builtRelease(publicDir), iceServers, publicDir)
 await Deno.writeTextFile(path.join(out, 'src/hints.json'), JSON.stringify(hints))
@@ -163,25 +201,69 @@ const blobVars: Record<string, string> = blobs ? {
   BLOB_URL: images ? '/img/insecure/plain/s3://mecha-objects/' : '/blobs/mecha-objects/',
   ...(images?.sourceBucket ? { IMAGE_SOURCE_BUCKET: images.sourceBucket } : {}),
 } : {}
+async function assetlinksApkKeyHashes(publicDir: string): Promise<string> {
+  let raw: string
+  try {
+    raw = await Deno.readTextFile(path.join(publicDir, '.well-known/assetlinks.json'))
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) return ''
+    throw e
+  }
+  const statements = JSON.parse(raw) as Array<{
+    relation?: unknown
+    target?: { namespace?: unknown; sha256_cert_fingerprints?: unknown }
+  }>
+  if (!Array.isArray(statements)) return ''
+  const hashes = new Set<string>()
+  for (const stmt of statements) {
+    if (stmt?.target?.namespace !== 'android_app') continue
+    if (!Array.isArray(stmt.relation) || !stmt.relation.includes('delegate_permission/common.get_login_creds')) continue
+    if (!Array.isArray(stmt.target.sha256_cert_fingerprints)) continue
+    for (const fp of stmt.target.sha256_cert_fingerprints) {
+      if (typeof fp !== 'string') continue
+      const hex = fp.replaceAll(':', '').trim()
+      if (!/^[0-9a-fA-F]{64}$/.test(hex)) fail(`assetlinks.json sha256_cert_fingerprints entry ${JSON.stringify(fp)} is not 32 hex bytes`)
+      const bytes = new Uint8Array(32)
+      for (let i = 0; i < 32; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+      const b64url = btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+      hashes.add(`android:apk-key-hash:${b64url}`)
+    }
+  }
+  return [...hashes].join(',')
+}
+
+const androidApkKeyHashes = Deno.env.get('ANDROID_APK_KEY_HASHES') ?? await assetlinksApkKeyHashes(publicDir)
+const nativeSchemes = Deno.env.get('NATIVE_SCHEMES') ?? ((shell.native || androidApkKeyHashes !== '') && shell.app ? shell.app : '')
 const authProviders = Object.keys(signIn)
-const authVars: Record<string, string> = authProviders.length ? {
-  OIDC_PROVIDERS: authProviders.join(','),
-  ...Object.fromEntries(authProviders.flatMap((p) => {
-    const upper = p.toUpperCase()
-    const cfg = signIn[p] ?? {}
-    const localIssuer = cfg.issuer === 'http://localhost:28443'
-    const entries: [string, string][] = []
-    const issuer = Deno.env.get(`OIDC_${upper}_ISSUER`) || (localIssuer ? providerRelease[p]?.releaseIssuer : cfg.issuer)
-    if (issuer) entries.push([`OIDC_${upper}_ISSUER`, issuer])
-    const client = Deno.env.get(`OIDC_${upper}_CLIENT_ID`) || (!localIssuer || issuer ? cfg.client : undefined)
-    if (client) entries.push([`OIDC_${upper}_CLIENT_ID`, client])
-    const scope = Deno.env.get(`OIDC_${upper}_SCOPE`) || (!localIssuer || issuer ? cfg.scope : undefined)
-    if (scope) entries.push([`OIDC_${upper}_SCOPE`, scope])
-    const params = Deno.env.get(`OIDC_${upper}_AUTHORIZE_PARAMS`) || (!localIssuer || issuer ? cfg.params : undefined)
-    if (params) entries.push([`OIDC_${upper}_AUTHORIZE_PARAMS`, params])
-    return entries
-  })),
-} : {}
+// A deployment signing in through the operator's broker in place of the
+// program's own clients (a staging host whose origin no client registers):
+// each provider but Bluesky, whose client is the origin anyway, as
+// identity.#Signin's broker writes it.
+const broker = Deno.env.get('OIDC_BROKER')
+if (broker !== undefined && !/^https:\/\/[^/]+$/.test(broker)) fail(`OIDC_BROKER is ${JSON.stringify(broker)}, not an https origin`)
+const authVars: Record<string, string> = {
+  ...(authProviders.length ? {
+    OIDC_PROVIDERS: authProviders.join(','),
+    ...Object.fromEntries(authProviders.flatMap((p) => {
+      const upper = p.toUpperCase()
+      const cfg = broker !== undefined && p !== 'bluesky'
+        ? { issuer: broker, client: 'origin', scope: 'openid profile email', params: `provider=${p}` }
+        : signIn[p] ?? {}
+      const entries: [string, string][] = []
+      // Bluesky's client is the origin; a deployment may name its entryway and AppView.
+      const settings = p === 'bluesky'
+        ? [['ENTRYWAY', undefined], ['APPVIEW', undefined]] as const
+        : [['ISSUER', cfg.issuer], ['CLIENT_ID', cfg.client], ['SCOPE', cfg.scope], ['AUTHORIZE_PARAMS', cfg.params], ['CREDENTIAL', cfg.credential ? 'true' : undefined]] as const
+      for (const [setting, own] of settings) {
+        const value = Deno.env.get(`OIDC_${upper}_${setting}`) || own
+        if (value) entries.push([`OIDC_${upper}_${setting}`, value])
+      }
+      return entries
+    })),
+  } : {}),
+  ...(androidApkKeyHashes ? { ANDROID_APK_KEY_HASHES: androidApkKeyHashes } : {}),
+  ...(nativeSchemes ? { NATIVE_SCHEMES: nativeSchemes } : {}),
+}
 const workerVars: Record<string, string> = {
   ...blobVars,
   ...authVars,
@@ -286,15 +368,16 @@ if (withEffects) {
 
 // The object's clock is the ticker's own sweep (mecha-edge's clock.ts), whose
 // cron reader croner reaches wrangler's bundler through node_modules beside
-// the ticker, installed from its lock; mecha-edge's node_modules provides the
-// pinned WebAuthn server dependency.
+// the ticker, installed from its lock; the auth routes (services/auth/core.ts)
+// reach the pinned WebAuthn server through node_modules beside auth.
 await run(Deno.execPath(), ['install', '--frozen'], path.join(mecha, 'services/ticker'))
+await run(Deno.execPath(), ['install', '--frozen'], path.join(mecha, 'services/auth'))
 await run(Deno.execPath(), ['install', '--frozen', '--node-modules-dir=auto'], path.join(mecha, 'packages/mecha-edge'), { DENO_NO_PACKAGE_JSON: '1' })
 await run(Deno.execPath(), ['install', '--frozen', '--config', path.join(mecha, 'services/airlock/deno.json')], path.join(mecha, 'services/airlock'))
 // The clock outside the object: a Cron Trigger poking hourly where anything
 // can owe a tick, so the free plan pays a day of object wakes for an alarm
 // the platform lost rather than a minute's; the alarm is the exact one.
-const armed = Object.values(reducers).some((h) => (h.reducer as { ports?: { wake?: unknown } }).ports?.wake !== undefined)
+const armed = Object.values(reducers).some((h) => timed(h.reducer as MechaReducerMachine))
 const pokes = !!compute || clock !== 'disabled' && (crons.length > 0 || armed || withEffects || hatches.length > 0)
 const POKE_CRON = '0 * * * *'
 
@@ -395,7 +478,7 @@ ${shell.presenter ? `    // A presenter's module import of this origin is answer
     }
     const response = await edgeWorker.fetch(req, env, ctx)
     if (req.method !== 'GET' || response.status !== 200 ||
-        /^\\/(?:_immutable-|(?:shell|omnishell|messages|docs)\\/)/.test(url.pathname) ||
+        /^\\/(?:_immutable-|(?:shell|omnishell|messages|docs|auth)\\/)/.test(url.pathname) ||
         !(response.headers.get('content-type') ?? '').includes('text/html') ||
         !(req.headers.get('sec-fetch-mode') === 'navigate' || (req.headers.get('accept') ?? '').includes('text/html'))) return response
     const result = new Response(response.body, response)

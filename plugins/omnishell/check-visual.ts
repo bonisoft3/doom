@@ -31,6 +31,7 @@ import { checkClippedControls } from "./src/lint/playwright/checks/clipped-contr
 import { checkAlignmentDrift } from "./src/lint/playwright/checks/alignment-drift.ts"
 import { checkGridBaseline } from "./src/lint/playwright/checks/grid-baseline.ts"
 import { checkWhiteSpace } from "./src/lint/playwright/checks/whitespace-balance.ts"
+import { checkEmptyStrip } from "./src/lint/playwright/checks/empty-strip.ts"
 import { baseUrl } from "./base-url.ts"
 import { checkContrast, contrastFloor, contrastRatio } from "./src/lint/playwright/checks/contrast.ts"
 import { armCLS, checkCLS } from "./src/lint/playwright/checks/cls.ts"
@@ -835,7 +836,7 @@ async function main(appDir: string, viewports: Viewport[] = DEFAULT_VIEWPORTS): 
     try {
       const context = await browser.newContext()
       try {
-        if (session !== undefined) await context.addInitScript((s) => { if (window === window.top) sessionStorage.setItem("pronto-token", JSON.stringify(s)) }, session)
+        if (session !== undefined) await context.addInitScript((s) => { if (window === window.top) localStorage.setItem("pronto-token", JSON.stringify(s)) }, session)
         for (const hole of tabHoles) {
           const route = routes.find((r) => r.path === hole.route)
           const parentPath = hole.route.slice(0, hole.route.lastIndexOf("/")) || "/"
@@ -1003,6 +1004,7 @@ async function main(appDir: string, viewports: Viewport[] = DEFAULT_VIEWPORTS): 
           checkAlignmentDrift(b),
           checkGridBaseline(b),
           checkWhiteSpace(b),
+          checkEmptyStrip(b),
           checkCLS(b),
         ])
       ).flat()
@@ -1163,6 +1165,7 @@ async function main(appDir: string, viewports: Viewport[] = DEFAULT_VIEWPORTS): 
                 checkAlignmentDrift(b),
                 checkGridBaseline(b),
                 checkWhiteSpace(b),
+                checkEmptyStrip(b),
               ])
             ).flat()
             // Geometry checks run on every pairwise interaction; checkContrast
@@ -1244,7 +1247,7 @@ async function main(appDir: string, viewports: Viewport[] = DEFAULT_VIEWPORTS): 
         // The shell reads its session only behind `auth.required`, which a
         // browser-only app never declares, so it is written only where minted.
         if (session !== undefined) {
-          await context.addInitScript((s) => { if (window === window.top) sessionStorage.setItem("pronto-token", JSON.stringify(s)) }, session)
+          await context.addInitScript((s) => { if (window === window.top) localStorage.setItem("pronto-token", JSON.stringify(s)) }, session)
         }
         let next = 0
         const lane = async () => {

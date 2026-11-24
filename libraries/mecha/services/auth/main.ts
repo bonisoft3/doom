@@ -1,35 +1,31 @@
-// Auth service: WebAuthn passkey ceremonies, provider sign-in (oidc.ts) and a
-// guest mint. The token
-// contract three components share is README.md; endpoints are mounted WITH
-// the /auth prefix (Caddy strips nothing). Stateless: the
-// WebAuthn challenge travels in a short-lived HS256 `state` JWT instead of
-// server-side sessions. app_user is a program entity created by the database
-// migrations; this service only self-migrates webauthn_credential and
-// identity_link, in its own schema (schema.ts).
-import {
-  generateAuthenticationOptions,
-  generateRegistrationOptions,
-  verifyAuthenticationResponse,
-  verifyRegistrationResponse,
-} from "@simplewebauthn/server";
+// Auth service: mecha's auth routes (core.ts) on Postgres, and the sync path's
+// gatekeeper for Electric shapes. The token contract three components share is
+// README.md; endpoints are mounted WITH the /auth prefix (Caddy strips
+// nothing). app_user is a program entity created by database migrations; this
+// service self-migrates its own tables in mecha_auth (schema.ts).
 import postgres from "postgres";
+import { type AuthDb, authCore, type Query, REFRESH_TOKEN_TTL_S, type Row } from "./core.ts";
 import {
+  androidOrigins,
   isSession,
+  nativeSchemesFrom,
+  STACK_ISSUER,
+  signJwt as sign,
+  verifyJwt as verify,
+} from "./jwt.ts";
+import {
   isSubsetWhere,
   PUBLIC_WHERE,
   SHAPE_FIXED_PARAMS,
   shapeWhere,
-  signJwt as sign,
-  STACK_ISSUER,
   SUBSET_LIMIT,
   SUBSET_ORDER,
   SUBSET_PARAMS,
   subsetParams,
-  verifyJwt as verify,
-} from "./jwt.ts";
-import { type Links, oidc, type Profile, providersFrom } from "./oidc.ts";
-import { prepareAuthTables, sealAuthTables } from "./schema.ts";
-export { shapeWhere };
+} from "./where.ts";
+import { type Provider, providersFrom } from "./oidc.ts";
+import { AUTH_TABLES, EVOLVE_AUTH_TABLES, prepareAuthTables, LINK_PER_PROVIDER, sealAuthTables, STAMP_EFFECTS } from "./schema.ts";
+export { androidOrigins, nativeSchemesFrom, REFRESH_TOKEN_TTL_S, shapeWhere };
 
 function required(name: string): string {
   const value = Deno.env.get(name);
@@ -79,6 +75,8 @@ export function admittedOrigin(rpId: string, origin: string): string {
 
 const RP_ID = required("WEBAUTHN_RP_ID");
 const ORIGIN = admittedOrigin(RP_ID, required("WEBAUTHN_ORIGIN"));
+const ANDROID_ORIGINS = androidOrigins(Deno.env.get("ANDROID_APK_KEY_HASHES"));
+const NATIVE_SCHEMES = nativeSchemesFrom(Deno.env.get("NATIVE_SCHEMES"));
 const OIDC_PROVIDERS = providersFrom((name) => Deno.env.get(name));
 
 /**
@@ -93,24 +91,45 @@ export function ceremonyOrigin(configured: string, host: string | null): string 
   return host !== null && /^localhost(:\d+)?$/.test(host) ? `https://${host}` : configured;
 }
 
-const USER_TOKEN_TTL_S = 7 * 24 * 3600;
+/**
+ * The origin a page the door served has, which its cookies and same-origin
+ * checks are for. A configured origin is exact. Behind the dev door the Host
+ * forwarded names it: localhost, or a container network's one-label name such
+ * as `caddy`, where a stack's own browser reaches the door, though no passkey
+ * on localhost verifies there. A dotted Host leaves DEV_DOOR itself.
+ */
+export function doorOrigin(configured: string, host: string | null): string {
+  if (configured !== DEV_DOOR) return configured;
+  return host !== null && /^[a-z0-9-]+(:\d+)?$/.test(host) ? `https://${host}` : configured;
+}
+
+/** The origins a ceremony may come from: the door's, and an Android app's. */
+export function ceremonyOrigins(
+  configured: string,
+  host: string | null,
+  android: readonly string[] = ANDROID_ORIGINS,
+): string[] {
+  return [ceremonyOrigin(configured, host), ...android];
+}
+
 // A shape token outlives one long-poll cycle and little else: Electric holds a
 // request open for 300s, so a token shorter than that expires mid-stream, and a
 // long one is a scope set that cannot be revoked.
 const SHAPE_TOKEN_TTL_S = 900;
-const STATE_TTL_S = 300;
 
-export const sql = postgres(DATABASE_URL, { connection: { statement_timeout: STATEMENT_TIMEOUT_MS } });
+// No array types fetched on connect: postgres.js runs that query of its own
+// from a handler that drops its promise, so a statement timeout there is an
+// unhandled rejection that ends the process. An array is read as JSON instead.
+export const sql = postgres(DATABASE_URL, { fetch_types: false, connection: { statement_timeout: STATEMENT_TIMEOUT_MS } });
 
 export async function migrate(): Promise<void> {
   // One instance at a time: replicas starting together (a rollout) would race
   // each step below. Where the tables live and why: schema.ts.
   await sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtext('mecha auth: migrate'))`;
-    await tx.unsafe(prepareAuthTables(["webauthn_credential", "identity_link"]));
-    await tx`ALTER TABLE mecha_auth.identity_link ADD COLUMN IF NOT EXISTS issuer text,
-      ADD COLUMN IF NOT EXISTS name text, ADD COLUMN IF NOT EXISTS picture text,
-      ADD COLUMN IF NOT EXISTS email text`;
+    await tx.unsafe(prepareAuthTables(AUTH_TABLES));
+    await tx.unsafe(EVOLVE_AUTH_TABLES);
+    await tx`ALTER TABLE mecha_auth.identity_link ADD COLUMN IF NOT EXISTS issuer text`;
     // A legacy provider label may have named any issuer. Its owner must supply
     // that issuer before these accounts can safely accept another sign-in.
     const [legacy] = await tx`SELECT EXISTS (SELECT 1 FROM mecha_auth.identity_link WHERE issuer IS NULL) AS unassigned`;
@@ -124,34 +143,9 @@ export async function migrate(): Promise<void> {
         ALTER TABLE mecha_auth.identity_link ADD PRIMARY KEY (provider, issuer, sub);
       END IF;
     END $$`;
-    await tx.unsafe(sealAuthTables(["webauthn_credential", "identity_link"]));
-  });
-}
-
-// --- HS256 JWT via WebCrypto, under this service's secret ---
-
-const enc = new TextEncoder();
-
-export const signJwt = (claims: Record<string, unknown>) => sign(JWT_SECRET, claims);
-export const verifyJwt = (token: string) => verify(JWT_SECRET, token);
-
-// A guest's token says so, so a policy can keep writes to the people who
-// signed in (`request.jwt.claims ->> 'guest'`).
-export function issueUserToken(
-  id: string,
-  handle: string,
-  guest = false,
-  profile?: { name?: string | null; email?: string | null },
-): Promise<string> {
-  return signJwt({
-    iss: STACK_ISSUER,
-    role: "app_user",
-    sub: id,
-    handle,
-    guest,
-    ...(profile?.name ? { name: profile.name } : {}),
-    ...(profile?.email ? { email: profile.email } : {}),
-    exp: Math.floor(Date.now() / 1000) + USER_TOKEN_TTL_S,
+    await tx.unsafe(LINK_PER_PROVIDER);
+    await tx.unsafe(STAMP_EFFECTS);
+    await tx.unsafe(sealAuthTables(AUTH_TABLES));
   });
 }
 
@@ -188,7 +182,7 @@ async function tableScope(table: string): Promise<{ floored: boolean; publicOnly
 }
 
 async function subjectScopes(uid: string | null): Promise<string[]> {
-  const rows = await sql`SELECT public.subject_scopes(${uid}) AS scopes`;
+  const rows = await sql`SELECT to_jsonb(public.subject_scopes(${uid})) AS scopes`;
   return rows[0].scopes as string[];
 }
 
@@ -238,6 +232,9 @@ async function shapeToken(req: Request): Promise<Response> {
   const subject = await subjectOf(req);
   if (subject === "refused" || subject.claims === null) return jsonError(401, "invalid token");
   const sub = subject.claims.sub as string;
+  // A token outlives its account's deletion; the account's shapes do not.
+  const [live] = await sql`select 1 from app_user where id = ${sub}`;
+  if (!live) return jsonError(401, "no such account");
   const body = await readBody(req);
   if (!body || !validTable(body.table)) return jsonError(400, "table required");
 
@@ -422,11 +419,10 @@ async function shapeVerify(req: Request): Promise<Response> {
 
 // --- HTTP surface ---
 
-function json(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+function json(status: number, body: unknown, cookies: string[] = []): Response {
+  const headers = new Headers({ "content-type": "application/json" });
+  for (const c of cookies) headers.append("set-cookie", c);
+  return new Response(JSON.stringify(body), { status, headers });
 }
 
 function jsonError(status: number, error: string): Response {
@@ -442,304 +438,60 @@ async function readBody(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
-async function readState(
-  body: Record<string, unknown>,
-  purpose: string,
-): Promise<Record<string, unknown> | null> {
-  if (typeof body.state !== "string") return null;
-  const st = await verifyJwt(body.state);
-  if (!st || st.purpose !== purpose) return null;
-  return st;
-}
+export const signJwt = (claims: Record<string, unknown>) => sign(JWT_SECRET, claims);
+export const verifyJwt = (token: string) => verify(JWT_SECRET, token);
 
-const FRUITS = [
-  "acerola", "amora", "avocado", "banana", "caju", "carambola", "cherry", "citrus",
-  "coconut", "cupuacu", "fig", "guava", "jabuticaba", "jackfruit", "kiwi", "lemon",
-  "lime", "lychee", "mango", "maracuja", "melon", "nectarine", "olive", "orange",
-  "papaya", "peach", "pear", "persimmon", "pineapple", "pitanga", "plum", "tangerine",
-];
-const ANIMALS = [
-  "albatross", "armadillo", "badger", "capybara", "chameleon", "condor", "dolphin", "falcon",
-  "flamingo", "fox", "gecko", "heron", "hummingbird", "ibis", "iguana", "jaguar",
-  "kingfisher", "koala", "lemur", "lynx", "macaw", "manatee", "meerkat", "ocelot",
-  "otter", "owl", "panda", "pelican", "penguin", "quokka", "tapir", "toucan",
-];
-export function guestHandle(id: string): string {
-  const hex = id.replaceAll("-", "").toLowerCase();
-  const fruit = FRUITS[(parseInt(hex.slice(0, 2), 16) || 0) % FRUITS.length];
-  const animal = ANIMALS[(parseInt(hex.slice(2, 4), 16) || 0) % ANIMALS.length];
-  const slug = hex.slice(-4) || "0000";
-  return `${fruit}-${animal}-${slug}`;
-}
-function generateHandle(id = crypto.randomUUID()): string {
-  return guestHandle(id);
-}
+// postgres.js as core.ts's AuthDb.
+const pg = (run: postgres.Sql | postgres.TransactionSql): Query => (text, params = []) =>
+  run.unsafe(text, params as never[]) as unknown as Promise<Row[]>;
+const authDb: AuthDb = { query: pg(sql), tx: (fn) => sql.begin((tx) => fn(pg(tx))) as never };
 
-async function registerStart(req: Request): Promise<Response> {
-  const subject = await subjectOf(req);
-  if (subject === "refused") return jsonError(401, "invalid token");
-  const claims = subject.claims;
-  // Only a guest is promoted, keeping its handle and every row it wrote: a
-  // passkey added to an account on the strength of a bearer token would
-  // outlive the token and its sign-out. With no session, a new identity —
-  // usernameless by doctrine: no identifier is ever collected.
-  if (claims !== null && claims.guest !== true) return jsonError(409, "already an account");
-  const promote = claims !== null;
-  const handle = claims ? claims.handle as string : generateHandle();
-  const userId = claims ? claims.sub as string : crypto.randomUUID();
-  const options = await generateRegistrationOptions({
-    rpName: RP_ID,
-    rpID: RP_ID,
-    userName: handle,
-    userID: enc.encode(userId),
-    authenticatorSelection: {
-      residentKey: "required",
-      userVerification: "preferred",
-    },
-  });
-  const state = await signJwt({
-    purpose: "register",
-    handle,
-    userId,
-    promote,
-    challenge: options.challenge,
-    exp: Math.floor(Date.now() / 1000) + STATE_TTL_S,
-  });
-  return json(200, { ...options, state });
-}
-
-async function registerVerify(req: Request): Promise<Response> {
-  const body = await readBody(req);
-  if (!body) return jsonError(400, "invalid json body");
-  const st = await readState(body, "register");
-  if (!st) return jsonError(401, "invalid state");
-  let verification;
-  try {
-    verification = await verifyRegistrationResponse({
-      // deno-lint-ignore no-explicit-any
-      response: body.response as any,
-      expectedChallenge: st.challenge as string,
-      expectedOrigin: ceremonyOrigin(ORIGIN, req.headers.get("host")),
-      expectedRPID: RP_ID,
-      requireUserVerification: false,
-    });
-  } catch {
-    return jsonError(401, "registration verification failed");
-  }
-  if (!verification.verified || !verification.registrationInfo) {
-    return jsonError(401, "registration verification failed");
-  }
-  const { credentialID, credentialPublicKey, counter } =
-    verification.registrationInfo;
-  const userId = st.userId as string;
-  if (st.promote === true) {
-    // The guest becomes an account once: a guest token that outlives its
-    // promotion is still a guest's, and adds no second way in.
-    const added = await sql`insert into mecha_auth.webauthn_credential (id, user_id, public_key, counter)
-      select ${credentialID}, ${userId}, ${credentialPublicKey}, ${counter}
-      where not exists (select 1 from mecha_auth.webauthn_credential where user_id = ${userId})`;
-    if (added.count === 0) return jsonError(409, "already an account");
-    const token = await issueUserToken(userId, st.handle as string);
-    return json(200, { token, user: { id: userId, handle: st.handle } });
-  }
-  // Generated handles can collide; regenerate and retry — never a user error.
-  let handle = st.handle as string;
-  let inserted = false;
-  for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
-    try {
-      await sql.begin(async (tx) => {
-        await tx`insert into app_user (id, handle) values (${userId}, ${handle})`;
-        await tx`insert into mecha_auth.webauthn_credential (id, user_id, public_key, counter)
-          values (${credentialID}, ${userId}, ${credentialPublicKey}, ${counter})`;
-      });
-      inserted = true;
-    } catch (e) {
-      if ((e as { code?: string }).code === "23505") handle = generateHandle();
-      else throw e;
-    }
-  }
-  if (!inserted) return jsonError(500, "could not allocate identity");
-  const token = await issueUserToken(userId, handle);
-  return json(200, { token, user: { id: userId, handle } });
-}
-
-async function loginStart(_req: Request): Promise<Response> {
-  // Usernameless by doctrine: allowCredentials is empty so the authenticator
-  // surfaces its discoverable (resident) credentials for this RP.
-  const options = await generateAuthenticationOptions({
-    rpID: RP_ID,
-    allowCredentials: [],
-  });
-  const state = await signJwt({
-    purpose: "login",
-    challenge: options.challenge,
-    exp: Math.floor(Date.now() / 1000) + STATE_TTL_S,
-  });
-  return json(200, { ...options, state });
-}
-
-async function loginVerify(req: Request): Promise<Response> {
-  const body = await readBody(req);
-  if (!body) return jsonError(400, "invalid json body");
-  const st = await readState(body, "login");
-  if (!st) return jsonError(401, "invalid state");
-  const response = body.response as { id?: string } | undefined;
-  if (!response || typeof response.id !== "string") {
-    return jsonError(401, "authentication verification failed");
-  }
-  // The credential identifies the user (resident key).
-  const creds = await sql`
-    select c.id, c.public_key, c.counter, c.user_id, u.handle
-    from mecha_auth.webauthn_credential c join app_user u on u.id = c.user_id
-    where c.id = ${response.id}`;
-  if (creds.length === 0) {
-    return json(401, { error: "authentication verification failed", unknownCredential: true });
-  }
-  const cred = creds[0];
-  let verification;
-  try {
-    verification = await verifyAuthenticationResponse({
-      // deno-lint-ignore no-explicit-any
-      response: body.response as any,
-      expectedChallenge: st.challenge as string,
-      expectedOrigin: ceremonyOrigin(ORIGIN, req.headers.get("host")),
-      expectedRPID: RP_ID,
-      requireUserVerification: false,
-      authenticator: {
-        credentialID: cred.id as string,
-        credentialPublicKey: new Uint8Array(cred.public_key as Uint8Array),
-        counter: Number(cred.counter),
-      },
-    });
-  } catch {
-    return jsonError(401, "authentication verification failed");
-  }
-  if (!verification.verified) {
-    return jsonError(401, "authentication verification failed");
-  }
-  await sql`update mecha_auth.webauthn_credential
-    set counter = ${verification.authenticationInfo.newCounter}
-    where id = ${cred.id as string}`;
-  const userId = cred.user_id as string;
-  const handle = cred.handle as string;
-  const token = await issueUserToken(userId, handle);
-  return json(200, { token, user: { id: userId, handle } });
-}
-
-async function guest(_req: Request): Promise<Response> {
-  // Origin-independent by terminal doctrine: no WebAuthn, no origin check —
-  // this door must open from any origin the cluster is reachable on.
-  const userId = crypto.randomUUID();
-  let handle = generateHandle(userId);
-  let inserted = false;
-  for (let attempt = 0; attempt < 3 && !inserted; attempt++) {
-    try {
-      const [row] = await sql`insert into app_user (id, handle) values (${userId}, ${handle}) returning handle`;
-      if (row?.handle) handle = String(row.handle);
-      inserted = true;
-    } catch (e) {
-      if ((e as { code?: string }).code === "23505") handle = generateHandle();
-      else throw e;
-    }
-  }
-  if (!inserted) return jsonError(500, "could not allocate identity");
-  const token = await issueUserToken(userId, handle, true);
-  // A guest is told so: it is the one session a passkey can still promote.
-  return json(200, { token, user: { id: userId, handle, guest: true } });
-}
-
-async function whoami(req: Request): Promise<Response> {
-  const subject = await subjectOf(req);
-  if (subject === "refused" || subject.claims === null) return jsonError(401, "invalid token");
-  const claims = subject.claims;
-  return json(200, {
-    id: claims.sub,
-    handle: claims.handle,
-    ...(typeof claims.name === "string" ? { name: claims.name } : {}),
-    ...(typeof claims.email === "string" ? { email: claims.email } : {}),
-  });
-}
-
-export const links: Links = {
-  userFor(p: Profile) {
-    return sql.begin(async (tx) => {
-      // One sign-in at a time per subject, so two tabs signing in at once make
-      // one person, not two.
-      await tx`select pg_advisory_xact_lock(hashtext(${JSON.stringify([p.provider, p.issuer, p.sub])}))`;
-      const [link] = await tx`update mecha_auth.identity_link set name = ${p.name}, picture = ${p.picture}, email = ${p.email}
-        where provider = ${p.provider} and issuer = ${p.issuer} and sub = ${p.sub} returning user_id`;
-      if (link) {
-        const [u] = await tx`select handle from app_user where id = ${link.user_id}`;
-        return { id: link.user_id as string, handle: u.handle as string, name: p.name, email: p.email };
-      }
-      const id = crypto.randomUUID();
-      // Generated handles can collide; regenerate and retry — never a user error.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const handle = generateHandle();
-        try {
-          await tx.savepoint((sp) => sp`insert into app_user (id, handle) values (${id}, ${handle})`);
-        } catch (e) {
-          if ((e as { code?: string }).code === "23505") continue;
-          throw e;
-        }
-        await tx`insert into mecha_auth.identity_link (provider, issuer, sub, user_id, name, picture, email)
-          values (${p.provider}, ${p.issuer}, ${p.sub}, ${id}, ${p.name}, ${p.picture}, ${p.email})`;
-        return { id, handle, name: p.name, email: p.email };
-      }
-      throw new Error("could not allocate identity");
-    });
-  },
-  async handleOf(provider: string, issuer: string, id: string) {
-    const [u] = await sql`select u.handle, l.name, l.email from app_user u
-      join mecha_auth.identity_link l on l.user_id = u.id and l.provider = ${provider} and l.issuer = ${issuer}
-      where u.id = ${id}`;
-    return u ? { handle: u.handle as string, name: (u.name as string | null) ?? null, email: (u.email as string | null) ?? null } : null;
-  },
+export type AuthHandlerOptions = {
+  rpId?: string;
+  origin?: string;
+  androidApkKeyHashes?: string | readonly string[];
+  nativeSchemes?: string | readonly string[];
+  providers?: Record<string, Provider>;
+  fetcher?: typeof fetch;
 };
 
-const providerSignIn = oidc({
-  secret: JWT_SECRET,
-  origin: (req) => ceremonyOrigin(ORIGIN, req.headers.get("host")),
-  providers: OIDC_PROVIDERS,
-  links,
-  issue: (user) => issueUserToken(user.id, user.handle, false, user),
-});
-
-export async function handler(req: Request): Promise<Response> {
-  const path = new URL(req.url).pathname;
-  try {
-    const signedIn = providerSignIn(req);
-    if (signedIn !== null) return await signedIn;
-    if (req.method === "POST" && path === "/auth/register/start") {
-      return await registerStart(req);
-    }
-    if (req.method === "POST" && path === "/auth/register/verify") {
-      return await registerVerify(req);
-    }
-    if (req.method === "POST" && path === "/auth/login/start") {
-      return await loginStart(req);
-    }
-    if (req.method === "POST" && path === "/auth/login/verify") {
-      return await loginVerify(req);
-    }
-    if (req.method === "POST" && path === "/auth/guest") {
-      return await guest(req);
-    }
-    if (req.method === "GET" && path === "/auth/whoami") {
-      return await whoami(req);
-    }
-    if (req.method === "POST" && path === "/auth/shape") {
-      return await shapeToken(req);
-    }
-    if (req.method === "GET" && path === "/auth/shape/verify") {
-      return await shapeVerify(req);
-    }
-    return jsonError(404, "not found");
-  } catch (e) {
-    console.error(e);
-    return jsonError(500, "internal error");
-  }
+function coreFor(opts: AuthHandlerOptions) {
+  const rpId = opts.rpId ?? RP_ID;
+  const configured = opts.origin !== undefined ? admittedOrigin(rpId, opts.origin) : ORIGIN;
+  const android = opts.androidApkKeyHashes !== undefined ? androidOrigins(opts.androidApkKeyHashes) : ANDROID_ORIGINS;
+  return authCore({
+    db: authDb,
+    secret: JWT_SECRET,
+    rpId: () => rpId,
+    origin: (req) => doorOrigin(configured, req.headers.get("host")),
+    ceremonyOrigins: (req) => ceremonyOrigins(configured, req.headers.get("host"), android),
+    providers: opts.providers ?? OIDC_PROVIDERS,
+    nativeSchemes: opts.nativeSchemes !== undefined ? nativeSchemesFrom(opts.nativeSchemes) : NATIVE_SCHEMES,
+    fetcher: opts.fetcher,
+  });
 }
+
+const core = coreFor({});
+export const { links, tickets, issueUserToken } = core;
+
+export function createHandler(opts: AuthHandlerOptions = {}): (req: Request) => Promise<Response> {
+  const auth = Object.keys(opts).length === 0 ? core : coreFor(opts);
+  return async function handle(req: Request): Promise<Response> {
+    const path = new URL(req.url).pathname;
+    try {
+      const answered = auth.route(req);
+      if (answered !== null) return await answered;
+      if (req.method === "POST" && path === "/auth/shape") return await shapeToken(req);
+      if (req.method === "GET" && path === "/auth/shape/verify") return await shapeVerify(req);
+      return jsonError(404, "not found");
+    } catch (e) {
+      console.error(e);
+      return jsonError(500, "internal error");
+    }
+  };
+}
+
+export const handler = createHandler();
 
 if (import.meta.main) {
   await migrate();

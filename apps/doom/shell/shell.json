@@ -8,6 +8,7 @@
     "match": "tab",
     "player": "tab"
   },
+  "nav": "none",
   "optional": {
     "match": [
       {

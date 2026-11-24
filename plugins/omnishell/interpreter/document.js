@@ -12,7 +12,7 @@
 // The interpreter reads the ambient `document`, so a render owns it for its
 // duration and one process renders one document at a time.
 
-import { describe, drawStrip, guestBox, hasStrip, localizeStrip, offersGuest } from "./chrome.js";
+import { describe, drawStrip, hasStrip, localizeStrip, offersSignin, signinBox, stripRoutes } from "./chrome.js";
 import { screenEnv } from "./fragment.js";
 import { hasOnMutation, interpretScreen } from "./screen.js";
 import { assetURL, preloadScreen } from "./preloads.js";
@@ -68,9 +68,10 @@ export async function renderDocument({
   const ambient = globalThis.document;
   globalThis.document = doc;
   const decorateDoc = (screen, cas) => {
-    if (hasStrip(cfg, null, servesGuests(cfg))) {
+    const guestSignin = servesGuests(cfg) && ((cfg.auth?.providers?.length ?? 0) > 0 || stripRoutes(cfg).length > 0);
+    if (hasStrip(cfg, null, guestSignin)) {
       const nav = drawStrip(doc, cfg);
-      if (servesGuests(cfg) && offersGuest(cfg)) nav.append(guestBox(doc, cfg));
+      if (servesGuests(cfg) && offersSignin(cfg)) nav.append(signinBox(doc, cfg));
       localizeStrip(nav, cfg, { locale, here, messages, explicitLocale: Boolean(cfg.i18n && locale === cfg.i18n.default && params?.locale === locale) });
       doc.getElementById("app").before(nav);
     }
@@ -120,6 +121,7 @@ export async function renderDocument({
       // belongs to the shell, which mounts it into the screen it takes over.
       mountUnits: false,
       mountHostDom: false,
+      forms: false,
       navigate: () => {
         throw new Error("a rendered document navigates by its links");
       },

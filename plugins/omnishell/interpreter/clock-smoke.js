@@ -73,6 +73,7 @@ async function mountScreen(screen, html, rows) {
     for (const cb of subs.get(table) ?? []) setTimeout(cb, 0);
   };
   const store = batched({
+    answer: (table) => tables[table].map((r) => ({ ...r })),
     query: (table) => Promise.resolve(tables[table].map((r) => ({ ...r }))),
     subscribe: (table, cb) => {
       if (!subs.has(table)) subs.set(table, new Set());
@@ -103,6 +104,7 @@ async function mountScreen(screen, html, rows) {
     const u = String(url);
     if (u.endsWith(".html")) return Promise.resolve(new Response(html));
     if (u.endsWith(".css")) return Promise.resolve(new Response(""));
+    if (u.endsWith("/auth/oidc")) return Promise.resolve(Response.json({ providers: ["google", "apple"] }));
     return Promise.reject(new Error(`unexpected fetch ${u}`));
   };
 
@@ -263,10 +265,11 @@ async function drawnIn(order, source = DRAWER) {
   globalThis.document = document;
   const tables = { draw: [{ id: "alpha", n: 0 }, { id: "beta", n: 0 }] };
   const store = batched({
-    query: (table, _order, opts) => {
+    answer: (table, _order, opts) => {
       const id = /id=eq\.(\w+)/.exec(opts?.filter ?? "")?.[1];
-      return Promise.resolve(tables[table].filter((r) => id === undefined || r.id === id).map((r) => ({ ...r })));
+      return tables[table].filter((r) => id === undefined || r.id === id).map((r) => ({ ...r }));
     },
+    query: (table, order, opts) => Promise.resolve(store.answer(table, order, opts)),
     subscribe: () => () => {},
     update: (table, id, changes) => {
       const i = tables[table].findIndex((r) => r.id === id);
@@ -283,6 +286,7 @@ async function drawnIn(order, source = DRAWER) {
     if (u.endsWith(".css")) return Promise.resolve(new Response(""));
     const drawer = /\/(alpha|beta)\.js$/.exec(u)?.[1];
     if (drawer !== undefined) return Promise.resolve(new Response(source(drawer)));
+    if (u.endsWith("/auth/oidc")) return Promise.resolve(Response.json({ providers: ["google", "apple"] }));
     return Promise.reject(new Error(`unexpected fetch ${u}`));
   };
   const { interpretScreen } = await import("./screen.js");
@@ -332,5 +336,26 @@ Deno.test({
       JSON.stringify(first) === JSON.stringify(second),
       `the same seed draws the same for each actor whichever ran first: ${JSON.stringify(first)} then ${JSON.stringify(second)}`,
     );
+  },
+});
+
+Deno.test({
+  name: "the busy report carries the store's syncing count, and zero with no store",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    await mountScreen("still", `<section class="screen" data-screen="still"></section>`, {});
+    const saved = globalThis.__prontoStore;
+    try {
+      delete globalThis.__prontoStore;
+      assert(globalThis.__prontoBusy().syncing === 0, `no store syncs nothing, got ${JSON.stringify(globalThis.__prontoBusy())}`);
+      let syncing = 2;
+      globalThis.__prontoStore = { syncing: () => syncing };
+      assert(globalThis.__prontoBusy().syncing === 2, `the store's count, got ${JSON.stringify(globalThis.__prontoBusy())}`);
+      syncing = 0;
+      assert(globalThis.__prontoBusy().syncing === 0, `and it drops with the store's, got ${JSON.stringify(globalThis.__prontoBusy())}`);
+    } finally {
+      globalThis.__prontoStore = saved;
+    }
   },
 });

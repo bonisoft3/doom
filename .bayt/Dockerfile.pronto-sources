@@ -9,7 +9,7 @@ WORKDIR /monorepo
 COPY --parents --exclude=**/docs/** --exclude=**/testdata/** --exclude=**/*_test.* --exclude=**/*.test.* --exclude=**/.bayt/** --exclude=**/.task/** --exclude=**/node_modules/** cue.mod plugins/pronto plugins/omnishell plugins/bayt plugins/sayt libraries/mecha ./
 ARG SOURCE_DATE_EPOCH
 ARG BAYT_CLAMP=1
-RUN if [ "${BAYT_CLAMP:-1}" != 0 ]; then find /monorepo -exec touch -hd @${SOURCE_DATE_EPOCH:-0} {} +; fi
+RUN if [ "${BAYT_CLAMP:-1}" != 0 ]; then mkdir -p /.bayt-clamp && find /monorepo -exec getfattr -dh {} + > /.bayt-clamp/x && if [ ! -s /.bayt-clamp/x ]; then cd / && cp -a /monorepo /.bayt-clamp/w && rm -rf /monorepo && mv /.bayt-clamp/w /monorepo; fi && rm -rf /.bayt-clamp && find /monorepo -exec touch -hd @${SOURCE_DATE_EPOCH:-0} {} +; fi
 FROM scratch AS pronto-sources_srcs
 COPY --from=pronto-sources_ctxs /monorepo /monorepo
 
@@ -18,6 +18,6 @@ WORKDIR /monorepo
 COPY --parents .bayt/compose.pronto-sources.yaml .bayt/Dockerfile.pronto-sources .bayt/bayt.pronto-sources.json .bayt/Taskfile.yml .bayt/Taskfile.bayt.yml ./
 ARG SOURCE_DATE_EPOCH
 ARG BAYT_CLAMP=1
-RUN if [ "${BAYT_CLAMP:-1}" != 0 ]; then find /monorepo -exec touch -hd @${SOURCE_DATE_EPOCH:-0} {} +; fi
+RUN if [ "${BAYT_CLAMP:-1}" != 0 ]; then mkdir -p /.bayt-clamp && find /monorepo -exec getfattr -dh {} + > /.bayt-clamp/x && if [ ! -s /.bayt-clamp/x ]; then cd / && cp -a /monorepo /.bayt-clamp/w && rm -rf /monorepo && mv /.bayt-clamp/w /monorepo; fi && rm -rf /.bayt-clamp && find /monorepo -exec touch -hd @${SOURCE_DATE_EPOCH:-0} {} +; fi
 FROM scratch AS pronto-sources_bayt
 COPY --from=pronto-sources_bayt_ctxs /monorepo /monorepo

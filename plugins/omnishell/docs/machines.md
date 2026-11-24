@@ -54,14 +54,18 @@ machine too.
   rows; the transient state of an interaction is a machine's, and no app chart
   carries code.
 - **Closed over the row.** Leaves see `{items: [row]}` and the event, and every
-  transition lands as one stated row through the `step()` a reduce uses, so
-  replay, `?tempo=`, `?clock=manual`, `?seed=` and refusals apply with the
-  machine knowing nothing. A foreign fact is derived into a column first. The
-  row belongs to a `tab` or `device` entity — nothing keeps a server row's
-  transitions — and other entities are reached only by effect. Nothing checks
-  the durability: `writeLint` returns early for every other one and no other
-  rule asks, so a `data-machine` over a `live` table mounts and writes its
-  state there. A `check markup` rule would make it a build failure.
+  transition lands as one stated row through the store, so replay, `?tempo=`,
+  `?clock=manual`, `?seed=` and refusals apply with the machine knowing
+  nothing. A foreign fact is derived into a column first. The row belongs to a
+  `tab` or `device` entity — nothing keeps a server row's transitions — and
+  other entities are reached only by effect. A chart on a region the tab
+  cannot answer itself (a table read only from the server, a read the server
+  computes) is refused at mount: render that list without a chart, and nest in
+  each item a region of the row itself (`data-filter="id=eq.{id}"`) holding
+  it. Over a `live` table, which the tab answers from its synced collection,
+  nothing checks the durability: `writeLint` returns early for every other one
+  and no other rule asks, so the chart mounts and writes its state there. A
+  `check markup` rule would make it a build failure.
 - **State names are the ARIA attribute's values** where one speaks the state,
   so one column is both the semantics and the styling hook.
 - **Generated grammar is not vocabulary.** A spelling only a component writes
@@ -83,6 +87,26 @@ then its `field: initial`. An explicit
 `data-empty-row` is the whole row, resolved against the enclosing row;
 the terminal does not merge defaults into it. The machine's assignments
 then write through the same row path as a reduce.
+
+## How a chart runs
+
+As an XState actor does: one event at a time from its mailbox, each run to
+completion before the next, nothing awaited inside one. Gestures, timers,
+observations, acknowledgements, refusals and the store's next rows are all
+events in that mailbox.
+
+- **The row is the store's.** A turn reads the chart's row as the store holds
+  it now, its own writes included before the server has accepted them, and as
+  the region's read selects it. After stating a write the chart takes no turn
+  until the store holds it, which is local and quick.
+- **Effects follow their own write** once the store accepts it, and hold up no
+  later write. A write the store withdraws, however late, takes its effects not
+  yet sent; its `sync_ack` and `refused` come back to the chart that wrote it.
+- **Entry owns the state's resources.** Entering a state, by an arrow or by
+  finding the row moved there, arms its `after` waits and starts its
+  observations; leaving cancels and stops them.
+- **A lifetime ends** with a closed attachment, a detached region or another
+  row: what was begun in it and comes back later moves nothing.
 
 ## Effects
 
@@ -106,6 +130,14 @@ descriptor whose level says what can be claimed of it
   whose durability `shell.yaml` carries, so the rule is total: an upsert onto
   an `offline` or `live` row owes the arrow whatever the chart says of
   itself, and a chart can say nothing — `effect.level` is not in the grammar.
+- **A field's behaviour binds every write a chart states.** A field
+  `shell.yaml` marks `outputOnly` (Google AIP-203's word, pronto's
+  `#Field.outputOnly`) is the server's to set, so no assign, transition,
+  empty row or effect writes it; one marked `immutable` is set when its row is
+  created, so no assign, transition or `update` effect changes it.
+  `check markup` refuses both (`behaviorLint`, `interpreter/lint.ts`), and the
+  store drops an output-only value and refuses an immutable change before the
+  optimistic row stands, which for a `tab` or `device` row is the whole of it.
 
 ## Gestures and cancels
 
@@ -146,6 +178,16 @@ is the relocated `invoke`, being in the state *is* the pending timer. Every
 wait is the terminal's, so `?tempo=` scales it and `?clock=manual` holds it for
 `__prontoClock.advance(ms)`.
 
+A bundled page's cluster (mecha's
+[browser platform](../../../libraries/mecha/docs/browser.md#drains-and-the-clock))
+runs on the same clock. Under `?clock=manual` the screen exports it as
+`heldTime`: the cluster's sweep of the app's schedules and its computations'
+retries are waits `due()` lists with the label `{kind: "cluster"}`, `waits`
+counts them, and `advance` fires the one that comes due. Its instant starts at
+`?epoch`, or where the page loaded without one. The page's database reads the
+same instant through `machine_clock()`, so a server row machine's `after:`
+arms and fires on the time `advance` passes.
+
 - **A reduce re-arming its own `then:` can double**: two chains find the armed
   phase and both re-arm. Carry a generation mark on the row, or use `after`,
   whose mark is the cancellation.
@@ -160,8 +202,7 @@ lifecycle cancellation. The terminal takes the middle:
 
 - **No run-to-quiescence.** `raise` shares the reduce's
   [step cap](data.md#the-step-after). `always` and `onDone` hops within one
-  transition stop at 10, silently, where they should throw the way a `raise`
-  chain does.
+  transition throw past 10, the way a `raise` chain does past its cap.
 - **A local timer never ends an inflight write**, nor does anything else a
   chart does: only the store's refusal withdraws one. So `after` moves into a
   nested pending state (`favoriting.delayed`, a degraded badge) while the parent
@@ -197,8 +238,18 @@ the HTML is the contract the reader touches, run the same however it was made.
   chart is advisory, the app check fails its coverage floor because nothing
   was walked. A browser test can exercise the route-scoped chart against a
   real event.
+  A passing run states its coverage on stderr: a line per chart with the
+  arrows fired out of those it declares and those left unchecked with the
+  reason, then the run's total.
   An `always` arrow's guard names the row that selects it in its literal params,
-  and the walk writes them, as a fold would.
+  and the walk writes them, as a fold would. A guarded event arrow is fired on
+  the row as it stands first; one that row does not select is fired again after
+  writing the guard's literal params that name columns of the row, along the
+  route to its state too, and the columns are then put back, so a later
+  candidate is not left shadowed. `"click@x": [{guard: {type: "row-is", params:
+  {period: "ok"}}, target: "sent"}, {target: "open"}]` walks both candidates
+  with no waiting state. A guard whose params name no column is not the walk's
+  to satisfy, and its arrow is an error unless the seeded row selects it.
   Its `refused` stimulus enters through the same region delivery hook as a
   store rejection; dispatching a DOM event would miss that arrow.
 - **Posing** (`test/storybook-battery.ts`, over every app from

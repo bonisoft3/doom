@@ -37,12 +37,13 @@ const program = paymentProgram({
     }
     effects: charge:`);
 
-/** The door's own route, over a stand-in for the snippet the release's Caddyfile imports. */
-async function doorRoute(): Promise<string> {
-  const door = await Deno.readTextFile(new URL("./assets/Caddyfile", import.meta.url));
-  const route = door.match(/  handle \/signal\/\* \{\n[\s\S]*?\n  \}\n/)?.[0];
-  if (!route) throw new Error("the door has no signal route");
-  return `{\n  admin off\n  auto_https off\n}\n(bounded-crud) {\n}\n:8080 {\n${route}\n}\n`;
+/** A request written to the socket as given, for what fetch does not send: a Connection header naming others. */
+async function raw(port: string | undefined, head: string, body = ""): Promise<{ status: number; body: string }> {
+  const conn = await Deno.connect({ hostname: "127.0.0.1", port: Number(port) });
+  const bytes = new TextEncoder().encode(body);
+  await conn.write(new TextEncoder().encode(`${head}\r\nContent-Length: ${bytes.length}\r\n\r\n${body}`));
+  const answer = await new Response(conn.readable).text();
+  return { status: Number(answer.split(" ")[1]), body: answer.slice(answer.indexOf("\r\n\r\n") + 4) };
 }
 
 Deno.test({ name: "a signal moves a row once, is refused mid-check, and believes nothing else", sanitizeOps: false, sanitizeResources: false, fn: async (t) => {
@@ -50,7 +51,8 @@ Deno.test({ name: "a signal moves a row once, is refused mid-check, and believes
   const tag = crypto.randomUUID().slice(0, 8);
   const network = `signals-${tag}`, db = `signals-pg-${tag}`, rest = `signals-rest-${tag}`, door = `signals-door-${tag}`;
   const dir = await Deno.makeTempDir();
-  await Deno.writeTextFile(`${dir}/Caddyfile`, await doorRoute());
+  // The door the app is given, whole: its routes in the snippet every site block imports.
+  await Deno.writeTextFile(`${dir}/Caddyfile`, files["docker/Caddyfile"].text);
   const psql = (sql: string) => run("docker", ["exec", "-i", db, "psql", "-qtAX", "-v", "ON_ERROR_STOP=1", "-U", "postgres"], sql);
   const must = async (r: Promise<{ ok: boolean; err: string }>) => {
     const done = await r;
@@ -78,10 +80,12 @@ Deno.test({ name: "a signal moves a row once, is refused mid-check, and believes
       ${files["services/database/migrations/010_machines.sql"].text}
       ${files["services/database/migrations/802_signals.sql"].text}
       INSERT INTO payment (id, status, total) VALUES ('00000000-0000-0000-0000-000000000001', 'pending', 1),
-                                                     ('00000000-0000-0000-0000-000000000002', 'pending', 1);`));
+                                                     ('00000000-0000-0000-0000-000000000002', 'pending', 1),
+                                                     ('00000000-0000-0000-0000-000000000003', 'pending', 1),
+                                                     ('00000000-0000-0000-0000-000000000004', 'pending', 1);`));
     await must(run("docker", ["run", "-d", "--rm", "--name", rest, "--network", network, "--network-alias", "crud",
       "-e", "PGRST_DB_URI=postgres://postgres:pw@database:5432/postgres", "-e", "PGRST_DB_ANON_ROLE=anon", pinned("postgrest/postgrest")]));
-    await must(run("docker", ["run", "-d", "--rm", "--name", door, "--network", network, "-p", "127.0.0.1::8080", "-v", `${dir}/Caddyfile:/etc/caddy/Caddyfile:ro`,
+    await must(run("docker", ["run", "-d", "--rm", "--name", door, "--network", network, "-p", "127.0.0.1::8080", "-e", "ORIGIN=http://door.example", "-e", "ELECTRIC_SECRET=unused", "-v", `${dir}/Caddyfile:/etc/caddy/Caddyfile:ro`,
       pinned("caddy"), "caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]));
     const port = (await run("docker", ["port", door, "8080"])).out.split(":").pop();
     const post = async (path: string, body: string, headers: Record<string, string> = {}) => {
@@ -106,6 +110,15 @@ Deno.test({ name: "a signal moves a row once, is refused mid-check, and believes
     });
     await t.step("an id in the path works as one in the body", async () => {
       assertEquals(await post(`/signal/vendor/${two}`, "{}"), { status: 200, body: `{"signal" : "moved"}` });
+    });
+    const three = "00000000-0000-0000-0000-000000000003", four = "00000000-0000-0000-0000-000000000004";
+    await t.step("the path is the door's to state: one a client names at /crud is no signal", async () => {
+      assertEquals((await post("/crud/rpc/signal_in", "{}", { "x-signal-path": `/signal/vendor/${three}` })).status, 404);
+      assertEquals((await psql(`SELECT status FROM payment WHERE id = '${three}'`)).out, "pending");
+    });
+    await t.step("a client's Connection header cannot drop the path the door states", async () => {
+      assertEquals(await raw(port, `POST /signal/vendor/${four} HTTP/1.1\r\nHost: door\r\nContent-Type: application/json\r\nConnection: X-Signal-Path, close`, "{}").then((a) => a.status), 200);
+      assertEquals((await psql(`SELECT status FROM payment WHERE id = '${four}'`)).out, "charging");
     });
     await t.step("whatever names no waiting row is acknowledged and moves nothing", async () => {
       for (const body of ["{}", stripe("not-a-uuid"), stripe("00000000-0000-0000-0000-00000000dead")]) {

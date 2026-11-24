@@ -625,6 +625,21 @@ Deno.test("electric's password reaches the role and its URL from one variable", 
   );
 });
 
+Deno.test("initdb guards receive the HMAC secret independently of CRUD verification mode", async () => {
+  const secret = "${PGRST_JWT_SECRET:-mecha-dev-secret-please-override-32ch}";
+  const cases: [Partial<State>, Record<string, unknown>, string | undefined][] = [
+    [{ schedules: ["tick"] }, { server: true }, secret],
+    [{}, { server: true }, undefined],
+    [{}, { server: true, issuers: true }, "${PGRST_JWKS:-" + secret + "}"],
+  ];
+  for (const [state, capabilities, crudKey] of cases) {
+    const got = await exported(state, "surface.targets", capabilities);
+    assert.equal(got.ok, true, got.stderr);
+    assert.equal(got.value.database.compose.environment.PGRST_JWT_SECRET, secret);
+    assert.equal(got.value.crud.compose.environment.PGRST_JWT_SECRET, crudKey);
+  }
+});
+
 Deno.test("a caller step on the electric password's digits is refused", async () => {
   const got = await exported({ migrations: ["m/899_late.sql"] }, "surface.targets.database", { server: true });
   assert.equal(got.ok, false);
@@ -772,19 +787,21 @@ Deno.test("a cluster requires the core published images; Activepieces is selecte
 
 // A provider's settings are the deployment's, over defaults the program may
 // give: a compose run inside a container that is handed no environment still
-// starts, and a provider whose client nobody gives fails at compose, before the
-// auth service boots with nothing to sign in through.
-Deno.test("a sign-in provider turns auth on and reaches it as a required client, and an unknown one is refused", async () => {
+// starts, with no provider on, and one turned on whose client nobody gives
+// fails at the auth service's start.
+Deno.test("a sign-in provider turns auth on and reaches it as one the deployment turns on, and an unknown one is refused", async () => {
   const on = await exported({}, "surface.targets.auth.compose.environment", { signIn: { google: {} } });
   assert.equal(on.ok, true, on.stderr);
-  assert.equal(on.value.OIDC_PROVIDERS, "google");
-  assert.equal(on.value.OIDC_GOOGLE_CLIENT_ID, "${OIDC_GOOGLE_CLIENT_ID:?OIDC_GOOGLE_CLIENT_ID is required: the cluster signs in through google}");
+  // Off until the deployment turns it on, as a release does; then the
+  // service refuses to start without its client (services/auth/oidc.ts).
+  assert.equal(on.value.OIDC_PROVIDERS, "${OIDC_PROVIDERS:-}");
+  assert.equal(on.value.OIDC_GOOGLE_CLIENT_ID, "${OIDC_GOOGLE_CLIENT_ID:-}");
   // The rest are the deployment's to set or leave, an issuer in Google's place among them.
   assert.equal(on.value.OIDC_GOOGLE_ISSUER, "${OIDC_GOOGLE_ISSUER:-}");
   assert.equal(on.value.OIDC_GOOGLE_AUTHORIZE_PARAMS, "${OIDC_GOOGLE_AUTHORIZE_PARAMS:-}");
   const off = await exported({}, "surface.targets.auth.compose.environment", { auth: true });
   assert.equal(off.ok, true, off.stderr);
-  assert.equal(off.value.OIDC_PROVIDERS, "");
+  assert.equal(off.value.OIDC_PROVIDERS, "${OIDC_PROVIDERS:-}");
   assert.equal("OIDC_GOOGLE_CLIENT_ID" in off.value, false);
   assert.equal((await exported({}, "capabilities", { signIn: { google: {} }, auth: false })).ok, false);
   assert.equal((await exported({}, "capabilities", { signIn: { myspace: {} } })).ok, false);
@@ -823,6 +840,10 @@ Deno.test("RisingWave deployment selects its pinned internal service and ships t
     const got = await exported({ duckstreamEngine, computations: [{ name: "analytics", file: "duckstream/program.js", risingwave: "duckstream/risingwave.json", to: ["metric"], wasm: [] }] }, "surface.targets");
     assert.equal(got.ok, true, got.stderr);
     const { compute, risingwave, transform } = got.value;
+    assert.equal(compute.entrypoint.env.DUCKSTREAM_ENGINE, "${DUCKSTREAM_ENGINE:-duckdb-snapshot}");
+    assert.match(transform.entrypoint.do, /\$cdir \| path join 'events.yaml'/);
+    assert.deepEqual(JSON.parse(transform["process-compose"].env.CDC_GROUPS), ["t-compute"]);
+    assert.deepEqual(JSON.parse(transform.entrypoint.env.CDC_GROUPS), duckstreamEngine === "risingwave" ? [] : ["t-compute"]);
     assert.equal(compute.compose.volumes, undefined);
     assert.equal(compute.compose.environment.DUCKSTREAM_ENGINE, "${DUCKSTREAM_ENGINE:-" + duckstreamEngine + "}");
     assert.equal(JSON.parse(compute.compose.environment.COMPUTATIONS)[0].risingwave, "/app/computations/analytics.risingwave.json");

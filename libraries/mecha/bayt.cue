@@ -101,7 +101,7 @@ _stack: cluster.#Cluster & {
 		// stack runs the migrate target; services/migrate/migrate_test.ts
 		// boots it against volumes of every age.
 		pgroll: "01_hello_mood": operations: [{add_column: {table: "Hello", column: {name: "mood", type: "text", nullable: true}}}]
-		pipelines: [{name: "passthrough", file: "services/transform/passthrough.yaml"}]
+		pipelines: [{name: "passthrough", file: "services/transform/passthrough.yaml", group: "rpk-transform"}]
 		// Any name: the cluster only asks whether a schedule exists, and the
 		// ticker and clock are part of what this stack exercises.
 		schedules: ["tick"]
@@ -256,12 +256,13 @@ _mecha: bayt.#project & _where & {
 			}
 		}
 		"auth-image": _image & (deno.#cache & {entrypoints: "main.ts", frozen: false}).out & {
-			srcs: globs: ["services/auth/deno.json", "services/auth/deno.lock", "services/auth/jwt.ts", "services/auth/main.ts", "services/auth/oidc.ts", "services/auth/schema.ts"]
+			let _files = [for f in ["deno.json", "deno.lock", "atproto.ts", "claims.ts", "core.ts", "handles.ts", "jwt.ts", "main.ts", "oidc.ts", "schema.ts", "session.ts", "where.ts"] {"services/auth/\(f)"}]
+			srcs: globs: _files
 			dockerfile: {
 				from: name: _deno
 				// deno runs `main.ts` from the working directory.
 				workdir: "/app"
-				copy: [{srcs: ["services/auth/deno.json", "services/auth/deno.lock", "services/auth/jwt.ts", "services/auth/main.ts", "services/auth/oidc.ts", "services/auth/schema.ts"], dst: "/app/"}]
+				copy: [{srcs: _files, dst: "/app/"}]
 				expose: [9999]
 				cmd: ["run", "--allow-net", "--allow-env", "main.ts"]
 			}
@@ -279,9 +280,9 @@ _mecha: bayt.#project & _where & {
 		// running service reaches no extension host. Workers take no
 		// permissions of their own, an option Deno still calls unstable.
 		"compute-image": _image & (deno.#cache & {entrypoints: "main.ts cage.ts job.ts step-worker.ts", frozen: false}).out & {
-			let _files = ["deno.json", "deno.lock", "main.ts", "risingwave.ts", "portable.ts", "portable-contract.ts", "batches.ts", "batches.sql", "batch-machine.sql", "migrate-durex.ts", "publication.ts", "native-runtime.ts", "bounded-runtime.ts", "step-cage.ts", "step-worker.ts", "native-risingwave.ts", "native-cleanup.ts", "native-sources.ts", "deltas.ts", "workers.ts", "query-stages.ts", "cage.ts", "compartment.ts", "realm.ts", "crypto.ts", "cheerio.ts", "endowments.ts", "language.ts", "job.ts", "job-cache.ts", "job-cache.sql", "wasi.ts", "install.ts", "events.yaml"]
+			let _files = ["deno.json", "deno.lock", "main.ts", "risingwave.ts", "portable.ts", "portable-contract.ts", "batches.ts", "batches.sql", "batch-machine.sql", "migrate-durex.ts", "publication.ts", "native-runtime.ts", "native-readiness.ts", "bounded-runtime.ts", "step-cage.ts", "step-worker.ts", "native-risingwave.ts", "native-cleanup.ts", "native-sources.ts", "deltas.ts", "workers.ts", "query-stages.ts", "cage.ts", "compartment.ts", "realm.ts", "crypto.ts", "cheerio.ts", "endowments.ts", "language.ts", "job.ts", "wasm-select.ts", "job-cache.ts", "job-cache.sql", "wasi.ts", "install.ts", "events.yaml"]
 			// endowments.ts imports the Pdf and Xlsx endowments from its sibling, the airlock.
-			srcs: globs: list.Concat([[for f in _files {"services/compute/\(f)"}], ["services/airlock/pdf.ts", "services/airlock/xlsx.ts", "services/durex/work.ts", "services/durex/work.sql", "services/durex/migrate.ts", "packages/client/src/types.ts", "packages/lake/src/lake-types.ts", "packages/compute-snapshot/src/sink-writes.ts", "packages/compute-snapshot/src/bounded.ts", "packages/compute-snapshot/src/json.ts"]])
+			srcs: globs: list.Concat([[for f in _files {"services/compute/\(f)"}], ["services/airlock/pdf.ts", "services/airlock/xlsx.ts", "services/durex/work.ts", "services/durex/work.sql", "services/durex/migrate.ts", "packages/client/src/types.ts", "packages/lake/src/lake-types.ts", "packages/compute-snapshot/src/sink-writes.ts", "packages/compute-snapshot/src/bounded.ts", "packages/compute-snapshot/src/boundary.ts", "packages/compute-snapshot/src/capture.ts", "packages/compute-snapshot/src/execution.ts", "packages/compute-snapshot/src/json.ts", "packages/compute-snapshot/src/publication.ts"]])
 			cmd: "duckdb": (deno.#duckdbContainerCmd & {
 				do: "deno run --allow-ffi --allow-read --allow-write --allow-net --allow-env --allow-sys=homedir install.ts"
 			}).out
@@ -294,7 +295,7 @@ _mecha: bayt.#project & _where & {
 					{srcs: ["services/durex/work.ts", "services/durex/work.sql", "services/durex/migrate.ts"], dst: "/durex/"},
 					{srcs: ["packages/client/src/types.ts"], dst: "/packages/client/src/"},
 					{srcs: ["packages/lake/src/lake-types.ts"], dst: "/packages/lake/src/"},
-					{srcs: ["packages/compute-snapshot/src/sink-writes.ts", "packages/compute-snapshot/src/bounded.ts", "packages/compute-snapshot/src/json.ts"], dst: "/packages/compute-snapshot/src/"},
+					{srcs: ["packages/compute-snapshot/src/sink-writes.ts", "packages/compute-snapshot/src/bounded.ts", "packages/compute-snapshot/src/boundary.ts", "packages/compute-snapshot/src/capture.ts", "packages/compute-snapshot/src/execution.ts", "packages/compute-snapshot/src/json.ts", "packages/compute-snapshot/src/publication.ts"], dst: "/packages/compute-snapshot/src/"},
 				]
 				cmd: ["run", "--unstable-worker-options", "--allow-ffi", "--allow-read", "--allow-write", "--allow-net", "--allow-env", "--allow-sys", "/app/main.ts"]
 			}
@@ -302,9 +303,9 @@ _mecha: bayt.#project & _where & {
 		"activepieces-image": (activepieces.#Target & {source: "services/activepieces"}).target
 		// The handler cage imports compute's realm through its sibling directory.
 		"airlock-image": _image & (deno.#cache & {entrypoints: "main.ts cage.ts tsbifrost.ts"}).out & {
-			let _airlock = ["deno.json", "deno.lock", "main.ts", "airlock.ts", "handler.ts", "cage.ts", "reentry.ts", "read.ts", "blobs.ts", "seal.ts", "seal-tables.ts", "pdf.ts", "xlsx.ts", "tsbifrost.ts", "ai-models.ts", "white-background.ts", "package.json", "dapr.yaml"]
-			let _compute = ["compartment.ts", "realm.ts", "crypto.ts", "cheerio.ts", "endowments.ts", "language.ts", "workers.ts", "query-stages.ts"]
-			srcs: globs: list.Concat([[for f in _airlock {"services/airlock/\(f)"}], [for f in _compute {"services/compute/\(f)"}]])
+			let _airlock = ["deno.json", "deno.lock", "main.ts", "airlock.ts", "handler.ts", "cage.ts", "reentry.ts", "read.ts", "blobs.ts", "multipart.ts", "seal.ts", "seal-tables.ts", "pdf.ts", "xlsx.ts", "tsbifrost.ts", "ai-models.ts", "white-background.ts", "package.json", "dapr.yaml"]
+			let _compute = ["compartment.ts", "realm.ts", "crypto.ts", "cheerio.ts", "endowments.ts", "language.ts", "workers.ts", "wasm-select.ts", "query-stages.ts"]
+			srcs: globs: list.Concat([[for f in _airlock {"services/airlock/\(f)"}], [for f in _compute {"services/compute/\(f)"}], ["packages/compute-snapshot/src/json.ts"]])
 			cmd: "deno-install": (deno.#containerCmd & {
 				priority: -2
 				do:       "deno install --frozen"
@@ -315,6 +316,7 @@ _mecha: bayt.#project & _where & {
 				copy: [
 					{srcs: [for f in _airlock {"services/airlock/\(f)"}], dst: "/app/airlock/"},
 					{srcs: [for f in _compute {"services/compute/\(f)"}], dst: "/app/compute/"},
+					{srcs: ["packages/compute-snapshot/src/json.ts"], dst: "/packages/compute-snapshot/src/"},
 				]
 			}
 		}

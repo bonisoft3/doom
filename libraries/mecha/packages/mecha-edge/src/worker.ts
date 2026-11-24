@@ -31,9 +31,11 @@
 //   answers `offset=-1` with `up-to-date` in one round-trip, and Electric's
 //   client holds back `up-to-date` for 60 s from any response whose cursor
 //   matches the previous session's.
-import { isSession, PUBLIC_WHERE, verifyJwt } from '../../../services/auth/jwt.ts'
+import { isSession, verifyJwt } from '../../../services/auth/jwt.ts'
+import { PUBLIC_WHERE } from '../../../services/auth/where.ts'
+import { isGuest } from '../../../services/auth/claims.ts'
 import type { EdgeEnv } from './object.ts'
-import { blobKeyOf, SIGNAL_MAX_BYTES } from './door.ts'
+import { blobKeyOf, SIGNAL_MAX_BYTES, withoutAuthCookies } from './door.ts'
 import { pokeCluster } from './clock.ts'
 
 const SHAPE_TTL_S = 300
@@ -114,6 +116,7 @@ async function forwardRead(object: () => DurableObjectStub, req: Request): Promi
 
 export const edgeWorker = {
   async fetch(req: Request, env: EdgeEnv, ctx: ExecutionContext): Promise<Response> {
+    req = withoutAuthCookies(req)
     if (!env.JWT_SECRET) throw new Error('JWT_SECRET is not set')
     if (!env.IMPORT_TOKEN) throw new Error('IMPORT_TOKEN is not set')
     const url = new URL(req.url)
@@ -242,7 +245,7 @@ export const edgeWorker = {
     }
 
     const session = isSession(claims)
-    const guest = session && claims.guest === true
+    const guest = session && isGuest(claims)
     const entityRead = req.method === 'GET' && /^\/crud\/(?!rpc$)[a-zA-Z_][a-zA-Z0-9_]*$/.test(path)
     if (path.startsWith('/crud/') && session) {
       const reset = (await (await cache.match(keyOf(version, 'reset')))?.text()) ?? '0'
@@ -297,6 +300,16 @@ export const edgeWorker = {
         await cache.put(publicWritesKey, new Response(now, { headers: { 'cache-control': 'max-age=86400' } }))
         return res
       }
+    }
+    if (req.method === 'DELETE' && path === '/auth/account' && session) {
+      const res = await object().fetch(req)
+      if (res.ok) {
+        const reset = (await (await cache.match(keyOf(version, 'reset')))?.text()) ?? '0'
+        const now = String(Date.now())
+        await cache.put(keyOf(version, reset, 'writes', claims.sub as string), new Response(now, { headers: { 'cache-control': `max-age=${OWN_WRITE_KEEP_S}` } }))
+        await cache.put(keyOf(version, reset, 'writes', 'public'), new Response(now, { headers: { 'cache-control': 'max-age=86400' } }))
+      }
+      return res
     }
     return entityRead ? forwardRead(object, req) : object().fetch(req)
   },

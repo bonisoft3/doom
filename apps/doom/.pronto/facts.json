@@ -131,7 +131,7 @@
   ],
   "artifact": [
     {"path":"program.cue","sha256":"ec6308a8c555099094d56fe95965ac61e9480a29b04ff35d51a1416e7052b964","derived":false},
-    {"path":"DESIGN.md","sha256":"dbc587ee87461cfe375c4fb999dd20900b39a9593a2a9e9c2980136711c5b91c","derived":false},
+    {"path":"DESIGN.md","sha256":"a5e8980ce07e577826ab5f6e1513e536b415c8ccc958abd87539878fa30fdb81","derived":false},
     {"path":"ir.html","sha256":"cee7745fd9afdc00a7aae13f9bef981dbd813ab3e3a512b44e76df65a9c6db65","derived":false},
     {"path":"acceptance.md","sha256":"c1ab5e4f36600b04c4bc1e5a264ce09e383cca38a4afaf9797e5d643ed0c87b1","derived":false},
     {"path":".pronto/cel.json","sha256":"554a00efa3c5a2b2a92c971aeed46d9a10c6dc66a405d4467a87031c55b53d3b","derived":true},
@@ -139,7 +139,7 @@
     {"path":"program_derived.cue","sha256":"59ed81519fe788b718425a26f820fd60ab997c93f8fee61e58c12414993d59bb","derived":true},
     {"path":"shell/screens/arena.css","sha256":"6ab8aefbcb21b064c53cb1e60e0623f2f3e66251184ddb5580875a9bd185a9e0","derived":false},
     {"path":"shell/screens/lobby.css","sha256":"9ebd0c4e90c50491dcec6bdcc635455f0976bb46bc1b45b909026fbaac8eb35e","derived":false},
-    {"path":"shell/design.css","sha256":"6e32af63a054ebbdd8d1db71c25a18961e19c13f3d5f5d8c4fd8ef24fdad77d9","derived":true}
+    {"path":"shell/design.css","sha256":"07e85bead73350faac3ab6643e93b4394cc3ce11847b98cfa4867340fc1d45e7","derived":true}
   ],
   "cel_ir": [
     {"cel":"this >= 0"},
@@ -2182,6 +2182,9 @@
     {"file":"journal/2026-10-28-cloudflare-arena.png","target":"/srv/docs/journal/2026-10-28-cloudflare-arena.png"},
     {"file":"robots.txt","target":"/srv/robots.txt"},
     {"file":"sitemap.xml","target":"/srv/sitemap.xml"}
+  ],
+  "shell_chrome": [
+    {"nav":"none","branded":false,"strip_routes":0,"has_auth":false}
   ],
   "transition": [
 

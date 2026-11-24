@@ -70,13 +70,16 @@ type I18n = { default: string; locales: Record<string, { path: string }> };
 type ShellConfig = {
   cortex?: { actors?: Record<string, unknown> };
   app?: string;
+  nav?: string;
   brand?: { label: string; key?: string };
   i18n?: I18n;
   // The facts that decide which of the terminal's own chrome a reader reaches:
   // a required gate draws the login screen, either a gate or a table of the
-  // app's own mints the session the strip names, and promote offers a guest
-  // that session's passkey, and each provider a way in at the gate and to a guest.
-  auth?: { required?: boolean; promote?: boolean; providers?: string[] };
+  // app's own mints the session the strip names, declaring auth offers that
+  // session the ways in, and each provider is one of them.
+  auth?: { required?: boolean; providers?: string[] };
+  // Consent in mode "bar" draws its bar (interpreter/consent.js).
+  consent?: { mode?: string };
   tables?: string[];
   routes?: Route[];
   units?: Record<string, unknown>;
@@ -511,9 +514,10 @@ export function checkChrome(
   // The guest every app with a table of its own is handed is a session too, and
   // a session is what puts the person and the way out in the strip.
   const session = gated || (shell.tables?.length ?? 0) > 0;
-  const promote = session && shell.auth?.promote === true;
-  const providers = session ? (shell.auth?.providers ?? []).map(providerKey) : [];
-  for (const key of [...(gated ? CHROME_KEYS.login : []), ...(session ? CHROME_KEYS.session : []), ...(promote ? CHROME_KEYS.promote : []), ...providers]) {
+  const signin = session && shell.auth !== undefined;
+  const providers = signin ? (shell.auth?.providers ?? []).map(providerKey) : [];
+  const consent = shell.consent?.mode === "bar" ? CHROME_KEYS.consent : [];
+  for (const key of [...(gated ? CHROME_KEYS.login : []), ...(session ? CHROME_KEYS.session : []), ...(signin ? CHROME_KEYS.signin : []), ...providers, ...consent]) {
     for (const tag of tags) {
       if (said(tag, key)) continue;
       report(`messages/${tag}.json`, `chrome key "${key}" is missing: the terminal speaks its own English here`);
@@ -526,7 +530,7 @@ export function checkChrome(
   // in, and no brand title, the terminal draws none at all.
   const strip = (shell.routes ?? []).filter((r) => requiredParams(r.path).length === 0 && r.nav?.strip !== false);
   const branded = typeof shell.brand?.label === "string" && shell.brand.label !== "";
-  if (strip.length <= 1 && !session && !branded) return findings;
+  if (shell.nav === "none" || (strip.length <= 1 && !session && !branded)) return findings;
   if (branded) {
     const key = shell.brand?.key;
     if (key === undefined) {
@@ -1391,10 +1395,43 @@ function chromeFailures(): string[] {
   };
   const catalogue = {
     chrome_signin_hint: "Um toque",
-    chrome_signin: "Entrar",
+    chrome_signin: "Continuar com este aparelho",
     chrome_signin_guest: "Entrar como convidado",
     chrome_signin_failed: "Não deu certo",
     chrome_signout: "sair",
+    chrome_profile: "Minha página",
+    chrome_rename: "Renomear",
+    chrome_name_label: "Seu nome",
+    chrome_save: "Salvar",
+    chrome_name_taken: "Outra conta aqui já tem esse nome",
+    chrome_passkey: "entrar",
+    chrome_signin_with: "Continuar com",
+    chrome_device: "Meu aparelho",
+    chrome_close: "Fechar",
+    chrome_guest: "Convidado",
+    chrome_guest_signout_hint: "O que ele fez não poderá ser recuperado",
+    chrome_passkey_failed: "Não deu certo",
+    chrome_taken: "Já é uma conta",
+    chrome_switch: "Mudar para ela",
+    chrome_stay: "Ficar aqui",
+    chrome_name_title: "Como devemos te chamar?",
+    chrome_continue: "Continuar",
+    chrome_back: "Voltar",
+    chrome_keep: "Guarde seu trabalho",
+    chrome_forget: "Esquecer neste aparelho",
+    chrome_this_device: "Este aparelho",
+    chrome_signed_in_guest: "Entrou como visitante",
+    chrome_delete_account: "Excluir conta",
+    chrome_delete_confirm: "Excluir de vez",
+    chrome_ways: "Formas de entrar",
+    chrome_way_add: "Adicionar uma forma",
+    chrome_way_remove: "Remover",
+    chrome_way_taken: "Essa já entra em outra conta.",
+    chrome_ways_stale: "Entre de novo para alterá-las.",
+    chrome_recovery: "Configure a recuperação",
+    chrome_recovery_hint: "Adicione outra forma de entrar, para conseguir voltar se perder esta.",
+    chrome_later: "Agora não",
+    chrome_create_passkey: "Criar chave de acesso",
     nav_table: "Mesa",
     nav_bar: "Bar",
   };
@@ -1423,7 +1460,7 @@ function chromeFailures(): string[] {
     return { "pt-BR": catalogue as Record<string, string>, es: rest };
   };
 
-  grades("a gate whose Spanish has no Continue", `chrome key "chrome_signin" is missing`, {
+  grades("a gate whose Spanish has no device sign-in", `chrome key "chrome_signin" is missing`, {
     messages: without("chrome_signin"),
   });
 
@@ -1438,16 +1475,22 @@ function chromeFailures(): string[] {
     messages: without("chrome_signout"),
   });
 
-  // A guest offered a passkey reads the offer in the page's language; an app
-  // that offers none is not asked for it.
-  grades("a guest offered a passkey in no Spanish", `chrome key "chrome_passkey" is missing`, {
-    shell: { auth: { required: false, promote: true } },
+  // A guest offered the ways in reads them in the page's language; an app
+  // that declares no auth offers none and is not asked for them.
+  grades("a guest offered a way in in no Spanish", `chrome key "chrome_passkey" is missing`, {
+    shell: { auth: { required: false } },
+    messages: without("chrome_passkey"),
   });
-  quiet("an app that offers no passkey", { shell: { auth: { required: false } } });
-  // A provider is a way in at the gate and in a guest's strip alike.
+  const guestsOnly = { "pt-BR": { chrome_signout: "sair", nav_table: "Mesa", nav_bar: "Bar" }, es: { chrome_signout: "sair", nav_table: "Mesa", nav_bar: "Bar" } };
+  quiet("an app that declares no auth", { shell: { auth: undefined }, messages: guestsOnly });
+  // A provider is a way in at the gate and among a guest's ways alike.
   grades("a provider offered in no Spanish", `chrome key "chrome_signin_google" is missing`, {
     shell: { auth: { required: false, providers: ["google"] } },
   });
+  grades("a consent bar in no Spanish", `chrome key "chrome_consent_reject" is missing`, {
+    shell: { consent: { mode: "bar" } },
+  });
+  quiet("consent that asks nobody", { shell: { auth: undefined, consent: { mode: "none" } }, messages: guestsOnly });
 
   // The whole of the built-in copy's point: an app that shows neither surface
   // is asked for none of it.

@@ -649,6 +649,10 @@ What fixes its shape:
   the release refuses until a mecha release publishes that image. When `capabilities.auth` is
   enabled, the Deno binary and cached `/deno-dir` are copied into the image and
   run alongside the other services.
+- **A server out of restarts ends the appliance.** Each process that restarts
+  on failure keeps the base file's cap and, in the appliance's overlay, ends
+  process-compose once it gives up, so the container exits non-zero for
+  whatever supervises it. A local launch and integrate keep the base file.
 - **Durable PostgreSQL writes.** The appliance enables `fsync`,
   `synchronous_commit`, and `full_page_writes`, overriding the development
   cluster settings. Mount `PGDATA` on persistent storage.
@@ -1097,7 +1101,12 @@ upgrade and the bridges named for k8s
   effect's endpoint mounted over the image's from a ConfigMap. The image's
   endpoints are the compose stack's, the docker target's; an effect's sink on
   k8s (`sink.targets.k8s`, else its default) is what `.pronto/cluster.json`
-  carries as `endpoints.k8s`, and one with none there is refused.
+  carries as `endpoints.k8s`, and one with none there is refused. A changed
+  endpoint rolls the daprd and the airlock both, by a digest of the endpoints
+  on each pod: the airlock's cache of reads does not know where an endpoint
+  leads. While the release changes where a read is sent, the running airlock
+  may still deliver an answer it cached from the previous sink, for at most
+  that answer's freshness.
 - **Compose's networks are NetworkPolicies.** The airlock reaches the
   cluster's resolver on port 53, the database and its daprd, and only the
   ticker's wake reaches it, on its health port. The resolver is

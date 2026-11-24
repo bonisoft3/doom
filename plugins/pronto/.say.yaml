@@ -42,10 +42,27 @@ say:
           - do: "deno test --parallel --no-config --allow-read --allow-write --allow-run=cue,nu,sh read.test.ts ssr.test.ts builder-inputs.test.ts release-gcp.test.ts release-docker.test.ts host-postgres.test.ts"
           - do: "deno test --config deno.json --allow-read --allow-write --allow-run=cue,sh bridge-targets.test.ts isolate-hatches.test.ts"
           - do: "deno test --no-config --allow-read --allow-write --allow-env --allow-run=git,nu,tar,sh gcp-build.test.ts"
+      access-check:
+        priority: -1
+        cmds:
+          - do: "deno test --no-config --allow-read --allow-run=cue,docker access-check.integration.test.ts"
+          - do: "deno test --no-config --allow-read --allow-write --allow-env --allow-run=docker,cue seeds.integration.test.ts"
       rls-installation:
         priority: -1
         cmds:
           - do: "deno test --no-config --allow-read --allow-run=cue,docker rls-installation.integration.test.ts"
+      # Server timers in PostgreSQL, delivered as the ticker delivers them, and
+      # in a page's own cluster on its real and its held clock.
+      machine-timers:
+        priority: -1
+        cmds:
+          - do: "mise exec -- deno test --no-config --allow-read --allow-write --allow-env --allow-run=docker,cue,deno --allow-net=127.0.0.1,0.0.0.0 machine-timers.integration.test.ts"
+      # Field behaviour in PostgreSQL, under the roles a client's write runs as
+      # and under a SECURITY DEFINER machine.
+      field-behavior:
+        priority: -1
+        cmds:
+          - do: "deno test --no-config --allow-read --allow-run=cue,docker field-behavior.integration.test.ts"
       # pronto's published isolates, built as every release builds them (their
       # packages fetched by the build's own process) and served by the host
       # that serves them outside Cloudflare, on loopback.
@@ -90,7 +107,7 @@ say:
         cmds:
           - do: "cue vet -c=false ./identity"
           - do: "deno test --no-config --allow-read --allow-run=cue identity-signin.test.ts"
-          - do: "deno test --no-config --allow-net --allow-env --allow-read identity/oidc_test.ts identity/broker identity/hydra/fake_test.ts"
+          - do: "deno test --no-config --allow-net --allow-env --allow-read identity/oidc_test.ts identity/broker"
           - do: "mise -C identity/hydra x -- sh -c 'export HYDRA_BIN=$(command -v hydra); cd ../.. && deno test --no-config --allow-net --allow-env --allow-read --allow-run identity/hydra/front_test.ts'"
       outcome-obligations:
         priority: -1
@@ -118,7 +135,7 @@ say:
         priority: -1
         cmds:
           - do: "mise exec -- deno test --no-config --unstable-raw-imports --allow-env --allow-read --allow-write --allow-run=deno,docker,cue mecha-xstate.test.ts xstate-host.integration.test.ts"
-          - do: "mise exec -- deno test --parallel --config deno.json --allow-read --allow-run=cue mecha-machine.test.ts rewrites.test.ts drive-access.test.ts lifecycle-machine.test.ts vendored-unit.test.ts kinetic-child.test.ts browser-security.test.ts objects_test.ts ai-capabilities.test.ts reads.test.ts token-roles.test.ts"
+          - do: "mise exec -- deno test --parallel --config deno.json --allow-read --allow-run=cue mecha-machine.test.ts rewrites.test.ts drive-access.test.ts lifecycle-machine.test.ts field-behavior.test.ts vendored-unit.test.ts kinetic-child.test.ts browser-security.test.ts objects_test.ts ai-capabilities.test.ts reads.test.ts token-roles.test.ts access-model.test.ts"
           # The sealing the page does, through omnishell's bundled client, whose
           # debug module reads DEBUG as it loads.
           - do: "mise exec -- deno test --config deno.json --allow-read --allow-run=cue --allow-env=DEBUG secret-seal.test.ts"
@@ -126,7 +143,6 @@ say:
           # PGlite: claims, captures, publication and materialization.
           - do: "mise exec -- deno test --parallel --config deno.json --allow-read --allow-write --allow-env mecha-snapshot.test.ts mecha-snapshot-materialize.test.ts"
           - do: "mise exec -- deno test --parallel --config deno.json --frozen --allow-read --allow-write --allow-env --allow-run=cue cortex-machine.test.ts cortex-sources.test.ts cortex-conformance.test.ts cortex-validation.test.ts"
-          - do: 'mise exec -- deno test --config deno.json --allow-read --allow-run=cue --filter "server timers refuse" machine-timers.integration.test.ts'
           - do: "mise exec -- deno test --parallel --config deno.json --allow-read --allow-write --allow-run=cue ir-render_test.ts ir-machine.test.ts"
       # What each Jessie role may be granted, held against both cages and the schema.
       endowments:
@@ -141,7 +157,7 @@ say:
         priority: -1
         cmds:
           - do: "mise exec -- deno test --config deno.json --allow-read --allow-run --allow-env duckstream.test.ts duckstream-columns_test.ts"
-          - do: "mise exec -- deno test --config deno.json --allow-read --allow-write duckstream/compiler_test.ts"
+          - do: "mise exec -- deno test --config deno.json --allow-read --allow-write --allow-run --allow-env duckstream/compiler_test.ts"
       # The airlock plane bayt lowers for a declared effect, booted as a compose
       # project of mecha's cluster with a sink and a mail bridge beside it.
       # Docker, so a platform of its own: CI's bonisoft3 job runs it on Linux
@@ -154,6 +170,18 @@ say:
           # A read in postgres under the emitted interpreter, delivered,
           # journaled and replayed by the airlock's own code.
           - do: "mise exec -- deno test --no-config --allow-read --allow-write --allow-net --allow-run=docker,cue,deno reads.integration.test.ts"
+          # A read through the emitted endpoint on a daprd behind the wall,
+          # answered by its bridge's simulator in a container.
+          - do: "mise exec -- deno test --no-config --allow-read --allow-write --allow-net --allow-run=docker,cue,deno reads-bridge.integration.test.ts"
+          # A signal through the door into a read's state, and a handler
+          # effect whose compose bridge the local stack does not run, settled
+          # by the airlock's own worker.
+          - do: "mise exec -- deno test --no-config --allow-read --allow-write --allow-net --allow-run=docker,cue,deno signals-read.integration.test.ts bridge-undeployed.integration.test.ts"
+          # An app's rewrites through the door's emitted blocks and PostgREST.
+          - do: "mise exec -- deno test --no-config --allow-read --allow-write --allow-net --allow-run=docker,cue rewrites.integration.test.ts"
+          # A signal and a blob claim through the door's own routes, whose
+          # path headers no caller's request supplies.
+          - do: "mise exec -- deno test --no-config --allow-read --allow-write --allow-net --allow-run=docker,cue signals.integration.test.ts blob-claims.integration.test.ts"
           # A declared token role from Hydra's client credentials through the
           # door and PostgREST; Hydra is identity/hydra's tool, as signin's.
           - do: "mise -C identity/hydra x -- sh -c 'export HYDRA_BIN=$(command -v hydra); cd ../.. && deno test --no-config --allow-read --allow-write --allow-env --allow-net --allow-run=docker,cue,hydra token-roles.integration.test.ts'"

@@ -6,6 +6,7 @@ local:
   frag: tab
   match: tab
   player: tab
+nav: none
 optional:
   match:
     - name: winner

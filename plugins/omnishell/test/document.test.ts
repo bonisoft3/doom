@@ -92,11 +92,15 @@ describe("a prerendered document", () => {
     })
 
     it(`draws the strip a guest sees at ${address}`, () => {
-      // truco puts no route on its strip but offers sign-in to promote.
+      // truco puts no route on its strip but declares auth and Google, so Sign
+      // in is drawn from the first paint onto a panel holding Google; the
+      // device's way in, which only the browser can say it asks alone, is
+      // drawn hidden, and the boot shows it where it can.
       const strip = doc(address).querySelectorAll("body > nav")
       expect(strip.length).toBe(1)
-      expect(strip[0].querySelector(".shell-me .shell-signin")).not.toBe(null)
-      expect(strip[0].querySelector(".shell-me .shell-register")).not.toBe(null)
+      expect(strip[0].querySelector(".shell-me > .shell-signin:not([hidden])")).not.toBe(null)
+      expect(strip[0].querySelector('.shell-signin-panel[hidden] .shell-provider[data-provider="google"]')).not.toBe(null)
+      expect(strip[0].querySelector('.shell-signin-panel[hidden] .shell-passkey[data-auth-action="accounts"][hidden]')).not.toBe(null)
     })
 
     it(`boots only after it has painted, at ${address}`, () => {
@@ -159,6 +163,20 @@ describe("a prerendered document", () => {
       expect(content('meta[property="og:image"]')).toEqual([`${ORIGIN}/card.png`])
       expect(content('meta[name="twitter:image"]')).toEqual(["https://cdn.example/card.png"])
       expect(d.querySelectorAll('link[rel="canonical"]').length).toBe(1)
+    })
+  })
+
+  it("keeps rendered forms inactive until the browser wires them", async () => {
+    await withCopy(async (app) => {
+      const file = `${app}/shell/screens/regras.html`
+      const html = await Deno.readTextFile(file)
+      await Deno.writeTextFile(file, html.replace("</section>", '<form id="ready-later" data-action="create" data-entity="note"><input name="title"><button>Save</button></form></section>'))
+    }, async (app) => {
+      const d = parseHTML((await renderDocuments(app, ORIGIN)).get("/regras")!).document
+      const form = d.getElementById("ready-later")!
+      expect(form.hasAttribute("inert")).toBe(true)
+      expect(form.getAttribute("aria-busy")).toBe("true")
+      expect(form.hasAttribute("data-form-pending")).toBe(true)
     })
   })
 

@@ -237,11 +237,13 @@ _sqlType: {
 	}]
 }
 
-// Go-style duration composed of h/m/s integer units ("168h", "30m", "1h30m").
+// A #PipelineDuration in seconds, and as the Go duration Redpanda Connect
+// reads (PT1H30M is 1h30m).
 #durationSeconds: {
 	let D = self
 	d:      string
-	_m:     regexp.FindNamedSubmatch(#"^(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m)?(?:(?P<s>\d+)s)?$"#, D.d)
+	go:     strings.ToLower(strings.TrimPrefix(D.d, "PT"))
+	_m:     regexp.FindNamedSubmatch(#"^PT(?:(?P<h>\d+)H)?(?:(?P<m>\d+)M)?(?:(?P<s>\d+)S)?$"#, D.d)
 	_hours: [if D._m.h != "" {strconv.Atoi(D._m.h)}, 0][0]
 	_mins:  [if D._m.m != "" {strconv.Atoi(D._m.m)}, 0][0]
 	_secs:  [if D._m.s != "" {strconv.Atoi(D._m.s)}, 0][0]
@@ -315,7 +317,7 @@ _sqlType: {
 	columns!: #machineColumns
 	// Parent lookup, for a composition under a row that names a group.
 	entities: _
-	rls: *false | bool
+	rls:      *false | bool
 	_lines: list.Concat([
 		[for fld in T.e.fields {
 			let column = #machineColumn & {columns: T.columns, entityName: T.e.name, fieldName: fld.name}
@@ -416,8 +418,9 @@ _sqlType: {
 
 // What the writer renders 900_seed.sql from (seed.ts): a seeded server entity's
 // columns, each with its type and, for a domain type, the function that reads
-// a JSON literal into it, and the rows the program states; the rows state.seed
-// holds the writer reads from `src` itself. Every server entity is listed
+// a JSON literal into it, the rows the program states, and the row machines
+// over it (their state field, initial state, and the states a seed may not
+// stand in); the rows state.seed holds the writer reads from `src` itself. Every server entity is listed
 // where a seed file is declared, because which of them it holds rows for is
 // the file's to say.
 #seedData: {
@@ -439,6 +442,12 @@ _sqlType: {
 				}
 			}]
 			rows: e.seed
+			machines: [if S.code.state.mecha.rows != _|_ for mn, m in S.code.state.mecha.rows if m.states != _|_ if m.field != _|_ if m.initial != _|_ if m.entity == e.name || m.entity == e.table {
+				name:    mn
+				field:   m.field
+				initial: m.initial
+				starts: [for sn, st in m.states if sn != m.initial if st.after != _|_ || st.invoke != _|_ {sn}]
+			}]
 		}]
 	}
 }
@@ -689,8 +698,10 @@ _sqlType: {
 	state:  _
 	states: _
 	timed:  *false | bool
-	// The effect each invoking state of the machine claims on entry.
+	// The effect each invoking state of the machine claims on entry, and the
+	// states a signal's event enters.
 	invokes:      _
+	signalled:    _
 	pk:           [...string]
 	cortex:       *false | bool
 	cortexStates: _
@@ -759,7 +770,7 @@ _sqlType: {
 		_entryActions: [if ST.states[t.target].entry != _|_ for a in [if (ST.states[t.target].entry & [...]) != _|_ {ST.states[t.target].entry}, [ST.states[t.target].entry]][0] {
 			(#mechaActionSql & {action: a, op: "UPDATE"}).out
 		}]
-		_enterLines: [if ST.invokes[t.target] != _|_ {(#invokeEnterSql & {effect: ST.invokes[t.target], state: t.target, pk: ST.pk}).out}]
+		_enterLines: [if ST.invokes[t.target] != _|_ {(#invokeEnterSql & {effect: ST.invokes[t.target], state: t.target, pk: ST.pk, field: ST.field, signalled: ST.signalled[t.target] != _|_}).out}]
 		"""
 			      IF NEW."\(ST.field)" = '\(t.target)'\(_timerGate) THEN
 			\(_guardLine)\(strings.Join(list.Concat([_exitActions, _actionLines, _entryActions, _enterLines]), "\n"))
@@ -816,7 +827,7 @@ _sqlType: {
 		_actions: [for a in t.actions {(#mechaActionSql & {action: a, op: "UPDATE"}).out}]
 		_exit:    [if ST.state.exit != _|_ for a in [if (ST.state.exit & [...]) != _|_ {ST.state.exit}, [ST.state.exit]][0] {(#mechaActionSql & {action: a, op: "UPDATE"}).out}]
 		_entry:   [if ST.states[t.target].entry != _|_ for a in [if (ST.states[t.target].entry & [...]) != _|_ {ST.states[t.target].entry}, [ST.states[t.target].entry]][0] {(#mechaActionSql & {action: a, op: "UPDATE"}).out}]
-		_enter:   [if ST.invokes[t.target] != _|_ {(#invokeEnterSql & {effect: ST.invokes[t.target], state: t.target, pk: ST.pk}).out}]
+		_enter:   [if ST.invokes[t.target] != _|_ {(#invokeEnterSql & {effect: ST.invokes[t.target], state: t.target, pk: ST.pk, field: ST.field, signalled: ST.signalled[t.target] != _|_}).out}]
 		"""
 			      IF NEW."\(ST.field)" = '\(t.delivery)' AND \(_kind)\(_guard) THEN
 			\(strings.Join(_exit, "\n"))
@@ -926,6 +937,8 @@ _sqlType: {
 	machine:  #MechaMachine
 	entities: {[string]: _}
 	effects: [string]: #ExternalEffect
+	// The app's signals: a read's state one's event enters admits its move.
+	signals: {[string]: _} | *{}
 	runtime: *true | bool
 	// The step that installs it, which a changed interpreter names.
 	step: *"010_machines.sql" | string
@@ -944,6 +957,7 @@ _sqlType: {
 			"""
 
 		_invokes:       {for sName, sBody in S.machine.states if sBody["invoke"] != _|_ {(sName): S.effects[sBody.invoke.src]}}
+		_signalled:     {for _, sg in S.signals if sg.machine == S.machine.name for _, sBody in S.machine.states if sBody.on != _|_ if sBody.on[sg.event] != _|_ if (sBody.on[sg.event] & string) != _|_ {(sBody.on[sg.event]): true}}
 		_hasInvoke:     len([for _, _ in _invokes {true}]) > 0
 		_hasTimers:     S.machine._timed
 		_cortex:        S.machine.cortex != _|_
@@ -951,7 +965,7 @@ _sqlType: {
 		_timerContext:  [if _hasTimers {"  IF TG_OP = 'UPDATE' THEN\n" + (#TimerContextSql & {machine: S.machine.name, field: _field, pk: _pk, rec: "OLD"}).out + "\n  END IF;\n"}, ""][0]
 		_sameStateGate: [if _hasTimers {" AND timer_delay IS NULL"}, ""][0]
 		_pk:            [for e in S.entities if e.table == _table for f in e.fields if f.pk != _|_ if f.pk {f.name}]
-		_initialEnter:  [if _invokes[S.machine.initial] != _|_ {(#invokeEnterSql & {effect: _invokes[S.machine.initial], state: S.machine.initial, pk: _pk}).out + "\n"}, ""][0]
+		_initialEnter:  [if _invokes[S.machine.initial] != _|_ {(#invokeEnterSql & {effect: _invokes[S.machine.initial], state: S.machine.initial, pk: _pk, field: _field, signalled: _signalled[S.machine.initial] != _|_}).out + "\n"}, ""][0]
 		_initialActions: [if S.machine.states[S.machine.initial].entry != _|_
 		for a in [if (S.machine.states[S.machine.initial].entry & [...]) != _|_ {S.machine.states[S.machine.initial].entry}, [S.machine.states[S.machine.initial].entry]][0] {
 			(#mechaActionSql & {action: a, op: "INSERT"}).out + "\n"
@@ -1043,7 +1057,7 @@ _sqlType: {
 				if state.type != _|_ {type: state.type}
 				entry: list.Concat([
 					[if state.entry != _|_ for a in [if (state.entry & [...]) != _|_ {state.entry}, [state.entry]][0] {(#mechaActionSql & {action: a, op: "UPDATE", track: true}).out}],
-					[if _invokes[name] != _|_ {(#invokeEnterSql & {effect: _invokes[name], state: name, pk: _pk}).out}],
+					[if _invokes[name] != _|_ {(#invokeEnterSql & {effect: _invokes[name], state: name, pk: _pk, field: _field, signalled: _signalled[name] != _|_}).out}],
 				])
 				exit: [if state.exit != _|_ for a in [if (state.exit & [...]) != _|_ {state.exit}, [state.exit]][0] {(#mechaActionSql & {action: a, op: "UPDATE", track: true}).out}]
 			}
@@ -1057,6 +1071,7 @@ _sqlType: {
 				states:       S.machine.states
 				timed:        _hasTimers
 				invokes:      _invokes
+				signalled:    _signalled
 				pk:           _pk
 				cortex:       _cortex
 				cortexStates: _cortexStates
@@ -1090,6 +1105,15 @@ _sqlType: {
 
 			  IF TG_OP = 'INSERT' THEN
 			    IF NEW."\(_field)" <> '\(S.machine.initial)' THEN
+			      -- A seed restores its row in the state it names, entering
+			      -- nothing (900_seed.sql marks its session as seeding). Any
+			      -- session may set the mark, so it counts only where the session
+			      -- logged in as the table's owner, as the seed's runner does; a
+			      -- client logs in as authenticator.
+			      IF coalesce(current_setting('pronto.seed', true), '') = 'on'
+			        AND pg_has_role(session_user, (SELECT c.relowner FROM pg_class c WHERE c.oid = TG_RELID), 'MEMBER') THEN
+			        RETURN NEW;
+			      END IF;
 			      RAISE EXCEPTION 'new % must start in initial state % (got %)', '\(_table)', '\(S.machine.initial)', NEW."\(_field)" USING ERRCODE = 'check_violation';
 			    END IF;
 			\(strings.Join(_initialActions, ""))\(_initialEnter)    RETURN NEW;
@@ -1342,7 +1366,10 @@ _sqlType: {
 // and its digest. Graphile alone
 // retries it, #ReadAttempts times. It spends its sink's credential, so a
 // request's anonymous role enters its state no more than a write from no one
-// would claim a charge.
+// would claim a charge. A signal's move is the door's own, of the one row and
+// event it declares: `airlock.signal` names the table, the machine's state
+// field, the row and the state entered for its update alone (#signalsSql), and a state a signal's event
+// enters admits that move.
 #ReadAttempts: 5
 
 #invokeEnterSql: {
@@ -1350,6 +1377,12 @@ _sqlType: {
 	effect: _
 	state:  string
 	pk:     [...string]
+
+	// A signal's event enters the state (#mechaMachineSql's _signalled), of
+	// the machine whose state field this is.
+	signalled: *false | bool
+	field:     *"" | string
+
 	_wake: """
 		        UPDATE "public"."schedule" SET "due_at" = date_trunc('milliseconds', clock_timestamp()), "last_tick_at" = NULL
 		         WHERE "name" = 'airlock' AND "last_tick_at" IS NOT NULL
@@ -1361,7 +1394,7 @@ _sqlType: {
 	_inc:    [if I.effect.request != _|_ {"NEW.\"\(I.effect.incarnation)\""}, ""][0]
 	_rowKey: [if len(I.pk) == 1 {"NEW.\"\(I.pk[0])\"::text"}, "jsonb_build_array(" + strings.Join([for f in I.pk {"NEW.\"\(f)\"::text"}], ", ") + ")::text"][0]
 	_read: """
-		        IF current_setting('role', true) = 'anon' THEN
+		        IF current_setting('role', true) = 'anon'\([if I.signalled {" AND current_setting('airlock.signal', true) IS DISTINCT FROM jsonb_build_array(TG_TABLE_NAME, '\(I.field)', \(_rowKey), '\(I.state)')::text"}, ""][0]) THEN
 		          RAISE EXCEPTION 'read % is asked by a signed-in writer, and the request names none', '\(I.effect.name)' USING ERRCODE = 'insufficient_privilege';
 		        END IF;
 		        \(_n) := coalesce(\(_n), 0) + 1;
@@ -1396,10 +1429,18 @@ _sqlType: {
 		let pk = [for f in ent.fields if f.pk != _|_ if f.pk {f.name}][0]
 		let idSql = [if sg.id.path != _|_ {"path_id"}, "body #>> '{\(strings.Join(sg.id.body, ","))}'"][0]
 		let invoking = [for sn, st in m.states if st.invoke != _|_ {"'\(sn)'"}]
+
+		// A state that invokes a read refuses a request's anonymous role, which
+		// is the role this function is called under: the move names its table,
+		// its machine's state field, its row and the state it enters for the
+		// interpreter, as a JSON array
+		// no two moves spell alike, for the update alone.
+		let reads = {for sn, st in m.states if st.invoke != _|_ if state.effects[st.invoke.src].request != _|_ {(sn): true}}
 		let moves = [for sn, st in m.states if st.on != _|_ if st.on[sg.event] != _|_ {
+			let update = "UPDATE \"\(ent.table)\" SET \"\(m.field)\" = '\(st.on[sg.event])', \"\(sg.count)\" = \"\(sg.count)\" + 1 WHERE \"\(pk)\" = row_key;"
 			"""
 				      IF state_now = '\(sn)' THEN
-				        UPDATE "\(ent.table)" SET "\(m.field)" = '\(st.on[sg.event])', "\(sg.count)" = "\(sg.count)" + 1 WHERE "\(pk)" = row_key;
+				        \([if reads[st.on[sg.event]] != _|_ {"PERFORM set_config('airlock.signal', jsonb_build_array('\(ent.table)', '\(m.field)', row_key::text, '\(st.on[sg.event])')::text, true);\n        \(update)\n        PERFORM set_config('airlock.signal', '', true);"}, update][0])
 				        RETURN 'moved';
 				      END IF;
 				"""
@@ -1987,13 +2028,436 @@ _sqlType: {
 		"""
 }
 
-// A declared token role's bounds, the client tier's (plugins/pronto/resilience).
+// The innermost timeouts of a request (plugins/pronto/resilience) for a role
+// of one tier: the client's, or the service's.
+#roleSettings: {
+	tier: "client" | "service"
+	let bounds = resilience.resilience.timeouts
+	out: {
+		statement_timeout:                   "\(bounds.statement[tier])s"
+		lock_timeout:                        "\(bounds.lock[tier])s"
+		idle_in_transaction_session_timeout: "\(bounds.idleInTransaction[tier])s"
+	}
+}
+
+// A role's name as SQL prints it: quoted where the program declared it, since
+// the name may be a keyword.
+#roleName: {
+	role:     string
+	declared: *false | bool
+	out:      [if declared {"\"\(role)\""}, role][0]
+}
+
+#settingKeys: ["statement_timeout", "lock_timeout", "idle_in_transaction_session_timeout"]
+
+#alterSettings: {
+	role:   string
+	quoted: *false | bool
+	settings: [string]: string
+	let name = (#roleName & {"role": role, declared: quoted}).out
+	out: strings.Join([for k in #settingKeys if settings[k] != _|_ {"ALTER ROLE \(name) SET \(k) = '\(settings[k])';\n"}], "")
+}
+
+// A declared token role's bounds, the client tier's.
 #tokenRoleBounds: {
 	role: string
-	let bounds = resilience.resilience.timeouts
-	out: "ALTER ROLE \"\(role)\" SET statement_timeout = '\(bounds.statement.client)s';\n" +
-		"ALTER ROLE \"\(role)\" SET lock_timeout = '\(bounds.lock.client)s';\n" +
-		"ALTER ROLE \"\(role)\" SET idle_in_transaction_session_timeout = '\(bounds.idleInTransaction.client)s';\n"
+	out:  (#alterSettings & {"role": role, quoted: true, settings: (#roleSettings & {tier: "client"}).out}).out
+}
+
+// The GRANT statements of the access model in two parts: the grants to roles
+// no token names, which 001_roles.sql states with their attributes, and the
+// rest, 002_grants.sql's.
+#grantsSql: {
+	access: #access
+	// False where the schema's grants are the instance owner's, which the
+	// check holds (#accessCheckSql).
+	schemas: *true | bool
+	let S = access.schema
+	let names = {for r, x in access.roles {(r): (#roleName & {role: r, declared: x.declared}).out}}
+	let gs = {for k, g in {schema: access.schemaGrants, table: access.tableGrants, default: access.defaultPrivileges, published: access.publishedGrants} {
+		(k): [for x in g {
+			owned: len([for t in x.to if access.roles[t].token {t}]) == 0
+			privs: strings.Join(x.privileges, ", ")
+			to:    strings.Join([for t in x.to {names[t]}], ", ")
+		}]
+	}}
+	let stmts = list.Concat([
+		[for g in gs.schema if schemas {owned: g.owned, text: "GRANT \(g.privs) ON SCHEMA \(S) TO \(g.to);\n"}],
+		[for g in gs.table {owned: g.owned, text: "GRANT \(g.privs) ON ALL TABLES IN SCHEMA \(S) TO \(g.to);\n"}],
+		[for g in gs.default {owned: g.owned, text: "ALTER DEFAULT PRIVILEGES IN SCHEMA \(S) GRANT \(g.privs) ON TABLES TO \(g.to);\n"}],
+	])
+	owned:     strings.Join([for x in stmts if x.owned {x.text}], "")
+	requested: strings.Join([for x in stmts if !x.owned {x.text}], "")
+	published: strings.Join([for g in gs.published {"GRANT \(g.privs) ON ALL TABLES IN SCHEMA \(S) TO \(g.to);\n"}], "")
+}
+
+// A role of the app's database as the emitted access model states it.
+#accessRole: {
+	// authenticator logs in and switches into a request role; a sync role
+	// (electric) is read by a service outside the app's requests.
+	kind:        "request" | "sync" | "authenticator"
+	login:       bool
+	inherit:     bool
+	superuser:   bool
+	createrole:  bool
+	createdb:    bool
+	bypassrls:   bool
+	replication: bool
+	// A request role authenticator may switch into.
+	token: bool
+	// Created only where it stands with no more than a token role holds
+	// (#tokenRole); quoted, its name being the program's.
+	declared: bool
+	memberOf: [...string]
+	settings: [string]: string
+}
+
+// One grant: to roles, on the schema's tables, the schema itself, or the
+// tables created later.
+#accessGrant: {
+	to:         [...string]
+	privileges: [...string]
+}
+
+// The database access model a program resolves to (E._access), which
+// 001_roles.sql and 002_grants.sql render.
+#access: {
+	schema: string
+	order:  [...string]
+	roles: [string]: #accessRole
+	schemaGrants:      [...#accessGrant]
+	tableGrants:       [...#accessGrant]
+	defaultPrivileges: [...#accessGrant]
+	// Rights 008_publication.sql gives the tables it publishes, once there are
+	// any: the sync of an entity reaches them as a request does.
+	publishedGrants: [...#accessGrant]
+}
+
+// The access model of a program, computed from its code alone so that the
+// emit (E._access) and the cluster (#DefaultCluster's `roles` reconcile) read
+// one value; the flags it follows are computed here, once.
+#accessModel: {
+	let M = self
+	code!:          _
+	_appMigrations: #appMigrations & {"code": M.code}
+	// The auth plane switches on as one: declaring #App.auth or any entity
+	// access implies the roles and service-token plumbing.
+	_authOn: M.code.capabilities.auth != _|_ || len(M._appMigrations.accessed) > 0
+	// The `service` role alone also stands where a schedule or an effect is
+	// declared: the ticker writes its ticks as it.
+	_serviceOn: len((#TimedMachines & {code: M.code}).out) > 0 || M._authOn || len(M.code.state.schedules) > 0 || [if M.code.state.effects != _|_ {len(M.code.state.effects) > 0}, false][0]
+	_serverOn:  (#serverOn & {servers: [for _, e in M.code.state.entities {e.server}], auth: M.code.capabilities.auth != _|_}).out
+	// The roles a token may name beside the cluster's own, in one order
+	// (#TokenRole).
+	_declaredRoles: list.SortStrings([if M.code.state.tokenRoles != _|_ for n, _ in M.code.state.tokenRoles {n}])
+	_baseTables:    [for _, e in M.code.state.entities if e.server if M._appMigrations.held[e.name] != _|_ {e.table}]
+	// Whether the database's owner provisions it (state.provisioning).
+	_checked: [if M.code.state.provisioning != _|_ if M.code.state.provisioning == "checked" {true}, false][0]
+	out: #access & {
+		schema: "public"
+		let base = list.Concat([["anon"], [if M._authOn {"app_user"}, if M._serviceOn {"service"}], [if M._serverOn {"electric"}]])
+		order: list.Concat([base, M._declaredRoles, ["authenticator"]])
+		for r in base if r != "electric" {
+			roles: (r): {
+				kind:        "request"
+				login:       false
+				inherit:     true
+				superuser:   false
+				createrole:  false
+				createdb:    false
+				bypassrls:   r == "service"
+				replication: false
+				token:       true
+				declared:    false
+				memberOf:    []
+				settings:    (#roleSettings & {tier: [if r == "service" {"service"}, "client"][0]}).out
+			}
+		}
+		for r in M._declaredRoles {
+			roles: (r): {
+				kind:        "request"
+				login:       false
+				inherit:     true
+				superuser:   false
+				createrole:  false
+				createdb:    false
+				bypassrls:   false
+				replication: false
+				token:       true
+				declared:    true
+				memberOf:    []
+				settings:    (#roleSettings & {tier: "client"}).out
+			}
+		}
+		if M._serverOn {
+			roles: electric: {kind: "sync", login: true, inherit: true, superuser: false, createrole: false, createdb: false, bypassrls: true, replication: true, token: false, declared: false, memberOf: [], settings: {}}
+		}
+		roles: authenticator: {
+			kind:        "authenticator"
+			login:       true
+			inherit:     false
+			superuser:   false
+			createrole:  false
+			createdb:    false
+			bypassrls:   false
+			replication: false
+			token:       false
+			declared:    false
+			settings:    {}
+			memberOf:    [for r in order if roles[r].token {r}]
+		}
+		let dml = ["SELECT", "INSERT", "UPDATE", "DELETE"]
+		let granted = [if M._authOn {["app_user", "service"]}, if M._serviceOn {["anon", "service"]}, ["anon"]][0]
+		let visible = [if M._authOn {["anon", "app_user", "service"]}, granted][0]
+		schemaGrants:      [{to: visible, privileges: ["USAGE"]}, if M._serverOn {to: ["electric"], privileges: ["USAGE"]}]
+		tableGrants:       [{to: granted, privileges: dml}, if M._serverOn {to: ["electric"], privileges: ["SELECT"]}]
+		defaultPrivileges: [{to: granted, privileges: dml}, if M._serverOn {to: ["electric"], privileges: ["SELECT"]}]
+		publishedGrants:   [if len(M._baseTables) > 0 {to: ["anon"], privileges: dml}]
+	}
+}
+
+// A role's seven attributes as CREATE ROLE and ALTER ROLE spell them, always
+// all of them: the check compares them all, so its fix sets them all.
+#roleAttrs: {
+	role: #accessRole
+	out: strings.Join([
+		[if role.login {"LOGIN"}, "NOLOGIN"][0],
+		[if role.inherit {"INHERIT"}, "NOINHERIT"][0],
+		[if role.superuser {"SUPERUSER"}, "NOSUPERUSER"][0],
+		[if role.createrole {"CREATEROLE"}, "NOCREATEROLE"][0],
+		[if role.createdb {"CREATEDB"}, "NOCREATEDB"][0],
+		[if role.bypassrls {"BYPASSRLS"}, "NOBYPASSRLS"][0],
+		[if role.replication {"REPLICATION"}, "NOREPLICATION"][0],
+	], " ")
+}
+
+// One row of an inline table, its values as SQL literals.
+#sqlRow: {
+	vs:  [...]
+	out: "(" + strings.Join([for x in vs {(#sqlLit & {v: x}).out}], ", ") + ")"
+}
+
+// An inline table `e` of expected rows for the check to join the catalog to.
+// An empty VALUES list is a syntax error, so a table with no row is a select
+// of none.
+#valuesOr: {
+	let V = self
+	cols:   [...{name: string, type: string}]
+	rows:   [...string]
+	_names: strings.Join([for c in V.cols {c.name}], ", ")
+	out: [
+		if len(V.rows) > 0 {"(VALUES \(strings.Join(V.rows, ", "))) AS e(\(V._names))"},
+		"(SELECT \(strings.Join([for c in V.cols {"NULL::\(c.type)"}], ", ")) WHERE false) AS e(\(V._names))",
+	][0]
+}
+
+// What a database must hold for an access model: the rows the check compares
+// the catalogs with, and the statement that fixes a difference where it is
+// static. One value, so the check and the owner's script cannot disagree.
+#accessRows: {
+	let R = self
+	access: #access
+	let S = access.schema
+	roles: [for i, r in access.order {
+		ord:    i + 1
+		name:   r
+		a:      access.roles[r]
+		sql:    (#roleName & {role: r, declared: a.declared}).out
+		attrs:  (#roleAttrs & {role: a}).out
+		create: "CREATE ROLE \(sql) WITH \(attrs);"
+		alter:  "ALTER ROLE \(sql) WITH \(attrs);"
+	}]
+	_edges: [for r in access.order for m in access.roles[r].memberOf {member: r, role: m}]
+	edges: [for i, x in R._edges {
+		ord:    i + 1
+		member: x.member
+		role:   x.role
+		// What GRANT gives a member that does not inherit (authenticator) is
+		// SET alone; an admin option is never the model's.
+		inherit: access.roles[x.member].inherit
+		fix:     "GRANT \((#roleName & {role: x.role, declared: access.roles[x.role].declared}).out) TO \((#roleName & {role: x.member, declared: access.roles[x.member].declared}).out);"
+	}]
+	_settings: [for r in access.order for k in #settingKeys if access.roles[r].settings[k] != _|_ {
+		role:  r
+		sql:   (#roleName & {role: r, declared: access.roles[r].declared}).out
+		key:   k
+		value: access.roles[r].settings[k]
+	}]
+	settings: [for i, x in R._settings {
+		ord:   i + 1
+		role:  x.role
+		sql:   x.sql
+		key:   x.key
+		value: x.value
+		fix:   "ALTER ROLE \(x.sql) SET \(x.key) = \((#sqlLit & {v: x.value}).out);"
+	}]
+	_grants: [for g in access.schemaGrants for p in g.privileges for t in g.to {
+		role:      t
+		privilege: p
+		fix:       "GRANT \(p) ON SCHEMA \(S) TO \((#roleName & {role: t, declared: access.roles[t].declared}).out);"
+	}]
+	schema: [for i, x in R._grants {ord: i + 1, role: x.role, privilege: x.privilege, fix: x.fix}]
+}
+
+// The database against its access model, as the SQL a release runs before its
+// migrations (state.provisioning: "checked"): a DO block that compares
+// pg_roles, pg_auth_members, pg_db_role_setting and the schema's ACL with the
+// model, and on any difference raises with every statement that fixes it in
+// DETAIL, in an order an owner can run top to bottom. Every catalog it reads is
+// readable by any login, so the unprivileged login that migrates can run it.
+// Passwords are not compared: pg_roles hides them, and they are the
+// deployment's secrets.
+#accessCheckSql: {
+	access: #access
+	let rows = #accessRows & {"access": access}
+	let sname = (#sqlLit & {v: access.schema}).out
+	let names = "ARRAY[\(strings.Join([for r in access.order {(#sqlLit & {v: r}).out}], ", "))]::text[]"
+
+	// Membership in authenticator also reaches the roles that it can SET.
+	let privileged = "ARRAY[\(strings.Join([for r in access.order if access.roles[r].bypassrls || access.roles[r].replication || access.roles[r].kind == "authenticator" {(#sqlLit & {v: r}).out}], ", "))]::text[]"
+	let roleTable = (#valuesOr & {
+		cols:   list.Concat([[{name: "ord", type: "int"}, {name: "name", type: "text"}], [for b in ["login", "inherit", "superuser", "createrole", "createdb", "bypassrls", "replication"] {name: b, type: "boolean"}], [{name: "create_fix", type: "text"}, {name: "alter_fix", type: "text"}]])
+		"rows": [for r in rows.roles {(#sqlRow & {vs: [r.ord, r.name, r.a.login, r.a.inherit, r.a.superuser, r.a.createrole, r.a.createdb, r.a.bypassrls, r.a.replication, r.create, r.alter]}).out}]
+	}).out
+	let edgeTable = (#valuesOr & {
+		cols:   [{name: "ord", type: "int"}, {name: "member", type: "text"}, {name: "role", type: "text"}, {name: "inherit", type: "boolean"}, {name: "fix", type: "text"}]
+		"rows": [for x in rows.edges {(#sqlRow & {vs: [x.ord, x.member, x.role, x.inherit, x.fix]}).out}]
+	}).out
+	let pairTable = (#valuesOr & {
+		cols:   [{name: "member", type: "text"}, {name: "role", type: "text"}]
+		"rows": [for x in rows.edges {(#sqlRow & {vs: [x.member, x.role]}).out}]
+	}).out
+	let settingTable = (#valuesOr & {
+		cols:   [{name: "ord", type: "int"}, {name: "role", type: "text"}, {name: "role_sql", type: "text"}, {name: "key", type: "text"}, {name: "value", type: "text"}, {name: "fix", type: "text"}]
+		"rows": [for x in rows.settings {(#sqlRow & {vs: [x.ord, x.role, x.sql, x.key, x.value, x.fix]}).out}]
+	}).out
+	let grantTable = (#valuesOr & {
+		cols:   [{name: "ord", type: "int"}, {name: "role", type: "text"}, {name: "privilege", type: "text"}, {name: "fix", type: "text"}]
+		"rows": [for x in rows.schema {(#sqlRow & {vs: [x.ord, x.role, x.privilege, x.fix]}).out}]
+	}).out
+	let phases = [
+		"""
+			SELECT 1 AS phase, e.ord, CASE WHEN r.oid IS NULL THEN e.create_fix ELSE e.alter_fix END AS fix
+			      FROM \(roleTable) LEFT JOIN pg_roles r ON r.rolname = e.name
+			      WHERE r.oid IS NULL OR ROW(r.rolcanlogin, r.rolinherit, r.rolsuper, r.rolcreaterole, r.rolcreatedb, r.rolbypassrls, r.rolreplication)
+			        IS DISTINCT FROM ROW(e.login, e.inherit, e.superuser, e.createrole, e.createdb, e.bypassrls, e.replication)
+			""",
+		"""
+			SELECT 2, 0, format('ALTER DATABASE %I OWNER TO %I;', current_database(), current_user)
+			      FROM pg_database WHERE datname = current_database() AND pg_get_userbyid(datdba)::text = ANY (\(names))
+			""",
+		"""
+			SELECT 2, 1, format('ALTER SCHEMA %I OWNER TO pg_database_owner;', nspname)
+			      FROM pg_namespace WHERE nspname = \(sname) AND pg_get_userbyid(nspowner)::text = ANY (\(names))
+			""",
+		"""
+			SELECT 3, e.ord, e.fix FROM \(edgeTable)
+			      WHERE NOT EXISTS (SELECT FROM pg_auth_members m WHERE m.member = to_regrole(quote_ident(e.member)) AND m.roleid = to_regrole(quote_ident(e.role)))
+			""",
+		"""
+			SELECT 3, 1000 + e.ord, format('REVOKE ADMIN OPTION FOR %I FROM %I GRANTED BY %I;', e.role, e.member, pg_get_userbyid(m.grantor))
+			      FROM \(edgeTable) JOIN pg_auth_members m ON m.member = to_regrole(quote_ident(e.member)) AND m.roleid = to_regrole(quote_ident(e.role))
+			      WHERE m.admin_option
+			""",
+		"""
+			SELECT 3, 2000 + e.ord, format('GRANT %I TO %I WITH INHERIT %s, SET TRUE GRANTED BY %I;', e.role, e.member, CASE WHEN e.inherit THEN 'TRUE' ELSE 'FALSE' END, pg_get_userbyid(m.grantor))
+			      FROM \(edgeTable) JOIN pg_auth_members m ON m.member = to_regrole(quote_ident(e.member)) AND m.roleid = to_regrole(quote_ident(e.role))
+			      WHERE NOT (m.set_option AND m.inherit_option = e.inherit)
+			""",
+		"""
+			SELECT 4, 0, format('REVOKE %I FROM %I GRANTED BY %I;', pg_get_userbyid(m.roleid), pg_get_userbyid(m.member), pg_get_userbyid(m.grantor))
+			      FROM pg_auth_members m
+			      WHERE (pg_get_userbyid(m.member)::text = ANY (\(names)) OR pg_get_userbyid(m.roleid)::text = ANY (\(privileged)))
+			        AND NOT (
+			          m.admin_option AND NOT m.inherit_option AND NOT m.set_option
+			          AND pg_get_userbyid(m.member)::text <> ALL (\(names))
+			          AND EXISTS (SELECT FROM pg_database d JOIN pg_roles owner ON owner.oid = d.datdba
+			                      WHERE d.datname = current_database() AND owner.oid = m.member AND owner.rolcreaterole)
+			          AND EXISTS (SELECT FROM pg_roles grantor WHERE grantor.oid = m.grantor AND grantor.rolsuper)
+			        )
+			        AND NOT EXISTS (SELECT FROM \(pairTable) WHERE e.member = pg_get_userbyid(m.member)::text AND e.role = pg_get_userbyid(m.roleid)::text)
+			""",
+		"""
+			SELECT 5, e.ord, e.fix FROM \(settingTable)
+			      WHERE (SELECT substr(c, length(e.key) + 2) FROM pg_db_role_setting s, unnest(s.setconfig) c
+			             WHERE s.setdatabase = 0 AND s.setrole = to_regrole(quote_ident(e.role)) AND starts_with(c, e.key || '=')) IS DISTINCT FROM e.value
+			""",
+		"""
+			SELECT 6, e.ord, format('ALTER ROLE %s IN DATABASE %I RESET %s;', e.role_sql, current_database(), e.key) FROM \(settingTable)
+			      WHERE EXISTS (SELECT FROM pg_db_role_setting s, unnest(s.setconfig) c
+			                    WHERE s.setrole = to_regrole(quote_ident(e.role)) AND s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database())
+			                      AND starts_with(c, e.key || '='))
+			""",
+		"""
+			SELECT 7, e.ord, e.fix FROM \(grantTable)
+			      WHERE COALESCE(NOT has_schema_privilege(to_regrole(quote_ident(e.role)), \(sname), e.privilege), true)
+			""",
+		"""
+			SELECT DISTINCT 7, 1000, CASE WHEN a.grantor = n.nspowner THEN '' ELSE format('SET ROLE %I; ', pg_get_userbyid(a.grantor)) END
+			        || format('REVOKE CREATE ON SCHEMA %I FROM %s;', n.nspname, CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(a.grantee)::text) END)
+			        || CASE WHEN a.grantor = n.nspowner THEN '' ELSE ' RESET ROLE;' END
+			      FROM pg_namespace n CROSS JOIN LATERAL aclexplode(n.nspacl) a
+			      WHERE n.nspname = \(sname) AND a.privilege_type = 'CREATE'
+			        AND (a.grantee = 0 OR pg_get_userbyid(a.grantee)::text = ANY (\(names)))
+			""",
+		"""
+			SELECT 8, 1, format('ALTER ROLE %I IN DATABASE %I SET search_path = %I;', current_user, current_database(), \(sname))
+			      WHERE migration_schema IS DISTINCT FROM \(sname)
+			""",
+		"""
+			SELECT 8, 2, format('GRANT USAGE, CREATE ON SCHEMA %I TO %I;', \(sname), current_user)
+			      WHERE NOT (has_schema_privilege(current_user, \(sname), 'USAGE') AND has_schema_privilege(current_user, \(sname), 'CREATE'))
+			""",
+		"""
+			SELECT 8, 3, format('ALTER ROLE %I BYPASSRLS;', current_user)
+			      FROM pg_roles WHERE rolname = current_user AND NOT (rolbypassrls OR rolsuper)
+			""",
+		"""
+			SELECT 8, 4, format('GRANT CREATE ON DATABASE %I TO %I;', current_database(), current_user)
+			      WHERE NOT has_database_privilege(current_user, current_database(), 'CREATE')
+			""",
+	]
+	out: """
+		-- The database against its access model (state.provisioning: "checked"). Its owner
+		-- provisioned it; a difference refuses the release with the statements that fix it.
+		DO $access$
+		DECLARE
+		  fixes text;
+		  migration_schema pg_catalog.name := (pg_catalog.current_schemas(false))[1];
+		  migration_path pg_catalog.text := pg_catalog.current_setting('search_path');
+		BEGIN
+		  PERFORM pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true);
+		  IF current_setting('server_version_num')::int < 160000 THEN
+		    RAISE EXCEPTION 'checked provisioning requires PostgreSQL 16 or later';
+		  END IF;
+		  IF current_user::text = ANY (\(names)) THEN
+		    RAISE EXCEPTION 'checked provisioning requires a migration login separate from the runtime roles';
+		  END IF;
+		  SELECT string_agg(fix, E'\\n' ORDER BY phase, ord, fix) INTO fixes FROM (
+		    \(strings.Join(phases, "\n    UNION ALL\n    "))
+		  ) d;
+		  IF fixes IS NOT NULL THEN
+		    RAISE EXCEPTION 'the database differs from the access model this release declares'
+		      USING DETAIL = fixes,
+		            HINT = 'The database''s owner runs the statements in DETAIL, then the release runs again (docs/access.md#generated-or-checked).';
+		  END IF;
+		  PERFORM pg_catalog.set_config('search_path', migration_path, true);
+		END $access$;
+
+		"""
+}
+
+// The owner's script for a database with none of the model's roles: every
+// static statement the check names, in the order it names them.
+#accessProvisionSql: {
+	access: #access
+	let rows = #accessRows & {"access": access}
+	out: strings.Join(list.Concat([
+		[for r in rows.roles {r.create + "\n"}],
+		[for x in rows.edges {x.fix + "\n"}],
+		[for x in rows.settings {x.fix + "\n"}],
+		[for x in rows.schema {x.fix + "\n"}],
+	]), "")
 }
 
 // The declared token roles as 001_roles.sql leaves them, restated on every
@@ -2005,12 +2469,16 @@ _sqlType: {
 // before it has neither.
 #tokenRolesSql: {
 	roles: [...string]
+	// Where the instance's owner provisions the roles (#accessCheckSql), which
+	// are then not created, granted or bounded here: the check refuses their
+	// absence, and the list, the floor and the prune are all this restates.
+	checked: *false | bool
 	out: mecha.#TenancySql + "\n" +
-		"DO $$ BEGIN\n" + strings.Join([for r in roles {(#tokenRole & {role: r}).out}], "\n") + "END $$;\n" +
-		"GRANT \(strings.Join([for r in roles {"\"\(r)\""}], ", ")) TO authenticator;\n" +
-		strings.Join([for r in roles {(#tokenRoleBounds & {role: r}).out}], "") +
+		[if !checked {"DO $$ BEGIN\n" + strings.Join([for r in roles {(#tokenRole & {role: r}).out}], "\n") + "END $$;\n" +
+			"GRANT \(strings.Join([for r in roles {(#roleName & {role: r, declared: true}).out}], ", ")) TO authenticator;\n" +
+			strings.Join([for r in roles {(#tokenRoleBounds & {role: r}).out}], "")}, ""][0] +
 		"INSERT INTO mecha.token_role VALUES \(strings.Join([for r in roles {"('\(r)')"}], ", ")) ON CONFLICT DO NOTHING;\n" +
-		(#tokenRolesPrune & {"roles": roles}).out
+		(#tokenRolesPrune & {"roles": roles, "checked": checked}).out
 }
 
 // A role the program no longer declares: out of `mecha.token_role`, so the
@@ -2029,6 +2497,7 @@ _sqlType: {
 // With `restate`, where no role is declared, the floor the marker is read by
 // is restated first, for a database that held a role under an older floor.
 #tokenRolesPrune: {
+	checked: *false | bool
 	roles:   *[] | [...string]
 	restate: *false | bool
 	_keep:   strings.Join(list.Concat([[for r in roles {"'\(r)'"}], ["''"]]), ", ")
@@ -2041,6 +2510,12 @@ _sqlType: {
 		END $mecha_floor$;
 
 		"""}, ""][0]
+	_revokes: [if !checked {"""
+		    FOR m IN SELECT DISTINCT grantor FROM pg_auth_members WHERE roleid = to_regrole(quote_ident(r)) AND member = to_regrole('authenticator') LOOP
+		      EXECUTE format('REVOKE %I FROM authenticator GRANTED BY %I', r, pg_get_userbyid(m.grantor));
+		    END LOOP;
+
+		"""}, ""][0]
 	out: _floor + """
 		DO $$ DECLARE
 		  r text;
@@ -2050,10 +2525,7 @@ _sqlType: {
 		  IF to_regclass('mecha.token_role') IS NULL THEN RETURN; END IF;
 		  FOR r IN SELECT role_name FROM mecha.token_role WHERE role_name <> ALL (ARRAY[\(_keep)]::text[]) LOOP
 		    IF to_regrole(quote_ident(r)) IS NULL OR to_regrole('authenticator') IS NULL THEN CONTINUE; END IF;
-		    FOR m IN SELECT DISTINCT grantor FROM pg_auth_members WHERE roleid = to_regrole(quote_ident(r)) AND member = to_regrole('authenticator') LOOP
-		      EXECUTE format('REVOKE %I FROM authenticator GRANTED BY %I', r, pg_get_userbyid(m.grantor));
-		    END LOOP;
-		    -- Through any role it belongs to, not its own grants alone: a role
+		\(_revokes)    -- Through any role it belongs to, not its own grants alone: a role
 		    -- authenticator reaches by way of another is one crud can switch to.
 		    held := pg_has_role('authenticator', to_regrole(quote_ident(r)), 'SET');
 		    IF held THEN
@@ -2079,6 +2551,99 @@ _sqlType: {
 		if P._columns != "" {"GRANT UPDATE (\(P._columns)) ON \(P._t) TO app_user;"},
 		(#policy & {name: "\(P._t)_app_user_update", table: P._t, rest: "FOR UPDATE TO app_user USING (true) WITH CHECK (true)"}).out,
 	], "\n")
+}
+
+// An entity's field behaviour (#Field.outputOnly, #Field.immutable), as
+// AIP-203 states it, held for the clients alone: a write PostgREST makes as
+// a role a token names, which is any role authenticator may switch to
+// (001_roles.sql) but the service, whose token is the server's own. Asked of
+// the membership rather than of a list, so a token role declared later is held
+// by a trigger emitted before it. The function is the invoker's, so
+// `current_user` is the role the statement runs as; a write a SECURITY
+// DEFINER machine or lifecycle trigger makes runs as its owner, which no
+// token names, and a computation, a seed and a migration are no client either.
+// Where there is no authenticator, no write comes through PostgREST. Named
+// to fire first, as a table's triggers fire in the order of their names and
+// a digit sorts before every name the program gives one: a machine's
+// interpreter reads NEW after it.
+// An output-only value a client sends is replaced, never refused: an insert
+// takes the column's default, an update keeps the column's value. An
+// immutable change is refused as an invalid argument, which PostgREST
+// answers 400; the same value passes. A json value has no equality operator,
+// and is compared as the value it states, as jsonb: an object restated with
+// its keys in another order or other whitespace is the same object.
+#fieldBehaviorSql: {
+	let F = self
+	e:        _
+	columns!: #machineColumns
+	_t:       F.e.table
+	_fn:      "trg_\(F._t)_field_behavior"
+	_outputOnly: [for f in F.e.fields if f.outputOnly != _|_ if f.outputOnly {
+		let column = #machineColumn & {columns: F.columns, entityName: F.e.name, fieldName: f.name}
+		name: f.name
+		default: [
+			if f.default != _|_ {f.default},
+			if column.initial != _|_ {(#sqlLit & {v: column.initial}).out},
+			"NULL",
+		][0]
+	}]
+	_immutable: [for f in F.e.fields if f.immutable != _|_ if f.immutable {
+		name: f.name
+		cast: [if f.type == "json" || f.type == "geojson" {"::jsonb"}, ""][0]
+	}]
+	out: """
+		CREATE OR REPLACE FUNCTION "\(_fn)"() RETURNS trigger
+		LANGUAGE plpgsql SET search_path = public, pg_catalog AS $$
+		BEGIN
+		  IF current_user = 'service' OR to_regrole('authenticator') IS NULL THEN
+		    RETURN NEW;
+		  END IF;
+		  IF NOT pg_has_role('authenticator', current_user, 'SET') THEN
+		    RETURN NEW;
+		  END IF;
+		  IF TG_OP = 'INSERT' THEN
+		\(strings.Join([for f in _outputOnly {"    NEW.\"\(f.name)\" := \(f.default);\n"}], ""))    RETURN NEW;
+		  END IF;
+		\(strings.Join([for f in _outputOnly {"  NEW.\"\(f.name)\" := OLD.\"\(f.name)\";\n"}], ""))\(strings.Join([for f in _immutable {
+			"  IF NEW.\"\(f.name)\"\(f.cast) IS DISTINCT FROM OLD.\"\(f.name)\"\(f.cast) THEN\n" +
+			"    RAISE EXCEPTION '\(F._t).\(f.name) is immutable: it is set when the row is created and never changed' USING ERRCODE = 'invalid_parameter_value';\n" +
+			"  END IF;\n"
+		}], ""))  RETURN NEW;
+		END $$;
+
+		DROP TRIGGER IF EXISTS "0_\(F._t)_field_behavior" ON "\(F._t)";
+		CREATE TRIGGER "0_\(F._t)_field_behavior"
+		  BEFORE INSERT OR UPDATE ON "\(F._t)"
+		  FOR EACH ROW
+		  EXECUTE FUNCTION "\(_fn)"();
+		"""
+}
+
+// The field behaviour of tables that state none, taken off a database that
+// held it. A table's lock is taken only where its trigger stands, so a release
+// pays nothing for a table that never had one; a table not yet created has
+// none.
+#fieldBehaviorDropSql: {
+	tables: [...string]
+	out: """
+		DO $$
+		DECLARE
+		  t text;
+		BEGIN
+		  FOREACH t IN ARRAY ARRAY[\(strings.Join([for t in tables {(#sqlLit & {v: t}).out}], ", "))]::text[] LOOP
+		    IF EXISTS (SELECT FROM pg_trigger WHERE tgrelid = to_regclass(format('public.%I', t)) AND tgname = '0_' || t || '_field_behavior') THEN
+		      EXECUTE format('DROP TRIGGER %I ON public.%I', '0_' || t || '_field_behavior', t);
+		    END IF;
+		    EXECUTE format('DROP FUNCTION IF EXISTS public.%I()', 'trg_' || t || '_field_behavior');
+		  END LOOP;
+		END $$;
+		"""
+}
+
+// The server entities that state a field behaviour.
+#behaved: {
+	e!:  _
+	out: len([for f in e.fields for b in ["outputOnly", "immutable"] if f[b] != _|_ if f[b] {f}]) > 0
 }
 
 // A publication over a table list, brought up to the list and its options
@@ -2146,7 +2711,7 @@ _cdcBeforeField: "__before"
 #cdcTraceJoin: {
 	let J = self
 	consumer: string
-	out:      [{mutation: "meta cdc_consumer = \(json.Marshal(J.consumer))"}, {resource: "cdc_trace_join"}]
+	out:      [{mutation: "meta cdc_consumer = \(json.Marshal(J.consumer))"}, {resource: "cdc_stream_trim"}, {resource: "cdc_trace_join"}]
 }
 
 // Sent with each call a stream makes for a row, so the call joins the row's
@@ -2279,7 +2844,7 @@ _traceHeader: include_patterns: ["^traceparent$"]
 		"{nowts}", "${! meta(\"nowts\") }", -1,
 	)
 	out: {
-		input: generate:      {interval: R.p.interval, mapping: "root = {}"}
+		input: generate:      {interval: (#durationSeconds & {d: R.p.interval}).go, mapping: "root = {}"}
 		pipeline: processors: [{bloblang: strings.Join(list.Concat([R._metaLines, [R._rootLine]]), "\n")}]
 		output: retry: {
 			max_retries: 3
@@ -2399,9 +2964,10 @@ _traceHeader: include_patterns: ["^traceparent$"]
 	// Whether the cluster runs an auth and a crud service: #serverOn, the
 	// predicate that emits them, carried into the file visual lint reads.
 	server: bool
-	// Whether the app claims a native host beside the web one, carried into
-	// shell.yaml so project-native.ts projects its screens to DivKit and winio.
-	native: bool
+	// The native hosts the app ships beside the web one, carried into
+	// shell.yaml so project-native.ts projects its screens to DivKit and winio
+	// and a host's bundle is built only for a host the program names.
+	native: [...("android" | "ios")]
 	// The tables the terminal registers, each with the durability it builds
 	// the collection from (#App.#collections says which).
 	// Development admits declared capabilities before markup first uses them.
@@ -2463,6 +3029,11 @@ _traceHeader: include_patterns: ["^traceparent$"]
 				// Sealed to the airlock's key at the form (omnishell's
 				// screen.js), never written in the clear.
 				if f.secret != _|_ {secret: true}
+				// AIP-203's field behaviour, which the store applies to a
+				// client's write before its optimistic row stands (omnishell's
+				// data-sync.js) and the markup check holds a chart's writes to.
+				if f.outputOnly != _|_ if f.outputOnly {outputOnly: true}
+				if f.immutable != _|_ if f.immutable {immutable: true}
 				let column = #machineColumn & {entityName: e.name, fieldName: f.name, columns: S.code._machineColumns}
 				if f.default != _|_ {
 					defaulted: true
@@ -2570,6 +3141,9 @@ _traceHeader: include_patterns: ["^traceparent$"]
 	}
 	out: {
 		app: S.code.meta.name
+		if S.code.surface.design.shell.nav == "none" {
+			nav: "none"
+		}
 		if S.code.surface.design.shell.title != _|_ {
 			brand: {
 				label: S.code.surface.design.shell.title
@@ -2586,12 +3160,18 @@ _traceHeader: include_patterns: ["^traceparent$"]
 		}
 		floors: S.floors
 		server: S.server
-		if S.native {
-			native: true
+		if len(S.native) > 0 {
+			native: S.native
 		}
 		if S.code.capabilities.auth != _|_ {
 			// A provider's settings are the cluster's (#signIn).
 			auth: {for k, v in S.code.capabilities.auth if k != "provider" {(k): v}}
+		}
+		if S.code.meta.consent != _|_ {
+			consent: (#consentPlan & {
+				raw: S.code.meta.consent
+				hosts: [if S.code.meta.googleTag != _|_ {S.code.meta.googleTag.hosts}, []][0]
+			}).terminal
 		}
 
 		// Projected, not copied: the catalogues are the emitter's input and the
@@ -2898,6 +3478,7 @@ _traceHeader: include_patterns: ["^traceparent$"]
 				if P.client != _|_ {client: P.client}
 				if P.scope != _|_ {scope: P.scope}
 				if P.params != _|_ {params: P.params}
+				if P.credential != _|_ {credential: P.credential}
 			}
 		}
 	}}
@@ -2942,6 +3523,7 @@ _traceHeader: include_patterns: ["^traceparent$"]
 	_seedFile:         len(M.seeded) > 0 || M.code.state.seed != _|_
 	accessed:          [for _, e in M._base if e.access != _|_ {e}]
 	updateOnly:        [for e in M.accessed if e.access.scope == "public" if e.access["write"] != _|_ if e.access.write == "update" {e}]
+	behaved:           [for _, e in M._base if e.server if (#behaved & {"e": e}).out {e}]
 	machines:          [if M.code.state.mecha.rows != _|_ {[for _, m in M.code.state.mecha.rows for en, e in M._base if en == m.entity || e.table == m.entity if e.server {m}]}, []][0]
 	raw:               [if M.code.state.rawMigrations != _|_ {M.code.state.rawMigrations}, []][0]
 	_steps:            #steps & {code: M.code}
@@ -2969,6 +3551,7 @@ _traceHeader: include_patterns: ["^traceparent$"]
 		if M.code.capabilities.blobs {"services/database/migrations/803_blob_claims.sql"},
 		if len(M.code.state.mecha.reducers) > 0 if len([for r in M.raw if r.name == M._steps.actors {r}]) == 0 {"services/database/migrations/\(M._steps.actors)"},
 		for r in M.raw {"services/database/migrations/\(r.name)"},
+		if len(M.behaved) > 0 {"services/database/migrations/799_field_behavior.sql"},
 		if len(M.updateOnly) > 0 {"services/database/migrations/799_write_permissions.sql"},
 		if M.code.state.cortex != _|_ for migration, _ in {
 			for _, c in M.code.state.cortex if c.config.meta != _|_ if c.config.meta.host != _|_ if c.config.meta.host == "mecha" {(c.config.meta.migration): true}
@@ -3030,7 +3613,8 @@ _traceHeader: include_patterns: ["^traceparent$"]
 			["-- tier: container\n" + (#publication & {name: L._pub, tables: [e.table]}).out + [if L._capture {"\n" + (#txnMarker & {pub: L._pub, tables: [e.table]}).out}, ""][0] + "\n" +
 				(#publication & {name: "electric_publication_default", tables: [e.table]}).out + "\nALTER TABLE \(e.table) REPLICA IDENTITY FULL;\n-- tier: any"],
 			["GRANT SELECT, INSERT, UPDATE, DELETE ON \(e.table) TO anon;"],
-			[for m in machines {(#mechaMachineSql & {machine: m, entities: L.code.state.entities, effects: L._effects, runtime: false}).out}],
+			[if e.server if (#behaved & {"e": e}).out {(#fieldBehaviorSql & {"e": e, columns: L.code._machineColumns}).out}],
+			[for m in machines {(#mechaMachineSql & {machine: m, entities: L.code.state.entities, effects: L._effects, signals: [if L.code.state.signals != _|_ {L.code.state.signals}, {}][0], runtime: false}).out}],
 		]), "\n\n") + "\n"
 	}}
 	out: {
@@ -3058,6 +3642,41 @@ _traceHeader: include_patterns: ["^traceparent$"]
 		if at.ai != _|_ {"http://tsbifrost:\(mecha.#TsBifrostPort)"},
 		at.origin,
 	][0]
+}
+
+// The bridge an effect is settled by (mecha's services/airlock, "A bridge not
+// deployed"), as effects.json's `bridge`: its own, else the one its sink is
+// on a release target or the compose stack, where the airlock settles it not
+// deployed as it would its own. `out` is absent where it names none.
+#EffectBridge: {
+	let B = self
+	effect:  _
+	bridges: _
+	// The app's release targets (meta.targets).
+	targets: _
+	named: [
+		if B.effect.sink.bridge != _|_ {B.effect.sink.bridge},
+		for t in ["cloudflare", "k8s", "docker"] let at = (#SinkAt & {sink: B.effect.sink, target: t}).out if at != null if at.bridge != _|_ {at.bridge},
+	]
+	if len(named) > 0 {
+		let local = (#SinkAt & {sink: B.effect.sink, target: "docker"}).out
+		out: {
+			name: named[0]
+			// The release targets where the effect's sink there is reachable:
+			// an origin, the AI gateway, or a bridge that target runs; the
+			// app's own targets past those a bridge may name among them. The
+			// airlock settles the effect not deployed elsewhere, so an effect
+			// whose own bridge runs only on docker but whose k8s sink is an
+			// origin is called on k8s.
+			targets: [for t in list.Concat([#BridgeTargets, [for t in B.targets if t != "pages" if !list.Contains(#BridgeTargets, t) {t}]])
+			let at = (#SinkAt & {sink: B.effect.sink, target: t}).out
+			if at != null
+			if [if at.bridge != _|_ {list.Contains(B.bridges[at.bridge].targets, t)}, true][0] {t}]
+			// Whether the local stack, which takes docker's sink, calls it:
+			// an origin, or a bridge it runs a simulator of.
+			simulated: [if local != null if local.bridge != _|_ {B.bridges[local.bridge].simulator != _|_}, true][0]
+		}
+	}
 }
 
 // Default runtime instances, parameterized by the code. program.cue wires
@@ -3256,7 +3875,11 @@ _traceHeader: include_patterns: ["^traceparent$"]
 		screenSources:   [for _, s in D.code.surface.screens for path in [s.files.html, s.files.css] {path}]
 		project: files: "checks.yaml": D.loop.surface.sayYaml
 		meta: {
-			app:         D.code.meta.name
+			app: D.code.meta.name
+			if D.code.meta.domain != _|_ {
+				domain: "\(D.code.meta.domain)"
+			}
+			native:      D.code.capabilities.native
 			generateCmd: distribution.#Project.compiler
 			testCmd:     D.loop.surface.testCmd
 			targets:     D.code.meta.targets
@@ -3427,8 +4050,8 @@ _pgrollDir: "services/database/pgroll"
 			if D.code.capabilities.auth != _|_ if D.code.capabilities.auth.providers != _|_ {
 				signIn: (#signIn & {auth: D.code.capabilities.auth}).out
 			}
-			blobs:   D.code.capabilities.blobs
-			issuers: len([if D.code.state.tokenRoles != _|_ for n, _ in D.code.state.tokenRoles {n}]) > 0
+			blobs:      D.code.capabilities.blobs
+			issuers:    len([if D.code.state.tokenRoles != _|_ for n, _ in D.code.state.tokenRoles {n}]) > 0
 			tokenRoles: list.SortStrings([if D.code.state.tokenRoles != _|_ for n, _ in D.code.state.tokenRoles {n}])
 			if D.code.capabilities.ai != _|_ {
 				ai: D.code.capabilities.ai
@@ -3450,22 +4073,44 @@ _pgrollDir: "services/database/pgroll"
 				if len(updateOnly) > 0 {
 					public_access: strings.Join([for e in updateOnly {(#publicUpdateSql & {"e": e}).out}], "\n\n")
 				}
+				// Field behaviour, reapplied on every release as the update-only
+				// restrictions are, so a database whose initdb ran before a field
+				// stated it holds it too. Every server entity's, a later one's included:
+				// the runner reconciles after the pending migrations. A table that
+				// states none has its trigger dropped, so a database that held one
+				// agrees with a fresh one; that rides a step the release runs anyway,
+				// as the roles' prune below does.
+				let behaved = [for _, e in D.code.state.entities if e.server if (#behaved & {"e": e}).out {e}]
+				let plain = [for _, e in D.code.state.entities if e.server if !(#behaved & {"e": e}).out {e.table}]
+				// Embedded as a struct, as the roles' are below, for the same reason.
+				let fieldBehaviorReconcile = {field_behavior: strings.Join(list.Concat([
+					[for e in behaved {(#fieldBehaviorSql & {"e": e, columns: D.code._machineColumns}).out}],
+					[if len(plain) > 0 {(#fieldBehaviorDropSql & {tables: plain}).out}],
+				]), "\n\n")}
+				if migrating if len(behaved)+len(plain) > 0 {fieldBehaviorReconcile}
 				let declared = list.SortStrings([if D.code.state.tokenRoles != _|_ for n, _ in D.code.state.tokenRoles {n}])
+
 				// Where none is declared, the prune rides a migrate step the
 				// release runs anyway, or the one `tokenRoles: {}` asks for, which
 				// is how a program with no other takes its last role back: a step
 				// of its own for every server app would start one for each. The
 				// field comes as a struct the comprehension embeds: one it spelled
 				// with a reference read as incomplete in a cluster an app extends.
-				let rolesReconcile = {roles: [if len(declared) > 0 {(#tokenRolesSql & {roles: declared}).out}, (#tokenRolesPrune & {restate: true}).out][0]}
-				if len(declared) > 0 || ((#serverOn & {servers: [for _, e in D.code.state.entities {e.server}], auth: D.code.capabilities.auth != _|_}).out && (D.code.state.tokenRoles != _|_ || len(updateOnly) > 0 || len([if D.code.state.migrations != _|_ for _, m in D.code.state.migrations {m}])+len(_appMigrations.later) > 0)) {rolesReconcile}
+				let model = #accessModel & {code: D.code}
+				let isChecked = model._checked
+				let tokenSql = [if len(declared) > 0 {(#tokenRolesSql & {roles: declared, "checked": isChecked}).out}, (#tokenRolesPrune & {restate: true, "checked": isChecked}).out][0]
+				let rolesReconcile = {roles: [if isChecked {(#accessCheckSql & {access: model.out}).out}, ""][0] + tokenSql}
+				let migrating = len(declared) > 0 || (model._serverOn && (isChecked || D.code.state.tokenRoles != _|_ || len(updateOnly) > 0 || len(behaved) > 0 || len([if D.code.state.migrations != _|_ for _, m in D.code.state.migrations {m}])+len(_appMigrations.later) > 0))
+				if migrating {rolesReconcile}
 			}
 			if D.code.state.effects != _|_ if len(D.code.state.effects) > 0 {
 				effectInterpreters: strings.Join([for _, m in D.code.state.mecha.rows if m.states != _|_ if len([for _, st in m.states if st.invoke != _|_ {true}]) > 0 {
-					(#mechaMachineSql & {machine: m, entities: D.code.state.entities, effects: D.code.state.effects, step: (#steps & {code: D.code}).machines})._effectUpgradeSql
+					(#mechaMachineSql & {machine: m, entities: D.code.state.entities, effects: D.code.state.effects, signals: [if D.code.state.signals != _|_ {D.code.state.signals}, {}][0], step: (#steps & {code: D.code}).machines})._effectUpgradeSql
 				}], "\n\n")
 			}
-			pipelines: [for n, _ in (#streams & {code: D.code}).out {
+			pipelines: [for n, kind in (#streams & {code: D.code}).out {
+				if kind == "drain" {group: "\(D.code.meta.name)-\(n)"}
+				if kind == "pipeline" if D.code.state.pipelines[n].trigger == "cdc" {group: D.code.state.pipelines[n].group}
 				name: "\(D.code.meta.name)-\(n)"
 				file: "docker/\(D.code.meta.name)-\(n).yaml"
 			}]
@@ -3866,7 +4511,6 @@ _pgrollDir: "services/database/pgroll"
 			units:       true & (len([for _, v in E.code.capabilities.vendored if v.isolation == "agent" if v.role == "presenter" {v}]) == 0)
 			shared:      true & (len([for _, e in E.code.state.entities if e.access != _|_ if (#isShared & {a: e.access}).out {e}]) == 0)
 			validations: true & (len(E._validated) == 0)
-			providers:   true & [if E.code.capabilities.auth != _|_ if E.code.capabilities.auth.providers != _|_ {len(E.code.capabilities.auth.providers) == 0}, true][0]
 		}
 	}
 
@@ -4013,7 +4657,7 @@ _pgrollDir: "services/database/pgroll"
 				/* Route pills and the session cluster hold their own width (`flex: none`) so
 				   neither breaks mid-word nor collapses below its controls when the bar
 				   scrolls horizontally on narrow viewports (preserving `nav`'s inline-end
-				   padding past `.shell-signout`), while `.shell-who` caps at `--shell-who-max`
+				   padding past the chip), while `.shell-chip-who` caps at `--shell-who-max`
 				   and ellipsises long handles. `--control-h-sm` (32px) clears check-visual's
 				   24px touch floor. */
 				:where(body > nav > a) { white-space: nowrap; flex: none;
@@ -4033,18 +4677,18 @@ _pgrollDir: "services/database/pgroll"
 				/* The signed-in person at the bar's inline end, separated by a rule only
 				   when route links precede it (`> a ~ .shell-me`). */
 				:where(body > nav .shell-me) { margin-inline-start: auto; flex: none; display: flex; align-items: center; gap: var(--sp-sm, 8px); }
-				:where(body > nav .shell-who) { max-width: var(--shell-who-max, 24ch); }
+				:where(body > nav .shell-chip-who) { max-width: var(--shell-who-max, 24ch); }
 				:where(body > nav > a ~ .shell-me) {
 				  padding-inline-start: var(--shell-nav-me-pad, var(--sp-md, 16px));
 				  border-inline-start: var(--shell-nav-me-rule, 1px solid color-mix(in srgb, currentColor 16%, transparent)); }
-				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider)) {
+				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider)) {
 				  flex: none; display: inline-flex; align-items: center; justify-content: center;
 				  min-height: var(--control-h-xs, 28px); box-sizing: border-box;
 				  padding-block: var(--shell-nav-btn-pad-y, 4px); padding-inline: var(--shell-nav-btn-pad-x, 10px); white-space: nowrap;
 				  border: var(--shell-nav-btn-border, 1px solid color-mix(in srgb, currentColor 20%, transparent)); border-radius: var(--r-sm, 4px);
 				  font-weight: 500;
 				  transition: background-color var(--motion-fast, 110ms) var(--motion-ease, ease), border-color var(--motion-fast, 110ms) var(--motion-ease, ease); }
-				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider):hover) {
+				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider):hover) {
 				  background: var(--shell-nav-hover-bg, color-mix(in srgb, currentColor 7%, transparent));
 				  text-decoration: none; }
 				@media print { :where(body > nav) { display: none; } }
@@ -4066,15 +4710,15 @@ _pgrollDir: "services/database/pgroll"
 				  color: var(--shell-nav-active-fg, inherit);
 				  font-weight: var(--shell-nav-active-weight, 600);
 				  box-shadow: var(--shell-nav-active-shadow, inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent)); }
-				:where(body > nav .shell-who) { max-width: var(--shell-who-max, 24ch); }
-				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider)) {
+				:where(body > nav .shell-chip-who) { max-width: var(--shell-who-max, 24ch); }
+				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider)) {
 				  flex: none; display: inline-flex; align-items: center; justify-content: center;
 				  min-height: var(--control-h-xs, 28px); box-sizing: border-box;
 				  padding-block: var(--shell-nav-btn-pad-y, 4px); padding-inline: var(--shell-nav-btn-pad-x, 10px); white-space: nowrap;
 				  border: var(--shell-nav-btn-border, 1px solid color-mix(in srgb, currentColor 20%, transparent)); border-radius: var(--r-full, 999px);
 				  font-weight: 500;
 				  transition: background-color var(--motion-fast, 110ms) var(--motion-ease, ease), border-color var(--motion-fast, 110ms) var(--motion-ease, ease); }
-				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider):hover) {
+				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider):hover) {
 				  background: var(--shell-nav-hover-bg, color-mix(in srgb, currentColor 7%, transparent));
 				  text-decoration: none; }
 				@media (min-width: 640px) {
@@ -4158,14 +4802,14 @@ _pgrollDir: "services/database/pgroll"
 				  color: var(--shell-nav-active-fg, inherit);
 				  font-weight: var(--shell-nav-active-weight, 600);
 				  box-shadow: var(--shell-nav-active-shadow, inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent)); }
-				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider)) {
+				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider)) {
 				  flex: none; display: inline-flex; align-items: center; justify-content: center;
 				  min-height: var(--control-h-xs, 28px); box-sizing: border-box;
 				  padding-block: var(--shell-nav-btn-pad-y, 4px); padding-inline: var(--shell-nav-btn-pad-x, 10px); white-space: nowrap;
 				  border: var(--shell-nav-btn-border, 1px solid color-mix(in srgb, currentColor 20%, transparent)); border-radius: var(--r-sm, 4px);
 				  font-weight: 500;
 				  transition: background-color var(--motion-fast, 110ms) var(--motion-ease, ease), border-color var(--motion-fast, 110ms) var(--motion-ease, ease); }
-				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider):hover) {
+				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider):hover) {
 				  background: var(--shell-nav-hover-bg, color-mix(in srgb, currentColor 7%, transparent));
 				  text-decoration: none; }
 				@media (min-width: 860px) {
@@ -4197,7 +4841,7 @@ _pgrollDir: "services/database/pgroll"
 				  :where(body > nav > a ~ .shell-me) {
 				    padding-block-start: var(--shell-nav-me-pad, var(--sp-md, 16px));
 				    border-block-start: var(--shell-nav-me-rule, 1px solid color-mix(in srgb, currentColor 16%, transparent)); }
-				  :where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider)) {
+				  :where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider)) {
 				    width: 100%; min-height: var(--control-h-sm, 32px); }
 				  :where(body:has(> nav:not([hidden])) > #app) {
 				    margin-inline-start: var(--shell-nav-width, var(--size-13));
@@ -4226,7 +4870,7 @@ _pgrollDir: "services/database/pgroll"
 				    padding-block: var(--shell-nav-link-pad-y, 6px); padding-inline: var(--shell-nav-link-pad-x, 12px);
 				    border-radius: var(--shell-nav-radius, var(--r-md, 8px)); }
 				  :where(body > nav .shell-me) { margin-inline-start: auto; flex: none; display: flex; align-items: center; gap: var(--sp-sm, 8px); }
-				  :where(body > nav .shell-who) { max-width: var(--shell-who-max, 24ch); }
+				  :where(body > nav .shell-chip-who) { max-width: var(--shell-who-max, 24ch); }
 				  :where(body > nav > a ~ .shell-me) {
 				    padding-inline-start: var(--shell-nav-me-pad, var(--sp-md, 16px));
 				    border-inline-start: var(--shell-nav-me-rule, 1px solid color-mix(in srgb, currentColor 16%, transparent)); }
@@ -4281,18 +4925,18 @@ _pgrollDir: "services/database/pgroll"
 				  font-weight: var(--shell-nav-active-weight, 600);
 				  box-shadow: var(--shell-nav-active-shadow, inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent)); }
 				:where(body > nav .shell-me) { flex: none; display: flex; align-items: center; gap: var(--sp-sm, 8px); padding-inline-end: 4px; }
-				:where(body > nav .shell-who) { max-width: var(--shell-who-max, 24ch); }
+				:where(body > nav .shell-chip-who) { max-width: var(--shell-who-max, 24ch); }
 				:where(body > nav > a ~ .shell-me) {
 				  padding-inline-start: var(--shell-nav-me-pad, var(--sp-sm, 10px));
 				  border-inline-start: var(--shell-nav-me-rule, 1px solid color-mix(in srgb, currentColor 16%, transparent)); }
-				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider)) {
+				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider)) {
 				  flex: none; display: inline-flex; align-items: center; justify-content: center;
 				  min-height: var(--control-h-xs, 28px); box-sizing: border-box;
 				  padding-block: var(--shell-nav-btn-pad-y, 4px); padding-inline: var(--shell-nav-btn-pad-x, 10px); white-space: nowrap;
 				  border: var(--shell-nav-btn-border, 1px solid color-mix(in srgb, currentColor 20%, transparent)); border-radius: var(--r-full, 999px);
 				  font-weight: 500;
 				  transition: background-color var(--motion-fast, 110ms) var(--motion-ease, ease), border-color var(--motion-fast, 110ms) var(--motion-ease, ease); }
-				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-register, .shell-provider):hover) {
+				:where(body > nav .shell-me :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider):hover) {
 				  background: var(--shell-nav-hover-bg, color-mix(in srgb, currentColor 7%, transparent));
 				  text-decoration: none; }
 				:where(body:has(> nav:not([hidden])) > #app) {
@@ -4303,11 +4947,233 @@ _pgrollDir: "services/database/pgroll"
 				}
 				"""
 		},
+		if E._design.shell.nav == "none" {
+			"""
+				/* None posture (`shell.nav: "none"`): no shell navigation strip is mounted. */
+				"""
+		},
 		"""
 			/* Custom posture (`shell.nav: "custom"`): the app's own stylesheet owns
 			   the container geometry; only the link, icon, and control resets apply. */
 			""",
 	][0]
+	// The nav's Sign in, or a kept guest's chip, opens one panel in place
+	// (omnishell's signinBox): a card anchored to it, never over the page, that
+	// opens downward from a bar at the top and upward from one at the bottom or
+	// from a rail's foot. A phone's bar scrolls sideways, which would carry a
+	// card anchored to its end out of sight, so there the open bar wraps and
+	// the card is a row of its own, pushing the page rather than covering it —
+	// above the chip on a bar at the bottom. Every posture, `custom` included, keeps `[hidden]`
+	// hidden, which a posture's `display` would otherwise undo.
+	_signinAbove: [
+		if E._design.shell.nav == "dock" {"all"},
+		if E._design.shell.nav == "sidebar" {"(min-width: 860px)"},
+		if E._design.shell.nav == "tabbar" {"not all and (min-width: 640px)"},
+		"",
+	][0]
+	_signinPhoneOrder: [
+		if E._design.shell.nav == "dock" || E._design.shell.nav == "tabbar" {"-1"},
+		"1",
+	][0]
+	// The consent bar and the control that reopens it (omnishell consent.js):
+	// a strip along the bottom that leaves the page usable. Accept and Reject
+	// wear one style: a refusal no harder to see or reach than consent.
+	// Joined to the sign-in rules, so an app without a bar emits no line.
+	_consentCss: [if E.code.meta.consent != _|_ if E.code.meta.consent.mode == "bar" {
+		"\n" + """
+			.shell-consent[hidden], .shell-consent-open[hidden] { display: none; }
+			:where(.shell-consent) { position: fixed; z-index: 2147483000; inset-inline: 0; inset-block-end: 0;
+			  box-sizing: border-box; padding: var(--sp-sm, 8px) var(--sp-md, 16px);
+			  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--sp-sm, 8px) var(--sp-md, 16px);
+			  background: var(--surface, Canvas); color: var(--primary, CanvasText);
+			  border-block-start: 1px solid var(--shell-rule, currentColor); box-shadow: var(--shadow-2, none);
+			  font-size: .875rem; line-height: 1.4; }
+			:where(.shell-consent p) { margin: 0; flex: 0 1 48rem; }
+			:where(.shell-consent a) { color: inherit; text-decoration: underline; text-underline-offset: .15em; }
+			:where(.shell-consent-actions) { display: flex; gap: var(--sp-sm, 8px); }
+			:where(.shell-consent-actions button) { font: inherit; font-weight: 600; min-height: 36px; min-width: 7rem; padding: 6px 16px; cursor: pointer;
+			  border: 1px solid transparent; border-radius: var(--r-md, 8px);
+			  background: var(--primary, CanvasText); color: var(--surface, Canvas); }
+			:where(.shell-consent-actions button[aria-pressed="true"])::before { content: "✓ " / ""; }
+			:where(.shell-consent-open) { position: fixed; z-index: 2147483000; inset-inline-end: var(--sp-sm, 8px); inset-block-end: var(--sp-sm, 8px);
+			  width: 40px; height: 40px; padding: 0; display: grid; place-items: center; cursor: pointer;
+			  background: var(--surface, Canvas); color: var(--primary, CanvasText);
+			  border: 1px solid var(--shell-rule, currentColor); border-radius: 50%; box-shadow: var(--shadow-2, none); }
+			:where(.shell-consent-open svg) { width: 20px; height: 20px; }
+			:where(.shell-consent :is(a, button), .shell-consent-open):focus-visible { outline: 3px solid var(--accent, currentColor); outline-offset: 3px; }
+			"""
+	}, ""][0]
+	_signinCss: """
+		body > nav .shell-me [hidden] { display: none; }
+		:where(body > nav .shell-me) { position: relative; }
+		@media (min-width: 640px) {
+		  :where(body > nav:has(.shell-signin-panel:not([hidden]))) { overflow: visible; }
+		}
+		:where(body > nav :is(.shell-signin, .shell-person)[aria-expanded="true"]) {
+		  background: var(--shell-nav-active-bg, color-mix(in srgb, currentColor 9%, transparent)); }
+		/* The chip is the one this device is: a guest's in the guest's colour, a
+		   person's in the bar's. */
+		:where(body > nav .shell-signin.shell-guest) { border-color: var(--shell-guest, light-dark(#b45309, #f59e0b)); }
+		:where(body > nav .shell-signin.shell-guest :is(.shell-avatar, .shell-lock)) { color: var(--shell-guest, light-dark(#b45309, #f59e0b)); }
+		:where(body > nav .shell-person) { border-color: var(--shell-fg); }
+		:where(body > nav .shell-person :is(.shell-avatar, .shell-lock)) { color: var(--shell-fg); }
+		:where(body > nav :is(.shell-signin.shell-guest, .shell-person)) { gap: var(--sp-sm, 8px); padding-inline-start: 4px; border-radius: 999px;
+		  max-width: 100%; min-width: 0; justify-content: flex-start; }
+		:where(body > nav :is(.shell-signin.shell-guest, .shell-person) .shell-lock) { margin-inline-start: auto; }
+		:where(body > nav .shell-avatar) { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+		  font-weight: 700; font-size: 0.8em;
+		  background: color-mix(in srgb, currentColor 7%, transparent); }
+		:where(body > nav .shell-chip-who) { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; line-height: 1.2; }
+		:where(body > nav .shell-chip-who .handle) { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+		:where(body > nav .suffix) { font-weight: 400; opacity: 0.7; }
+		:where(body > nav .shell-chip-label) { font-size: 0.85em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+		:where(body > nav .shell-chip-label:empty) { display: none; }
+		:where(body > nav .shell-lock) { flex: none; width: 14px; height: 14px; }
+		/* The account's panel is a menu: one row per thing to do. */
+		:where(body > nav .shell-account) { gap: 2px; padding: var(--sp-sm, 8px); }
+		:where(body > nav .shell-signin-panel :is(.shell-account-page, .shell-rename, .shell-signout, .shell-guest-signout, .shell-delete)) { font: inherit; color: inherit; background: none;
+		  border: 0; border-radius: var(--r-md, 8px); cursor: pointer; text-align: start; text-decoration: none;
+		  display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px;
+		  min-height: 44px; padding: 6px var(--sp-sm, 12px); box-sizing: border-box; font-weight: 600; white-space: normal; }
+		:where(body > nav .shell-signin-panel :is(.shell-account-page, .shell-rename, .shell-signout, .shell-guest-signout, .shell-delete):hover) {
+		  background: color-mix(in srgb, currentColor 7%, transparent); text-decoration: none; }
+		:where(body > nav .shell-signin-panel .shell-signout) { border-block-start: 1px solid var(--shell-rule); border-radius: 0; }
+		/* Deleting is quiet until asked, and then says what it will do in the danger colour. */
+		:where(body > nav .shell-delete) { font-weight: 400; color: color-mix(in srgb, currentColor 60%, transparent); }
+		:where(body > nav .shell-delete[data-confirm]) { font-weight: 600; color: var(--danger, #b91c1c); }
+		:where(body > nav .shell-delete:not([data-confirm]) .shell-delete-confirm, body > nav .shell-delete[data-confirm] .shell-delete-ask) { display: none; }
+		/* The ways to sign in: a quiet list under its heading, Set up recovery above it when asked. */
+		:where(body > nav .shell-ways) { display: flex; flex-direction: column; gap: 4px; padding: var(--sp-sm, 8px) var(--sp-sm, 12px);
+		  border-block-start: 1px solid var(--shell-rule); }
+		:where(body > nav .shell-ways-title) { margin: 0; font-size: 0.85em; font-weight: 600; opacity: 0.7; }
+		:where(body > nav .shell-recovery) { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: var(--sp-sm, 10px);
+		  border-radius: var(--r-md, 8px); background: color-mix(in srgb, var(--accent, currentColor) 10%, transparent); }
+		:where(body > nav :is(.shell-ways, .shell-recovery, .shell-way-add, .shell-ways-note)[hidden]) { display: none; }
+		:where(body > nav .shell-way-list) { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+		:where(body > nav .shell-way) { display: flex; align-items: center; gap: 8px; min-height: 36px; }
+		:where(body > nav .shell-way-name) { font-weight: 600; }
+		:where(body > nav .shell-way-detail) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.7; font-size: 0.9em; }
+		:where(body > nav .shell-way-add) { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-block-start: 4px; }
+		:where(body > nav .shell-way-add-title) { flex-basis: 100%; font-size: 0.85em; opacity: 0.7; }
+		:where(body > nav :is(.shell-way-remove, .shell-later, .shell-way-passkey, .shell-way-provider)) { font: inherit; color: inherit; cursor: pointer;
+		  min-height: 36px; padding: 4px 12px; border: 1px solid var(--shell-rule); border-radius: 999px; background: none; }
+		:where(body > nav :is(.shell-way-remove, .shell-later, .shell-way-passkey, .shell-way-provider):hover) { background: color-mix(in srgb, currentColor 7%, transparent); }
+		:where(body > nav .shell-ways-note) { margin: 0; font-size: 0.9em; opacity: 0.8; }
+		/* Asking a name in place of the ways in, and renaming in place of the chip. */
+		:where(body > nav .shell-name-form) { display: flex; flex-direction: column; gap: var(--sp-sm, 10px); }
+		:where(body > nav .shell-name-back) { font: inherit; color: inherit; background: none; border: 0; cursor: pointer;
+		  width: 32px; height: 32px; margin-block: -6px; padding: 0; display: grid; place-items: center; border-radius: var(--r-md, 8px); }
+		:where(body > nav .shell-back-icon) { width: 16px; height: 16px; }
+		:where(body > nav .shell-name-label) { font-size: 1.05em; font-weight: 700; }
+		:where(body > nav :is(.shell-name-form, .shell-rename-form) input) { font: inherit; color: inherit; min-width: 0; box-sizing: border-box; }
+		:where(body > nav .shell-name-form input) { min-height: 44px; padding: 8px 12px; border: 2px solid var(--shell-fg);
+		  border-radius: var(--r-md, 10px); background: var(--shell-bg); }
+		:where(body > nav .shell-name-continue) { display: flex; align-items: center; justify-content: center; gap: 10px;
+		  min-height: 48px; border: 0; border-radius: var(--r-md, 12px); font: inherit; font-weight: 700; cursor: pointer;
+		  background: var(--shell-fg); color: var(--shell-bg); }
+		:where(body > nav .shell-rename-form) { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%;
+		  min-height: 44px; padding: 4px 4px 4px 12px; box-sizing: border-box; border: 2px solid var(--shell-fg); border-radius: 999px; }
+		:where(body > nav .shell-rename-form input) { flex: 0 1 12ch; width: 12ch; border: 0; padding: 0; background: transparent; font-weight: 700; }
+		:where(body > nav .shell-rename-label) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+		:where(body > nav .shell-rename-save) { flex: none; width: 32px; height: 32px; border: 0; border-radius: 50%; cursor: pointer;
+		  display: grid; place-items: center; background: var(--shell-fg); color: var(--shell-bg); }
+		:where(body > nav .shell-rename-save svg) { width: 16px; height: 16px; }
+		:where(body > nav .shell-rename-form .shell-auth-error) { flex: 1 0 100%; font-size: var(--type-caption, 0.875rem); }
+		:where(body > nav .shell-signin-panel) { position: absolute; z-index: 20;
+		  inset-block-start: calc(100% + var(--sp-sm, 8px)); inset-inline-end: 0;
+		  width: min(22rem, calc(100vw - 2 * var(--sp-md, 16px))); box-sizing: border-box;
+		  display: flex; flex-direction: column; gap: 10px; padding: var(--sp-md, 16px);
+		  background: var(--shell-panel-bg, var(--shell-bg)); color: var(--shell-fg);
+		  border: 1px solid var(--shell-rule); border-radius: var(--r-lg, 16px);
+		  box-shadow: 0 8px 24px color-mix(in srgb, var(--shell-fg) 12%, transparent);
+		  font-size: var(--type-body, 1rem); font-weight: 400; white-space: normal; text-align: start; }
+		\([if E._signinAbove != "" {"""
+			@media \(E._signinAbove) {
+			  :where(body > nav .shell-signin-panel) { inset-block: auto calc(100% + var(--sp-sm, 8px)); }
+			}
+			"""}, ""][0])
+		\([if E._design.shell.nav == "sidebar" {"""
+			@media (min-width: 860px) {
+			  :where(body > nav .shell-signin-panel) { inset-inline: 0; width: auto; }
+			}
+			"""}, ""][0])
+		@media not all and (min-width: 640px) {
+		  :where(body > nav:has(.shell-signin-panel:not([hidden]))) { flex-wrap: wrap; overflow-x: visible; }
+		  :where(body > nav .shell-me:has(> .shell-signin-panel:not([hidden]))) { flex: 1 0 100%; flex-wrap: wrap; justify-content: flex-end;
+		    margin-inline-start: 0; padding-inline-start: 0; border-inline-start: 0; }
+		  :where(body > nav .shell-signin-panel) { position: static; flex: 1 0 100%; width: 100%; order: \(E._signinPhoneOrder); box-shadow: none; }
+		}
+		:where(body > nav .shell-signin-head) { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-sm, 8px); }
+		:where(body > nav .shell-signin-title) { font-size: 1.05em; font-weight: 700; }
+		:where(body > nav .shell-signin.shell-guest ~ .shell-signin-panel .shell-signin-title) { font-size: var(--type-caption, 0.875rem);
+		  font-weight: 600; color: var(--shell-guest, light-dark(#b45309, #f59e0b)); }
+		:where(body > nav .shell-signin-close) { font: inherit; color: inherit; background: none; border: 0; cursor: pointer;
+		  width: 32px; height: 32px; margin: -6px; display: grid; place-items: center; border-radius: var(--r-md, 8px); }
+		:where(body > nav .shell-signin-close:hover) { background: color-mix(in srgb, currentColor 7%, transparent); }
+		:where(body > nav .shell-close-icon) { width: 16px; height: 16px; }
+		:where(body > nav .shell-signin-with) { margin: 0; font-size: var(--type-caption, 0.875rem); font-weight: 600; opacity: 0.8; }
+		:where(body > nav .shell-signin-ways) { display: flex; flex-direction: column; gap: var(--sp-sm, 8px); }
+		:where(body > nav .shell-signin-ways :is(.shell-provider, .shell-passkey)) { display: flex; align-items: center; justify-content: flex-start; gap: 10px;
+		  width: 100%; min-height: 48px; box-sizing: border-box; padding: 0 var(--sp-md, 16px);
+		  border-radius: var(--r-md, 12px); font: inherit; font-weight: 700; white-space: nowrap; cursor: pointer; text-decoration: none; }
+		:where(body > nav .shell-signin-ways .shell-provider) { background: transparent; color: inherit; border: 1px solid var(--shell-rule); }
+		/* A provider's own button: the auth service's page, framed at the button's height,
+		   in the panel, on a required sign-in's screen, or where an app's own control stood. */
+		:where(.shell-provider-button .shell-provider-frame, .shell-login .login-provider-button .shell-provider-frame) { display: block; width: 100%; height: 44px; border: 0; color-scheme: normal; }
+		/* Its prompt the browser draws (FedCM): the page asking takes no room. */
+		:where(body > .shell-provider-prompt) { position: fixed; width: 0; height: 0; border: 0; }
+		:where(body > nav .shell-signin-ways .shell-provider:hover) { background: color-mix(in srgb, currentColor 6%, transparent); text-decoration: none; }
+		:where(body > nav .shell-provider-mark) { width: 20px; height: 20px; box-sizing: border-box; border-radius: 50%; display: grid; place-items: center;
+		  border: 1.8px solid currentColor; font-size: 0.7em; font-weight: 800; line-height: 1; }
+		:where(body > nav .shell-signin-ways .shell-passkey) { background: transparent; color: inherit; border: 1px solid var(--shell-rule); }
+		:where(body > nav .shell-signin-ways .shell-passkey:hover) { background: color-mix(in srgb, currentColor 6%, transparent); }
+		:where(body > nav .shell-device-icon) { width: 20px; height: 20px; }
+		:where(body > nav .shell-signin-panel .shell-guest-signout) { border-block-start: 1px solid var(--shell-rule); border-radius: 0;
+		  margin-block-start: 4px; opacity: 0.8; }
+		:where(body > nav .shell-auth-feedback) { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-sm, 8px);
+		  font-size: var(--type-caption, 0.875rem); }
+		:where(body > nav .shell-auth-error) { margin: 0; }
+		:where(body > nav .shell-signin-panel .shell-auth-error) { flex: 1 0 100%; }
+		:where(body > nav .shell-auth-taken) { margin: 0; flex: 1 0 100%; font-size: var(--type-body, 1rem); font-weight: 700; overflow-wrap: anywhere; }
+		:where(body > nav .shell-signin-panel .shell-auth-choice) { flex: 1 0 100%; min-height: 44px; padding: 0 var(--sp-sm, 8px);
+		  border-radius: var(--r-md, 12px); font: inherit; font-weight: 700; cursor: pointer;
+		  background: transparent; color: inherit; border: 1px solid var(--shell-rule); }
+		:where(body > nav .shell-signin-panel .shell-auth-choice[data-auth-choice="switch"]) { background: var(--shell-fg); color: var(--shell-bg); border: 0; }
+		/* Passkey: a row of faces, the most recent first and as many as fit,
+		   then one field holding the browser's passkey autofill, with → to
+		   make a passkey under the name typed in it. */
+		:where(body > nav .shell-accounts) { display: flex; flex-direction: column; gap: var(--sp-sm, 8px); }
+		:where(body > nav .shell-accounts-head) { display: flex; align-items: center; gap: 4px; }
+		:where(body > nav .shell-accounts-back) { font: inherit; color: inherit; background: none; border: 0; cursor: pointer;
+		  width: 32px; height: 32px; margin-block: -6px; padding: 0; display: grid; place-items: center; border-radius: var(--r-md, 8px); }
+		:where(body > nav .shell-accounts-title) { font-size: var(--type-caption, 0.875rem); font-weight: 600; opacity: 0.8; }
+		:where(body > nav .shell-faces) { display: flex; gap: 6px; overflow: hidden; padding: 10px 4px 4px; margin: -4px; }
+		:where(body > nav .shell-face) { position: relative; flex: none; width: 48px; }
+		:where(body > nav .shell-face[hidden]) { display: none; }
+		:where(body > nav .shell-face-pick) { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer;
+		  width: 48px; display: flex; flex-direction: column; align-items: center; gap: 4px; border-radius: var(--r-md, 10px); }
+		:where(body > nav .shell-face-pick:focus-visible) { outline-offset: 2px; }
+		:where(body > nav .shell-face-mark) { width: 40px; height: 40px; box-sizing: border-box;
+		  border-radius: 50%; display: grid; place-items: center; font-weight: 800;
+		  background: color-mix(in srgb, hsl(var(--shell-face-hue, 30) 62% 48%) 22%, transparent); border: 1px solid color-mix(in srgb, hsl(var(--shell-face-hue, 30) 62% 48%) 45%, transparent);
+		  color: light-dark(hsl(var(--shell-face-hue, 30) 60% 32%), hsl(var(--shell-face-hue, 30) 75% 74%)); }
+		:where(body > nav .shell-face-pick:hover .shell-face-mark) { background: color-mix(in srgb, hsl(var(--shell-face-hue, 30) 62% 48%) 34%, transparent); }
+		:where(body > nav .shell-face-name) { max-width: 48px; font-size: 0.75em; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		:where(body > nav .shell-face-forget) { position: absolute; inset-block-start: -3px; inset-inline-end: 2px; width: 18px; height: 18px; padding: 0;
+		  display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--shell-rule); background: var(--shell-bg);
+		  color: color-mix(in srgb, currentColor 60%, transparent); cursor: pointer; }
+		:where(body > nav .shell-face-forget:hover) { color: inherit; }
+		:where(body > nav .shell-face-forget svg) { width: 7px; height: 7px; }
+		:where(body > nav .shell-passkey-form) { display: flex; flex-wrap: wrap; gap: 6px; }
+		:where(body > nav .shell-passkey-form input) { flex: 1 1 0; min-width: 0; min-height: 48px; box-sizing: border-box; padding: 0 12px;
+		  font: inherit; color: inherit; border: 1px solid var(--shell-rule); border-radius: var(--r-md, 10px); background: var(--shell-bg); }
+		:where(body > nav .shell-passkey-go) { flex: none; width: 48px; min-height: 48px; border: 0; border-radius: var(--r-md, 10px); cursor: pointer;
+		  display: grid; place-items: center; background: var(--shell-fg); color: var(--shell-bg); }
+		:where(body > nav .shell-passkey-go svg) { width: 18px; height: 18px; }
+		:where(body > nav .shell-passkey-form .shell-auth-error) { flex: 1 0 100%; font-size: var(--type-caption, 0.875rem); }
+		:where(body > nav :is(.shell-passkey-icon, .shell-guest-icon)) { width: 20px; height: 20px; }
+		:where(body > nav .shell-avatar .shell-guest-icon) { width: 14px; height: 14px; }
+		"""
 	_designCss: """
 
 		\(E._scaleCss)
@@ -4367,22 +5233,18 @@ _pgrollDir: "services/database/pgroll"
 		:where(body > nav > a[data-display="icon-only"] > .shell-nav-label) {
 		  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
 		  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-		:where(body > nav .shell-who) { display: flex; align-items: center; gap: 5px; min-width: 0; min-height: 24px; }
-		:where(body > nav .shell-who .name) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-		:where(body > nav .shell-who .name:empty) { display: none; }
-		:where(body > nav .shell-who .name:not(:empty))::after { content: " ·"; }
-		:where(body > nav .shell-who .handle) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 		/* De-emphasis comes from weight alone: layered opacity on --shell-fg
 		   lands below 4.5:1 contrast on both themes' nav ground. */
 		/* A short word is still a target: "sair" sets 23px of text, under the
 		   24px minimum a finger needs, so the box keeps the floor the label
 		   does not. */
-		:where(body > nav :is(.shell-signout, .shell-signin, .shell-register, .shell-provider)) { font: inherit; font-weight: 400;
+		:where(body > nav :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider)) { font: inherit; font-weight: 400;
 		  color: inherit; background: none; border: 0; padding: 0; cursor: pointer;
 		  flex: none; white-space: nowrap;
 		  display: inline-flex; align-items: center; justify-content: center;
 		  min-height: 24px; min-width: 24px; }
 		\(E._navCss)
+		\(E._signinCss)\(E._consentCss)
 		:where(body > nav > a[data-display="icon-only"]) { padding-inline: var(--shell-nav-icon-pad-x, 6px); justify-content: center; gap: 0; }
 		:where(body > nav[hidden]) { display: none; }
 
@@ -4461,7 +5323,7 @@ _pgrollDir: "services/database/pgroll"
 		  transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
 		}
 		.shell-login .login-provider { background: var(--primary, var(--shell-fg)); color: var(--surface); border-color: transparent; }
-		.shell-login .login-provider ~ .login-passkey { background: var(--surface); color: var(--primary, var(--shell-fg)); border-color: var(--shell-rule); }
+		.shell-login :is(.login-provider, .login-provider-button) ~ .login-passkey { background: var(--surface); color: var(--primary, var(--shell-fg)); border-color: var(--shell-rule); }
 		.shell-login .login-passkey { background: var(--primary, var(--shell-fg)); color: var(--surface); border-color: transparent; }
 		.shell-login .login-guest { margin-block-start: 12px; border-color: transparent; background: transparent; color: var(--secondary, var(--shell-fg)); font-weight: 400; }
 		.shell-login button:hover, .shell-login .login-provider:hover { transform: translateY(-1px); }
@@ -4496,16 +5358,25 @@ _pgrollDir: "services/database/pgroll"
 	// access implies the roles and service-token plumbing — policies without
 	// tokens (or vice versa) is not a supported state. The auth_uid() the
 	// policies call is the database image's (mecha's tenancy floor).
-	_authOn: E.code.capabilities.auth != _|_ || len(E._accessed) > 0
+	_authOn: E._model._authOn
 	// The `service` role alone also stands where a schedule or an effect is
 	// declared: the ticker writes its ticks as it, through crud, which mecha's
 	// cluster has verify the token wherever something wakes (its _serviceToken).
-	_serviceOn: len(E._timedMachines) > 0 || E._authOn || len(E.code.state.schedules) > 0 || [if E.code.state.effects != _|_ {len(E.code.state.effects) > 0}, false][0]
+	_serviceOn: E._model._serviceOn
 	// The roles a token may name beside the cluster's own, in one order
 	// (#TokenRole). They are crud's to switch to, so crud takes the keys of
 	// the issuers a release trusts.
-	_declaredRoles: list.SortStrings([if E.code.state.tokenRoles != _|_ for n, _ in E.code.state.tokenRoles {n}])
+	_declaredRoles: E._model._declaredRoles
+	_model:         #accessModel & {code: E.code}
 	cluster: capabilities: issuers: len(E._declaredRoles) > 0
+	// The database access model (#access). A role no token names (electric) is
+	// granted with its attributes, in 001; the request roles' grants are 002's.
+	// `access` exposes it, only where there is a database, to tools outside
+	// this package, which cannot see hidden fields.
+	if E._serverOn {access: E._access}
+	_access:              _model.out
+	_checked:             E._model._checked
+	_checkedServed:       [if E._checked if !E._serverOn {"provisioning: checked needs the app's database, and the app has no server tier"}, true][0] & true
 	_declaredRolesServed: [if len(E._declaredRoles) > 0 if !E._serverOn {"tokenRoles: a token role is a role of the app's database, and the app has no server tier"}, true][0] & true
 
 	// The cluster handed in must be the program's: #DefaultCluster derives
@@ -4600,6 +5471,7 @@ _pgrollDir: "services/database/pgroll"
 	_resources: list.Concat([
 		[if E.code.capabilities.resources != _|_ for _, r in E.code.capabilities.resources {kind: r.kind, source: r.source}],
 		[for _, v in E.code.capabilities.vendored for u in v.scripts {kind: "connect", source: u}],
+		[for k, sources in E._envelope.googleTag.sources for s in sources {kind: k, source: s}],
 	])
 	_resourceSources: {for r in _resources {(r.kind): (r.source): true}}
 	// The entry document, the policy it carries as its meta.
@@ -4879,7 +5751,8 @@ _pgrollDir: "services/database/pgroll"
 		// what the page's and the edge's clusters call (mecha-browser's
 		// drains.ts), where no stream runs them. The database image is the
 		// one a test runs the app's migrations in; the actors migration is
-		// the machines' SQL, which the replay holds to recorded time.
+		// the machines' SQL, which the replay holds to recorded time, as it
+		// holds the row machines' guards and expressions.
 		".pronto/cluster.json": {
 			format: "json"
 			data: {
@@ -4888,8 +5761,12 @@ _pgrollDir: "services/database/pgroll"
 					schema:   E.cluster.surface.schema
 					database: mecha.published.database
 					if len(E.code.state.mecha.reducers) > 0 {actors: E._steps.actors}
-					tokenRoles: E.files["services/database/migrations/001_roles.sql"]._tokenRoles
+					// The row machines, whose authored SQL the replay holds to
+					// machine_clock() as it holds the actors to clock().
+					if E.code.state.mecha.rows != _|_ if len(E.code.state.mecha.rows) > 0 {rowMachines: E.code.state.mecha.rows}
+					tokenRoles: E._access.roles.authenticator.memberOf
 					if len(E._declaredRoles) > 0 {declaredRoles: E._declaredRoles}
+
 					// Whether this release takes back a role an earlier one declared
 					// (write.ts refuses to drop the last one where it does not).
 					if E.cluster.state.reconcile.roles != _|_ {prunesTokenRoles: true}
@@ -5079,27 +5956,39 @@ _pgrollDir: "services/database/pgroll"
 			}
 			"services/database/migrations/001_roles.sql": {
 				format: "sql"
-				_roles: list.Concat([["anon"], [if E._authOn {"app_user"}, if E._serviceOn {"service"}], [if E._serverOn {"electric"}]])
-				text: "DO $$ BEGIN\n" + strings.Join([for r in _roles {
+				_a:     E._access
+				// Login is set below, once the role stands, so one that already
+				// stood gets it as well.
+				_create: [for r in _a.order if !_a.roles[r].declared if _a.roles[r].kind != "authenticator" {
 					"""
 						  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '\(r)') THEN
-						    CREATE ROLE \(r) NOLOGIN;
+						    CREATE ROLE \((#roleName & {role: r}).out) NOLOGIN;
 						  END IF;
 						"""
-				}], "\n") + "\n" + strings.Join([for r in E._declaredRoles {(#tokenRole & {role: r}).out + "\n"}], "") + _authenticator + "END $$;\n" + _login + strings.Join(_bypass, "") + strings.Join(_timeouts, "")
+				}]
+				_declared: [for r in _a.order if _a.roles[r].declared {(#tokenRole & {role: r}).out + "\n"}]
+				_authenticator: strings.Join([for r in _a.order if _a.roles[r].kind == "authenticator" {
+					"""
+						  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '\(r)') THEN
+						    CREATE ROLE \(r)\([if !_a.roles[r].inherit {" NOINHERIT"}, ""][0]);
+						  END IF;
 
+						"""
+				}], "")
+				_attrs: {for r in _a.order {
+					(r): strings.Join([
+						if _a.roles[r].bypassrls {"BYPASSRLS"},
+						if _a.roles[r].replication {"REPLICATION"},
+						if _a.roles[r].login {"LOGIN"},
+					], " ")
+				}}
 				// PostgREST's login, which switches to the role a request's token
 				// names; it applies that role's settings (the bounds below) only
 				// when the role is granted to it. No password, as electric's: the
 				// deployment's secret sets it (mecha's #RolePasswordsStep).
-				_tokenRoles: list.Concat([[for r in _roles if r != "electric" {r}], E._declaredRoles])
-				_authenticator: """
-					  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticator') THEN
-					    CREATE ROLE authenticator NOINHERIT;
-					  END IF;
-
-					"""
-				_login: "\nALTER ROLE authenticator LOGIN;\nGRANT \(strings.Join(list.Concat([[for r in _roles if r != "electric" {r}], [for r in E._declaredRoles {"\"\(r)\""}]]), ", ")) TO authenticator;\n"
+				_login: [for r in _a.order if _a.roles[r].kind == "authenticator" {
+					"\nALTER ROLE \(r) \(_attrs[r]);\nGRANT \(strings.Join([for m in _a.roles[r].memberOf {(#roleName & {role: m, declared: _a.roles[m].declared}).out}], ", ")) TO \(r);\n"
+				}]
 
 				// The tenancy floor binds PUBLIC, which includes service. A pipeline
 				// and the auth service read every tenant's rows by definition, so
@@ -5110,53 +5999,34 @@ _pgrollDir: "services/database/pgroll"
 				// for every tenant, and a role without BYPASSRLS gets `{}` from
 				// current_scopes(), so every shape yields an empty snapshot with no
 				// error.
-				_bypass: [
-					if E._serviceOn {"\nALTER ROLE service BYPASSRLS;\n"},
-					// No password: the deployment's secret sets it (mecha's
-					// #RolePasswordsStep), and a schema that set one would
-					// overwrite it whenever it ran.
-					if E._serverOn {"\nALTER ROLE electric BYPASSRLS REPLICATION LOGIN;\n" +
-						"GRANT USAGE ON SCHEMA public TO electric;\n" +
-						"GRANT SELECT ON ALL TABLES IN SCHEMA public TO electric;\n" +
-						"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO electric;\n" +
-						""},
-				]
+				//
+				// No password: the deployment's secret sets it (mecha's
+				// #RolePasswordsStep), and a schema that set one would
+				// overwrite it whenever it ran.
+				_bypass: [for r in _a.order if _a.roles[r].kind != "authenticator" if _attrs[r] != "" {"\nALTER ROLE \((#roleName & {role: r, declared: _a.roles[r].declared}).out) \(_attrs[r]);\n"}]
 
 				// The innermost timeouts of a request (plugins/pronto/resilience), per token role.
-				_timeouts: list.Concat([["\n-- Finite machine bounds: statement, lock, and idle timeouts.\n"], [
-					for r in _roles if r != "electric"
-					let tier = [if r == "service" {"service"}, "client"][0] {
-						"ALTER ROLE \(r) SET statement_timeout = '\(resilience.resilience.timeouts.statement[tier])s';\n" +
-							"ALTER ROLE \(r) SET lock_timeout = '\(resilience.resilience.timeouts.lock[tier])s';\n" +
-							"ALTER ROLE \(r) SET idle_in_transaction_session_timeout = '\(resilience.resilience.timeouts.idleInTransaction[tier])s';\n"
-					},
-				], [for r in E._declaredRoles {(#tokenRoleBounds & {role: r}).out}]])
+				_timeouts: [for r in _a.order if len(_a.roles[r].settings) > 0 {
+					(#alterSettings & {role: r, quoted: _a.roles[r].declared, settings: _a.roles[r].settings}).out
+				}]
+				// Where the owner provisions the roles, they are checked, not created,
+				// and only the objects this schema's own login owns are granted here.
+				text: [if E._checked {(#accessCheckSql & {access: _a}).out + (#grantsSql & {access: _a, schemas: false}).owned}, "DO $$ BEGIN\n" + strings.Join(_create, "\n") + "\n" + strings.Join(_declared, "") + _authenticator + "END $$;\n" + strings.Join(_login, "") + strings.Join(_bypass, "") + (#grantsSql & {access: _a}).owned + "\n-- Finite machine bounds: statement, lock, and idle timeouts.\n" + strings.Join(_timeouts, "")][0]
+			}
+			if E._checked {
+				"services/database/provision.sql": {
+					format: "sql"
+					text:   (#accessProvisionSql & {access: E._access}).out
+				}
 			}
 			"services/database/migrations/002_grants.sql": {
 				format: "sql"
-				if !E._authOn {
-					// The service role beside anon where only a wake brings it:
-					// the schedule tables, which anon never reaches, are its.
-					_grantees: [if E._serviceOn {"anon, service"}, "anon"][0]
-					text: """
-						GRANT USAGE ON SCHEMA public TO \(_grantees);
-						GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \(_grantees);
-						ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO \(_grantees);
-
-						"""
-				}
-
-				// Auth'd grants: anon can connect (USAGE) but touches no table —
-				// every row read or written goes through app_user or service,
-				// where 006's policies decide.
-				if E._authOn {
-					text: """
-						GRANT USAGE ON SCHEMA public TO anon, app_user, service;
-						GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user, service;
-						ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_user, service;
-
-						"""
-				}
+				// With auth, anon is granted USAGE and no table here: rows go
+				// through app_user or service, where 006's policies decide (008
+				// gives anon a table right once something is synced). Without auth,
+				// the service role stands beside anon where only a wake brings it:
+				// the schedule tables, which anon never reaches, are its.
+				text: (#grantsSql & {access: E._access, schemas: !E._checked}).requested
 			}
 			"services/database/migrations/008_publication.sql": {
 				format: "sql"
@@ -5202,7 +6072,7 @@ _pgrollDir: "services/database/pgroll"
 
 							\(strings.Join([for t in E._baseTables {"ALTER TABLE \(t) REPLICA IDENTITY FULL;"}], "\n"))
 							-- tier: any
-							GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon;
+							\(strings.TrimSuffix((#grantsSql & {access: E._access}).published, "\n"))
 
 							"""
 					},
@@ -5241,6 +6111,17 @@ _pgrollDir: "services/database/pgroll"
 					format: "sql"
 					text: strings.Join([for ent in E._entities if ent.access != _|_ if E._appMigrations.held[ent.name] != _|_ {
 						(#policySql & {e: ent, entities: E.code.state.entities}).out
+					}], "\n\n") + "\n"
+				}
+			}
+			// Field behaviour shares the write permissions' prefix: after the
+			// authored schema migrations, before schedules and seeds, and a step
+			// of its own, so no database's applied 799_write_permissions.sql changes.
+			if len(E._appMigrations.behaved) > 0 {
+				"services/database/migrations/799_field_behavior.sql": {
+					format: "sql"
+					text: strings.Join([for ent in E._appMigrations.behaved {
+						(#fieldBehaviorSql & {e: ent, columns: E.code._machineColumns}).out
 					}], "\n\n") + "\n"
 				}
 			}
@@ -5291,13 +6172,13 @@ _pgrollDir: "services/database/pgroll"
 				"services/database/migrations/\(E._steps.actors)": {format: "mecha-reducer-sql", data: {
 					reducers: {for n, h in E.code.state.mecha.reducers {(n): {machine: h.reducer, rules: h.rules}}}
 					entities: E.code.state.entities
-					timers:   [if len([for _, h in E.code.state.mecha.reducers if h.reducer.ports != _|_ if h.reducer.ports.wake != _|_ {h}]) > 0 {mecha.#MachineTimersSql}, ""][0]
+					timers:   [if len((#TimedReducers & {code: E.code}).out) > 0 {mecha.#MachineTimersSql}, ""][0]
 				}}
 			}
 			if len(_machines) > 0 if len([for r in E._raw if r.name == E._steps.machines {r}]) == 0 {
 				"services/database/migrations/\(E._steps.machines)": {
 					format: "sql"
-					text:   [if len(E._timedMachines) > 0 {mecha.#MachineTimersSql + "\n\n"}, ""][0] + [if len([for m in _machines if m.cortex != _|_ {m}]) > 0 {#cortexRuntimeSql + "\n\n" + #cortexRuntimeExemptSql + "\n\n"}, ""][0] + strings.Join([for m in _machines {(#mechaMachineSql & {machine: m, entities: E.code.state.entities, effects: [if E.code.state.effects != _|_ {E.code.state.effects}, {}][0], runtime: false, step: E._steps.machines}).out}], "\n\n") + "\n"
+					text:   #machineClockSql + "\n\n" + [if len(E._timedMachines) > 0 {mecha.#MachineTimersSql + "\n\n"}, ""][0] + [if len([for m in _machines if m.cortex != _|_ {m}]) > 0 {#cortexRuntimeSql + "\n\n" + #cortexRuntimeExemptSql + "\n\n"}, ""][0] + strings.Join([for m in _machines {(#mechaMachineSql & {machine: m, entities: E.code.state.entities, effects: [if E.code.state.effects != _|_ {E.code.state.effects}, {}][0], signals: [if E.code.state.signals != _|_ {E.code.state.signals}, {}][0], runtime: false, step: E._steps.machines}).out}], "\n\n") + "\n"
 				}
 			}
 
@@ -5362,13 +6243,9 @@ _pgrollDir: "services/database/pgroll"
 							let edge = (#SinkAt & {sink: i.effect.sink, target: "cloudflare"}).out
 							if list.Contains(E.code.meta.targets, "cloudflare") if edge != null if edge.origin != _|_ {edgeOrigin: edge.origin}
 
-							// The bridge the effect is settled by: its own, else the one its
-							// sink is on a release target past the compose stack's, where
-							// the airlock settles it not deployed as it would its own.
-							let named = [
-								if i.effect.sink.bridge != _|_ {i.effect.sink.bridge},
-								for t in ["cloudflare", "k8s"] let at = (#SinkAt & {sink: i.effect.sink, target: t}).out if at != null if at.bridge != _|_ {at.bridge},
-							]
+							// The bridge the effect is settled by (#EffectBridge).
+							let settledBy = #EffectBridge & {effect: i.effect, bridges: [if E.code.state.bridges != _|_ {E.code.state.bridges}, {}][0], targets: E.code.meta.targets}
+							let named = settledBy.named
 
 							// And the bridge the edge calls, where that is not it.
 							if list.Contains(E.code.meta.targets, "cloudflare") if edge != null if edge.bridge != _|_ if edge.bridge != named[0] {edgeBridge: edge.bridge}
@@ -5376,28 +6253,7 @@ _pgrollDir: "services/database/pgroll"
 							// Or the AI gateway, where the bridge is another target's.
 							if list.Contains(E.code.meta.targets, "cloudflare") if edge != null if edge.ai != _|_ if len(named) > 0 {edgeAi: true}
 							if i.effect.endowments != _|_ {endowments: i.effect.endowments}
-							if len(named) > 0 {
-								let local = (#SinkAt & {sink: i.effect.sink, target: "docker"}).out
-								bridge: {
-									name: named[0]
-									// The release targets where the effect's sink there is
-									// reachable: an origin, the AI gateway, or a bridge that
-									// target runs; the app's own targets past those a bridge
-									// may name among them.
-									// The airlock settles the effect not deployed
-									// elsewhere, so an effect whose own bridge runs
-									// only on docker but whose k8s sink is an origin
-									// is called on k8s.
-									targets: [for t in list.Concat([#BridgeTargets, [for t in E.code.meta.targets if t != "pages" if !list.Contains(#BridgeTargets, t) {t}]])
-									let at = (#SinkAt & {sink: i.effect.sink, target: t}).out
-									if at != null
-									if [if at.bridge != _|_ {list.Contains(E.code.state.bridges[at.bridge].targets, t)}, true][0] {t}]
-									// Whether the local stack, which takes docker's sink,
-									// calls it: an origin, or a bridge it runs a simulator
-									// of.
-									simulated: [if local != null if local.bridge != _|_ {E.code.state.bridges[local.bridge].simulator != _|_}, true][0]
-								}
-							}
+							if len(named) > 0 {bridge: settledBy.out}
 						}
 					}}
 					// The reads (mecha's services/airlock/read.ts): the request, and
@@ -5411,6 +6267,10 @@ _pgrollDir: "services/database/pgroll"
 									if i.effect.cacheControl != _|_ {cacheControl: i.effect.cacheControl}
 									if i.effect.got != _|_ {got: i.effect.got}
 									if i.effect.sink.credential != _|_ {credential: i.effect.sink.credential}
+
+									// The bridge the read is settled by, as a write's.
+									let settledBy = #EffectBridge & {effect: i.effect, bridges: [if E.code.state.bridges != _|_ {E.code.state.bridges}, {}][0], targets: E.code.meta.targets}
+									if len(settledBy.named) > 0 {bridge: settledBy.out}
 								}
 							}
 						}
@@ -5894,7 +6754,13 @@ _pgrollDir: "services/database/pgroll"
 			// A presenter's worker script answers with the presenter's own
 			// policy, which governs the worker it starts.
 			_presenterAt: [if E._shell.presenter != _|_ {"/omnishell/interpreter/presenter.js"}]
-			_fenced:      list.Concat([_unitPaths, _presenterAt])
+			// A provider's own button is the auth service's page, under the
+			// policy it states: Google's script needs markup sinks the
+			// terminal's Trusted Types withhold.
+			_buttonsAt: [if E.code.capabilities.auth != _|_ if E.code.capabilities.auth.provider != _|_ for p, v in E.code.capabilities.auth.provider if v.credential != _|_ {"/auth/oidc/\(p)/button"}]
+			// The tag frame carries its own policy as its meta.
+			_tagFrameAt: [if E._envelope.googleTag.enabled {"/\(E._envelope.googleTag.frame)"}]
+			_fenced:     list.Concat([_unitPaths, _presenterAt, _buttonsAt, _tagFrameAt])
 			_security: [if E.terminal.surface.contentSecurityPolicy != _|_ {
 				// The ladder's pages answer with their own policy (E._ladderPolicy),
 				// so the terminal's names every path but theirs.
@@ -5945,29 +6811,95 @@ _pgrollDir: "services/database/pgroll"
 
 					"""
 			}], "")
+			// How a value PostgREST reads as a filter opens (its pOpExpr, in
+			// src/library/PostgREST/ApiRequest/QueryParams.hs at the version
+			// cluster.cue pins): `not.`, an operator, a quantifier or a
+			// language where it takes one, and the dot. Asked of a function
+			// by GET, such a value is no argument: the function is called
+			// without it, by its default where it has one, and what it returns
+			// is filtered. So no rewrite answers a request whose value, placed
+			// by a function's destination, opens so.
+			// rewrites.integration.test.ts holds this to PostgREST.
+			_rewriteOperand: "^(?:not\\.|in\\.|is\\.|isdistinct\\.|(?:fts|plfts|phfts|wfts)(?:\\([\\pL0-9_ $]+\\))?\\.|(?:neq|cs|cd|ov|sl|sr|nxr|nxl|adj)\\.|(?:eq|gte|gt|lte|lt|like|ilike|match|imatch)(?:\\((?:any|all)\\))?\\.)"
 			// An app's rewrite (#Rewrite), beside the hatches' doors: the source's
 			// parameters captured, and the destination asked of crud as /crud
-			// itself asks it.
+			// itself asks it. What the client asked is stated in the headers
+			// forward_auth states it in, set on the upstream request as
+			// forward_auth sets them: never the client's own, and past the
+			// hop-by-hop headers its Connection names for removal. The URI
+			// is the request target as sent, not the cleaned and decoded path
+			// that matched. A function is called by GET or POST alone, so a
+			// PUT, PATCH or DELETE reaches one as a POST; and its arguments
+			// are not a query's, so the client's query reaches it in
+			// X-Forwarded-Uri alone.
 			_rewriteDoors: strings.Join([if E.code.state.rewrites != _|_ for rn, r in E.code.state.rewrites {
 				let matcher = "rewrite_\(strings.Replace(rn, "-", "_", -1))"
 				let params = [if strings.Contains(r.source, ":") for m in regexp.FindAll(":[a-z][A-Za-z0-9_]*", r.source, -1) {m}]
-				let placed = strings.Join([for t in regexp.FindAll("::|[A-Za-z0-9_]+::?[A-Za-z0-9_]*|:[a-z][A-Za-z0-9_]*|[A-Za-z0-9_]+|[^:A-Za-z0-9_]+|:", strings.TrimPrefix(r.destination, "/crud"), -1) {
-					[for i, p in params if p == t {"{re.\(matcher).\(i+1)}"}, t][0]
+
+				// A `has` item (#RewriteHas) is a regular expression over
+				// the key's decoded value, whose groups are parameters as
+				// the source's are, a key with no expression naming its own
+				// by its letters. Every item is one condition of the
+				// matcher's expression, since two `vars_regexp` matchers in
+				// one set are either, not both. A key sent twice, however
+				// it is escaped, meets none: the door would read its values
+				// as one, joined. Nor does a value a function's destination
+				// places that PostgREST would read as a filter (_rewriteOperand).
+				let has = [if r.has != _|_ for i, h in r.has {
+					name:    "\(matcher)_has\(i)"
+					value:   "{http.request.uri.query.\(h.key)}"
+					pattern: [if h.value != _|_ {"^(?:\(h.value))$"}, "(?s)^(.+)$"][0]
+					key:     strings.Join([for j, c in strings.Runes(h.key) {"(?:\(regexp.QuoteMeta(strings.SliceRunes(h.key, j, j+1)))|%(?i:\(strconv.FormatInt(c, 16))))"}], "")
+					groups:  [if h.value == _|_ if h.key =~ "[A-Za-z]" {name: ":\(regexp.ReplaceAll("[^A-Za-z]", h.key, ""))", group: "1"}, if h.value != _|_ for g, _ in regexp.FindNamedSubmatch("(?:\(h.value))?", "") {name: ":\(g)", group: g}]
+				}]
+				let tokens = regexp.FindAll("::|[A-Za-z0-9_]+::?[A-Za-z0-9_]*|:[A-Za-z][A-Za-z0-9_]*|[A-Za-z0-9_]+|[^:A-Za-z0-9_]+|:", strings.TrimPrefix(r.destination, "/crud"), -1)
+
+				// A source's parameter a function's destination places is held
+				// to the same, read from the path as the matcher reads it: the
+				// expression matches the path itself, since one condition does
+				// not see what another matcher of the set captured.
+				let guarded = [if strings.HasPrefix(r.destination, "/crud/rpc/") for i, p in params if list.Contains(tokens, p) {"!{http.regexp.\(matcher)_path.\(i+1)}.matches(r\"\(_rewriteOperand)\")"}]
+				let terms = [if len(guarded) > 0 {"path_regexp('\(matcher)_path', r\"^\(regexp.ReplaceAll(":[^/]+", r.source, "([A-Za-z0-9._~-]+)"))$\")"}, for g in guarded {g}, for h in has {"vars_regexp('\(h.name)', '\\x7b\(strings.TrimPrefix(h.value, "{"))', r\"\(h.pattern)\") && \(h.value) != \"\" && !{http.request.uri.query}.matches(r\"(?:^|&)\(h.key)(?:=[^&]*)?&(?:.*&)?\(h.key)(?:[=&]|$)\")" + strings.Join([if strings.HasPrefix(r.destination, "/crud/rpc/") for g in h.groups if list.Contains(tokens, g.name) {" && !{http.regexp.\(h.name).\(g.group)}.matches(r\"\(_rewriteOperand)\")"}], "")}]
+
+				// `vars_regexp` is told the placeholder to read as a string,
+				// which the expression must hold as written, where a
+				// placeholder anywhere else in it is replaced by its value.
+				// So its opening brace is spelled \x7b, CEL's own escape: the
+				// backslash before a brace that Caddy's expression takes for
+				// one is taken first by the import of the snippet this is
+				// written in, and the placeholder would be replaced after all.
+				// The terms are read in the order written, each match setting
+				// its captures before the next term reads them: what the
+				// door's Caddy does (cluster.cue pins it), not what CEL
+				// promises of `&&`. Read otherwise, a capture would be empty
+				// where it is tested and an operand would pass, which
+				// rewrites.integration.test.ts refuses.
+				let conditions = [if len(terms) > 0 {"    expression `\(strings.Join(terms, " && "))`\n"}, ""][0]
+				let placed = strings.Join([for t in tokens {
+					[for i, p in params if p == t {"{re.\(matcher).\(i+1)}"}, for h in has for g in h.groups if g.name == t {"{re.\(h.name).\(g.group)}"}, t][0]
 				}], "")
-				let query = [if strings.Contains(placed, "?") {"&{query}"}, "?{query}"][0]
+				let rpc = strings.HasPrefix(placed, "/rpc/")
+
+				// A rewrite to a path alone keeps the request's query, so a
+				// function's ends in the `?` that leaves it none.
+				let query = [if rpc if strings.Contains(placed, "?") {""}, if rpc {"?"}, if strings.Contains(placed, "?") {"&{query}"}, "?{query}"][0]
+				let called = [if rpc {"      @\(matcher)_call method PUT PATCH DELETE\n      method @\(matcher)_call POST\n"}, ""][0]
 				let methods = [if r.methods != _|_ {"    method \(strings.Join(r.methods, " "))\n"}, ""][0]
 				"""
 					  @\(matcher) {
 					\(methods)    path_regexp \(matcher) ^\(regexp.ReplaceAll(":[^/]+", r.source, "([A-Za-z0-9._~-]+)"))$
-					  }
+					\(conditions)  }
 					  handle @\(matcher) {
 					    route {
-					      @\(matcher)_post method POST
+					      request_header -X-Signal-Path
+					      request_header -X-Blob-Path
+					\(called)      @\(matcher)_post method POST
 					      request_header @\(matcher)_post Prefer "return=representation,resolution=ignore-duplicates"
-					      request_header X-Rewrite-Path {http.request.uri.path}
 					      rewrite * \(placed)\(query)
 					      reverse_proxy {$PRONTO_UPSTREAM_CRUD:crud:3000} {
 					        header_up dapr-app-id crud
+					        header_up X-Forwarded-Method {http.request.orig_method}
+					        header_up X-Forwarded-Uri {http.request.orig_uri}
 					        import bounded-crud
 					      }
 					    }
@@ -6312,7 +7244,8 @@ _pgrollDir: "services/database/pgroll"
 				      - run: sayt verify@pages --target="${{ steps.deploy.outputs.page_url }}"\(pagesDir)
 				"""
 
-			let authProviders = [if E.code.capabilities.auth != _|_ if E.code.capabilities.auth.providers != _|_ for p in E.code.capabilities.auth.providers {strings.ToUpper(p)}]
+			// Bluesky's client is the origin, so a deployment holds nothing of its.
+			let authProviders = [if E.code.capabilities.auth != _|_ if E.code.capabilities.auth.providers != _|_ for p in E.code.capabilities.auth.providers if p != "bluesky" {strings.ToUpper(p)}]
 			let edgeEnvironment = {
 				for _, h in E.code.capabilities.hatches if h.edge != _|_ for binding in h.edge.environment {(binding): binding}
 				for p in authProviders for s in ["CLIENT_ID", "CLIENT_SECRET", "ISSUER"] {("OIDC_\(p)_\(s)"): "OIDC_\(p)_\(s)"}

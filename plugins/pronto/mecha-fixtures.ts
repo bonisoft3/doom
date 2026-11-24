@@ -7,7 +7,7 @@ import ses from "../omnishell/interpreter/vendor/ses.umd.min.js" with { type: "t
 export const terminal = { instrument, ses };
 
 export const ROOT = new URL("../../", import.meta.url);
-export const DATABASE = "bonitao/mecha-database:0.26.0@sha256:bc17c811912900b9ed4ba691167be6dc56f961b437dd765bebd4e53148aa92ec";
+export const DATABASE = "bonitao/mecha-database:0.34.0@sha256:1e65261fd9507f7c935a939c43916fb3a61f335cf50002478b31a8d643a103df";
 export const uuid = (n: number) => `00000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 export const quote = (value: unknown) => `'${JSON.stringify(value).replaceAll("'", "''")}'::jsonb`;
 export const initial = () => ({ phase: "playing", turn: "a", a: [0, 1, 2], b: [3, 4, 5], plays: [], deadline: 9007199254740000 });
@@ -43,5 +43,25 @@ export async function fixture() {
   if (!result.ok) throw new Error(result.err);
   const spec: MechaReducerMachine = JSON.parse(result.out);
   const rules = await Deno.readTextFile(new URL("testdata/mecha/turn.js", import.meta.url));
+  return { spec, rules, compiled: await compileMechaReducer(spec, rules, terminal) };
+}
+
+/** A turn clock (testdata/mecha-timer): a state whose XState `after` waits on
+ * a delay read off its context, its rules, and both compiled. */
+export async function timerFixture() {
+  const result = await run("cue", ["export", "./plugins/pronto/testdata/mecha-timer", "-e", "reducer"]);
+  if (!result.ok) throw new Error(result.err);
+  const spec: MechaReducerMachine = JSON.parse(result.out);
+  const rules = await Deno.readTextFile(new URL("testdata/mecha-timer/clock.js", import.meta.url));
+  return { spec, rules, compiled: await compileMechaReducer(spec, rules, terminal) };
+}
+
+/** A race (testdata/mecha-nested): a compound state whose own timer keeps
+ * running while its children hold theirs, its rules, and both compiled. */
+export async function nestedFixture() {
+  const result = await run("cue", ["export", "./plugins/pronto/testdata/mecha-nested", "-e", "reducer"]);
+  if (!result.ok) throw new Error(result.err);
+  const spec: MechaReducerMachine = JSON.parse(result.out);
+  const rules = await Deno.readTextFile(new URL("testdata/mecha-nested/race.js", import.meta.url));
   return { spec, rules, compiled: await compileMechaReducer(spec, rules, terminal) };
 }

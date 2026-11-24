@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="omnishell" width="360">
+  </picture>
+</p>
+
 # omnishell
 
 Omnishell is Pronto's frontend framework: the virtual terminal that renders a
@@ -44,7 +51,7 @@ project's `.mise.toml` and `omnishell` is on PATH:
 
 ```toml
 [tools]
-"github:bonisoft3/omnishell" = "0.25.2"
+"github:bonisoft3/omnishell" = "0.34.0"
 ```
 
 ```

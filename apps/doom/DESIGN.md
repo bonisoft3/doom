@@ -20,7 +20,7 @@ dark:
   danger: "#FF4444"
   attention: "#44FF77"
 shell:
-  nav: "topbar"
+  nav: "none"
 ---
 
 # Doom Arena — UAC Phobos Terminal

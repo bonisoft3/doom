@@ -981,7 +981,7 @@ export async function derive(appDir: string): Promise<{ entities: Record<string,
 
   if (!(await exists(`${appDir}/DESIGN.md`))) {
     problems.push(
-      'DESIGN.md: no such file — author DESIGN.md (with YAML frontmatter declaring `colors` + matching `dark` twins for `primary, secondary, accent, danger, neutral, surface, border, surface-muted`, plus `shell.nav`: `"topbar" | "tabbar" | "sidebar" | "dock" | "custom"`)',
+      'DESIGN.md: no such file — author DESIGN.md (with YAML frontmatter declaring `colors` + matching `dark` twins for `primary, secondary, accent, danger, neutral, surface, border, surface-muted`, plus `shell.nav`: `"topbar" | "tabbar" | "sidebar" | "dock" | "custom" | "none"`)',
     );
   }
   if (exp.statics.some((s) => s.file === "journal.html") && !(await exists(`${appDir}/journal.html`))) {
@@ -1138,6 +1138,20 @@ export async function derive(appDir: string): Promise<{ entities: Record<string,
   const designCss = await sha("shell/design.css").catch(() => null);
   artifacts.push({ path: "shell/design.css", sha256: designCss ?? "missing", derived: true });
 
+  const stripRoutesCount = Object.values(
+    (exp.program as { surface?: { screens?: Record<string, { route?: string; strip?: boolean }> } }).surface?.screens ?? {},
+  ).filter((s) =>
+    s.strip !== false &&
+    (s.route ?? "").split("/").filter((seg) => seg.startsWith(":") && !seg.endsWith("?")).length === 0
+  ).length;
+  const shellDesign = (exp.design as { shell: { nav: string; title?: string } }).shell;
+  const shell_chrome = [{
+    nav: shellDesign.nav,
+    branded: Boolean(shellDesign.title),
+    strip_routes: stripRoutesCount,
+    has_auth: (exp.program as { capabilities?: { auth?: unknown } }).capabilities?.auth !== undefined,
+  }];
+
   await Deno.mkdir(`${appDir}/.pronto`, { recursive: true });
   const fixedFacts = mergeFacts(
     programFacts(entities, screens.map((s) => ({
@@ -1151,6 +1165,7 @@ export async function derive(appDir: string): Promise<{ entities: Record<string,
     jessieFactRows(DENIED, modules),
     { enum_value },
     { read_mode: Object.entries(exp.read).map(([entity, s]) => ({ entity, ...s })) },
+    { shell_chrome },
     seed_vetted.length > 0 ? { seed_vetted } : {},
   );
   const irFactRows = () => mergeFacts(ledger, bijection, nestingFacts(irHtml!), diagramFacts(diagrams.nodes, diagrams.edges));

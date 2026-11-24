@@ -5,6 +5,12 @@ import {
   type SinkWrites,
   validateSinkWrites,
 } from "../../packages/compute-snapshot/src/sink-writes.ts";
+import {
+  applyPublication,
+  checkSinkColumns,
+  type PublicationClient,
+  stageWhole,
+} from "../../packages/compute-snapshot/src/publication.ts";
 
 type Row = Record<string, unknown>;
 export type Publication = {
@@ -22,7 +28,12 @@ export type Summary = Record<
 >;
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
-const BATCH = 500;
+const publicationClient = (client: pg.PoolClient): PublicationClient => ({
+  query: async (sql, params) => {
+    const result = await client.query(sql, params);
+    return { rows: result.rows, affectedRows: result.rowCount ?? 0 };
+  },
+});
 const isRow = (value: unknown): value is Row =>
   value !== null && typeof value === "object" &&
   Object.getPrototypeOf(value) === Object.prototype;
@@ -303,6 +314,9 @@ export async function stagePages(
         if (columns && JSON.stringify(columns) !== JSON.stringify(names)) {
           throw new Error(`${table} rows differ in columns`);
         }
+        if (!columns) {
+          await checkSinkColumns(publicationClient(client), table, names);
+        }
         columns = names;
         const fields = spec.sinkTypes?.[table];
         const normalized = fields
@@ -335,48 +349,17 @@ async function applyStagedPages(
   spec: Publication,
   staged: StagedPages,
 ): Promise<Summary> {
-  const summary: Summary = Object.fromEntries(
-    spec.to.map((table) => [
-      table,
-      { rows: staged.rows[table] ?? 0, upserted: 0, deleted: 0 },
-    ]),
+  const applied = await applyPublication(
+    publicationClient(client),
+    spec,
+    Object.fromEntries(spec.to.map((table) => {
+      const { name, columns } = staged.stages.get(table)!;
+      return [table, { relation: `pg_temp.${identifier(name)}`, fields: columns ?? [] }];
+    })),
   );
-  for (const table of spec.to) {
-    const { name, columns } = staged.stages.get(table)!;
-    const stage = `pg_temp.${identifier(name)}`;
-    if (columns) {
-      const list = columns.map(identifier).join(", ");
-      const rest = columns.filter((column) => column !== "id");
-      const changes = rest.map((column) =>
-        `${identifier(column)} = EXCLUDED.${identifier(column)}`
-      ).join(", ");
-      const existing = rest.map((column) => `sink.${identifier(column)}`).join(
-        ", ",
-      );
-      const incoming = rest.map((column) => `EXCLUDED.${identifier(column)}`)
-        .join(", ");
-      const conflict = rest.length
-        ? `DO UPDATE SET ${changes} WHERE to_jsonb(ROW(${existing})) IS DISTINCT FROM to_jsonb(ROW(${incoming}))`
-        : "DO NOTHING";
-      const result = await client.query(
-        `INSERT INTO public.${identifier(table)} AS sink (${list}) SELECT ${list} FROM ${stage} WHERE true ON CONFLICT (id) ${conflict}`,
-      );
-      summary[table].upserted = result.rowCount!;
-    }
-  }
-  for (const table of spec.to) {
-    if (spec.sinkWrites?.[table] !== "upsert") {
-      const stage = `pg_temp.${identifier(staged.stages.get(table)!.name)}`;
-      const result = await client.query(
-        `DELETE FROM public.${identifier(table)} AS sink WHERE NOT EXISTS (SELECT FROM ${stage} AS retained WHERE sink.id = retained.id)`,
-      );
-      summary[table].deleted = result.rowCount!;
-    }
-  }
-  if (spec.onComplete) {
-    await client.query(`SELECT public.${identifier(spec.onComplete)}()`);
-  }
-  return summary;
+  return Object.fromEntries(
+    spec.to.map((table) => [table, { rows: staged.rows[table] ?? 0, ...applied[table] }]),
+  );
 }
 
 /** Caller owns the transaction and must roll it back if publication fails. */
@@ -501,121 +484,11 @@ async function apply(
   deletions?: Record<string, string[]>,
 ): Promise<Summary> {
   const previous = await enterAuthority(client, claims);
-  for (const table of spec.to) {
-    const ids = [
-      ...sinks[table].map((row) => row.id),
-      ...(deletions?.[table] ?? []),
-    ];
-    const seen = new Set<string>();
-    // PostgreSQL accepts alternate UUID spellings that denote the same key.
-    for (let i = 0; i < ids.length; i += BATCH) {
-      const { rows: keys } = await client.query<{ id: string }>(
-        `SELECT to_jsonb(input)->>'id' AS id
-         FROM json_populate_recordset(NULL::public.${
-          identifier(table)
-        }, $1::json) AS input`,
-        [json(ids.slice(i, i + BATCH).map((id) => ({ id })))],
-      );
-      for (const { id } of keys) {
-        if (id === null || seen.has(id)) {
-          throw new Error(
-            `${table} publication contains repeated PostgreSQL keys`,
-          );
-        }
-        seen.add(id);
-      }
-    }
-  }
-  const summary: Summary = Object.fromEntries(
-    spec.to.map((
-      table,
-    ) => [table, { rows: sinks[table].length, upserted: 0, deleted: 0 }]),
-  );
-  for (const table of spec.to) {
-    const rows = sinks[table];
-    if (!rows.length) continue;
-    const names = Object.keys(rows[0]);
-    const columns = names.map(identifier).join(", ");
-    const rest = names.filter((name) => name !== "id");
-    const changes = rest.map((name) =>
-      `${identifier(name)} = EXCLUDED.${identifier(name)}`
-    ).join(", ");
-    const existing = rest.map((name) => `sink.${identifier(name)}`).join(", ");
-    const incoming = rest.map((name) => `EXCLUDED.${identifier(name)}`).join(
-      ", ",
-    );
-    const conflict = rest.length
-      ? `DO UPDATE SET ${changes} WHERE to_jsonb(ROW(${existing})) IS DISTINCT FROM to_jsonb(ROW(${incoming}))`
-      : "DO NOTHING";
-    for (let i = 0; i < rows.length; i += BATCH) {
-      const result = await client.query(
-        `INSERT INTO public.${identifier(table)} AS sink (${columns})
-         SELECT ${columns} FROM json_populate_recordset(NULL::public.${
-          identifier(table)
-        }, $1::json)
-         ON CONFLICT (id) ${conflict}`,
-        [json(rows.slice(i, i + BATCH))],
-      );
-      summary[table].upserted += result.rowCount!;
-    }
-  }
-  for (const table of spec.to) {
-    if (spec.sinkWrites?.[table] === "upsert") continue;
-    if (deletions) {
-      const ids = deletions[table];
-      for (let i = 0; i < ids.length; i += BATCH) {
-        const result = await client.query(
-          `DELETE FROM public.${identifier(table)} AS sink
-           USING json_populate_recordset(NULL::public.${
-            identifier(table)
-          }, $1::json) AS removed
-           WHERE sink.id = removed.id`,
-          [json(ids.slice(i, i + BATCH).map((id) => ({ id })))],
-        );
-        summary[table].deleted += result.rowCount!;
-      }
-    } else if (sinks[table].length <= BATCH) {
-      const result = await client.query(
-        `DELETE FROM public.${identifier(table)} AS sink
-         WHERE NOT EXISTS (
-           SELECT FROM json_populate_recordset(NULL::public.${
-          identifier(table)
-        }, $1::json) AS retained
-           WHERE sink.id = retained.id
-         )`,
-        [json(sinks[table].map(({ id }) => ({ id })))],
-      );
-      summary[table].deleted = result.rowCount!;
-    } else {
-      const retainedName = `retained_${crypto.randomUUID().replaceAll("-", "")}`;
-      const retainedStage = `pg_temp.${identifier(retainedName)}`;
-      await client.query(
-        `CREATE TEMP TABLE ${identifier(retainedName)} ON COMMIT DROP AS SELECT id FROM public.${identifier(table)} WITH NO DATA`,
-      );
-      await client.query(`GRANT SELECT ON TABLE ${retainedStage} TO PUBLIC`);
-      await client.query(`CREATE UNIQUE INDEX ON ${retainedStage} (id)`);
-      const rows = sinks[table];
-      for (let i = 0; i < rows.length; i += BATCH) {
-        await client.query(
-          `INSERT INTO ${retainedStage} (id)
-           SELECT id FROM json_populate_recordset(NULL::public.${identifier(table)}, $1::json)`,
-          [json(rows.slice(i, i + BATCH).map(({ id }) => ({ id })))],
-        );
-      }
-      const result = await client.query(
-        `DELETE FROM public.${identifier(table)} AS sink
-         WHERE NOT EXISTS (
-           SELECT FROM ${retainedStage} AS retained
-           WHERE sink.id = retained.id
-         )`,
-      );
-      summary[table].deleted = result.rowCount!;
-      await client.query(`DROP TABLE ${retainedStage}`);
-    }
-  }
-  if (spec.onComplete) {
-    await client.query(`SELECT public.${identifier(spec.onComplete)}()`);
-  }
+  const tx = publicationClient(client);
+  const staged = await stageWhole(tx, spec, sinks, deletions);
+  const applied = await applyPublication(tx, spec, staged.staged, staged.deletions);
   await leaveAuthority(client, previous);
-  return summary;
+  return Object.fromEntries(
+    spec.to.map((table) => [table, { rows: sinks[table].length, ...applied[table] }]),
+  );
 }

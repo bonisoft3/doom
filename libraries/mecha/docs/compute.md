@@ -26,10 +26,11 @@ command, so the runner does not rewrite stdin. Stable planner serialization
 allows unchanged groups to reuse work; changed inputs, explicit seeds, binaries
 or execution contracts produce different keys.
 
-[[../services/compute/job-cache.ts|The cache]] stores original stdout JSON in
-private PostgreSQL tables. It retains at most 100,000 results and 256 MiB of
-UTF-8 payload plus 128 bytes per entry; this is a retention budget, not a limit
-on PostgreSQL's index/WAL/disk footprint. Indexed least-recently-used eviction
+[[../services/compute/job-cache.ts|The cache]] stores Zstd-compressed stdout JSON
+(after any declared `select` field projection) as `bytea` in private PostgreSQL
+tables. It retains at most 100,000 results and 512 MiB of compressed payload
+plus 128 bytes per entry; this is a retention budget, not a limit on PostgreSQL's
+index/WAL/disk footprint. Indexed least-recently-used eviction
 also applies when reopening the cache. Oversized results still execute and
 return normally without retention. Failed execution or invalid JSON never
 creates an entry. Database failures fail the calculation; conflicting answers
@@ -114,6 +115,32 @@ schema refusal, replay and compatibility with untyped numerical queries.
 exercises source values, native DuckDB conversion and typed sink publication in
 a disposable database.
 
+## One compute core
+
+A DuckDB-evaluated computation runs the same code on the server, on Cloudflare
+and in a page; a host supplies only its DuckDB connection, its storage and its
+transport. [[../packages/compute-snapshot/src/execution.ts]] is the step loop,
+[[../packages/compute-snapshot/src/capture.ts]] the capture and digest,
+[[../packages/compute-snapshot/src/publication.ts]] the publication apply and
+[[../packages/compute-snapshot/src/json.ts]] the JSON rules values cross by.
+node-api, workerd's DuckDB and duckdb-wasm each adapt to one asynchronous
+connection; `services/compute/execution-conformance_test.ts` drives the same
+execution and capture through two of them and requires the same answers.
+
+- A captured row is DuckDB's JSON of the row, completed by the query's type
+  boundary; a top-level `JSON` column arrives as its text. Capture refuses an
+  integer literal no double holds exactly and a row over 1 MiB.
+- Publication follows ids, whether an output arrives in pages, whole or as a
+  delta. Its rows name `id`, only columns a computation may write (not
+  `scope_id`, `txid` or a generated column) and every required one, and no key
+  twice once PostgreSQL has typed it. Applying them leaves a row equal to the
+  stored one untouched (no lock or trigger), deletes what a replacing sink no
+  longer holds or exactly the ids a delta removes, and then runs `onComplete`.
+  A host stages pages its own way; an output held whole is staged by the core.
+  Each host applies under its own authority.
+- Pages run `plan`/`finish` computations only; they capture inputs through the
+  core and normalize typed sinks with `postgresRows`, as the server does.
+
 ## Bounded native snapshots
 
 In `duckdb-snapshot` mode, a computation with `steps` uses the same bounded
@@ -131,11 +158,16 @@ incrementally from one repeatable-read PostgreSQL transaction: either waiting on
 deltas (`'T'`, `'D'`, `'I'`) recorded in `compute.wal` up to `compute.source.wal_seq`
 when the visible WAL count matches the watermark. Unchanged source tables are
 reused without rescanning PostgreSQL. Capture then attaches `replica.duckdb`
-read-only and materializes query results in an immutable DuckDB file. The batch
+read-only and materializes query results in an immutable DuckDB file through
+the capture Cloudflare uses, [[../packages/compute-snapshot/src/capture.ts]]:
+DuckDB renders each row once, the type boundary completes it in bounded pages,
+and its canonical text is what steps read and the digest hashes. The batch
 ledger retains its identity, not the full relation as JSON. Generated SQL stages
-execute in DuckDB. Numerical steps read bounded pages, run WASM, and accumulate
-outputs in a separate DuckDB file. Outputs are sorted once for publication; pages
-read bounded ordinal ranges instead of repeatedly sorting the remaining output.
+execute in DuckDB. Numerical steps run Cloudflare's step loop,
+[[../packages/compute-snapshot/src/execution.ts]], in a separate DuckDB file.
+Its final commit numbers each sink's rows by id, so publication follows ids
+whichever step wrote a row; pages read bounded ordinal ranges instead of
+repeatedly sorting the remaining output.
 PostgreSQL stages those output pages into session-scoped temporary tables before
 entering the `SERIALIZABLE` coordinator lock transaction, then applies all
 sinks, the completion hook, and the batch receipt in one transaction. A failed
@@ -143,12 +175,12 @@ publication retains the original input file for replay; a process restart can
 repeat numerical work but cannot silently recapture newer source rows.
 
 Bounded means bounded transfers, not a smaller application window or incremental
-maintenance. Query pages are limited to 4,096 rows and 1 MiB; publication pages
-to 128 rows and 256 KiB. Each DuckDB instance uses one execution thread with a 512 MiB engine budget
+maintenance. Step queries share Cloudflare's 8 MiB limit; WASM query pages are
+limited to 4,096 rows and 1 MiB; publication pages to 128 rows and 256 KiB. Each DuckDB instance uses one execution thread with a 512 MiB engine budget
 and can spill to disk. This is not a cap on total service memory: concurrent captures,
 workers and a numerical WASM job have their own allocations. Native execution
-replays steps from the retained capture after interruption; it does not persist
-each step's checkpoint as the Cloudflare executor does. Worker SQL cannot access
+commits each step's checkpoint as Cloudflare does, but discards an interrupted
+output file and replays its steps from the retained capture. Worker SQL cannot access
 host files or the network through DuckDB.
 
 `COMPUTE_STATE_DIR` follows the same persistence boundary as `PGDATA`: neither
@@ -217,8 +249,18 @@ A revision compare-and-set
 commits each step's scratch SQL, output upserts and checkpoint together, then
 checkpoints DuckDB so committed append buffers can be evicted. Replaying a
 committed step returns its current state without repeating its writes.
-`wasmFromQuery(name, input, {path, sql, orderBy})` fills an existing empty array
-inside a small input envelope from an ordered SQL relation. The ordering column
+Checkpoints, rows and query results cross as finite JSON; reading one back
+refuses an integer literal its double neither prints back as nor holds
+exactly, such as the int64 2^53+1.
+`wasmFromQuery(name, input, {path, sql, orderBy}, select?)` fills an existing empty array
+inside a small input envelope from an ordered SQL relation, and both `wasm` and
+`wasmFromQuery` accept an optional `select` field list to retain only needed
+top-level JSON properties before worker IPC and Zstd-compressed `bytea` job-cache
+storage. Native servers expose `host.concurrency` matching the bounded WASI
+worker pool (`COMPUTE_WASM_WORKERS` or hardware concurrency capped at 16) and a
+fixed `host.maxJobs = 64` per bounded step so checkpoint boundaries stay
+hardware-independent while sliding worker queues remain saturated; Cloudflare
+keeps `concurrency = 1` and `maxJobs = 1` per Durable Object tick. The ordering column
 must contain unique nonnegative safe integers; it is transport metadata and is
 removed from the WASM rows. Each page is bounded to 4,096 rows and 1 MiB and is
 fenced by the capture's execution revision. The host encodes directly into one
@@ -249,10 +291,9 @@ These bounds do not make arbitrary SQL or a single numerical job fit memory.
 
 Generated modules may also export `queryStages`, a physical plan for selected
 queries: ordered `{name, sql}` intermediate relations and the final `sql`.
-The streaming-plan translator emits these barriers after joins, aggregates and
-shared views without changing expressions or the legacy query strings. Backward
-column demand keeps only required fields in each physical stage, while retaining
-predicate keys, grouping/distinct semantics and row cardinality. The
+The Duckstream translator materializes one physical stage per transitive
+ancestor view in the authored view DAG under a scoped `__duckstream_` prefix
+without changing expressions or the legacy query strings. The
 paged executor commits one stage and its cursor per call, checkpoints it, and
 resumes that cursor after eviction. It drops intermediates when the final
 result commits. JSON result and output payload columns use uncompressed storage
@@ -451,6 +492,45 @@ Sink publication is atomic and retries cannot overwrite newer completed
 work. pg_duckpipe independently feeds the lake and does not supply this runtime's
 input frontier.
 
+Native readiness is event-driven. Each pipeline maintains a single-row
+`__pending` count over its `pending_<name>` views and a `__readiness` subscription.
+Counting rows rather than weights preserves replacements whose insertion and
+retraction sum to zero. A dedicated PostgreSQL-protocol connection opens a `FULL`
+cursor (snapshot followed by changes) and blocks on `FETCH 1` with a 30-second
+timeout. A timeout only renews the fetch; it does not scan readiness or force a
+barrier. Positive `Insert`/`UpdateInsert` records wake the existing durable batch
+coordinator. Retracted positive counts are not fresh work. Counts can remain equal
+while RisingWave emits changes; notifications are hints, not captured data.
+
+PostgreSQL sink repair triggers mark owned partitions dirty and send
+`compute_native_ready` at commit. The listener subscribes before startup
+reconciliation, so repairs missed while the process was stopped remain discoverable.
+Only authoritative runtime readiness schedules work. Duplicate hints coalesce;
+queued batches already own their wake. Completion and capture abortion request
+another readiness check because an event can arrive while capture is busy.
+Initial computations, including empty inputs, retain their startup reconciliation.
+Non-retryable capture failures also wake the lifecycle so they cannot sit undetected
+until a future CDC event. Serialization failures and deadlocks in capture transactions
+remain owned by the coordinator's retry loop. No 500 ms native readiness loop remains.
+
+Capture, acknowledgment and durable publication retain their existing protocol
+and explicit flushes. Stream/listener failure fails the service; restart opens a
+new `FULL` cursor and reconciles durable work instead of persisting cursor offsets
+or silently falling back to polling. Shutdown closes blocked subscription clients
+and joins the readiness task before closing the coordinator. Pipelines with no
+outputs also own a zero-count subscription, preserving lifecycle failure detection.
+The PostgreSQL listener uses TCP keepalive and requires a direct or session-pooled
+connection; transaction-mode pooling cannot preserve `LISTEN` registration.
+The 30-second fetch timeout is not a source-to-sink latency guarantee; natural
+RisingWave barriers and CDC still determine visibility.
+
+The generated SQL fingerprint includes the count and subscription. Upgrading an
+older pipeline reconstructs it through the existing baseline/slot ownership
+protocol; large materialized-view rebuilds can make the first startup expensive.
+Unchanged subsequent starts reuse the same pipeline. Warm attach also verifies
+the subscription exists; a missing subscription requires reconstruction. This is a Mecha runtime
+change, independent of the renderer and its release targets.
+
 The singleton coordinator owns the RisingWave schema. An uncheckpointed restart reconstructs source
 state using fresh publications and replication identities, then restores the
 last durably captured baseline into the `captured_<name>` tables.
@@ -477,6 +557,17 @@ exactly-once guarantee.
 [[../../../plugins/pronto/bundle/derived.ts|Pages and Cloudflare snapshot export]]
 selects DuckDB snapshot mode, wires `compute-events` on `transform`, and removes
 RisingWave from its disposable computation stack.
+
+The [[../services/compute/spikes/idle-readiness/adoption|isolated adoption canary]]
+uses the real coordinator and PostgreSQL CDC to exercise initial publication,
+warm restart with a missed update, PostgreSQL-only repair, an update while
+capture is held busy, reconstruction after subscription removal, and a
+zero-output subscription. It needs an administrative `DATABASE_URL`, an existing
+`service` role, and `RISINGWAVE_URL`; it creates and removes a disposable database
+and pipeline. Do not run its fixed-name pipeline concurrently with itself.
+[[../services/compute/spikes/idle-readiness/adoption-results.json|Recorded results]]
+include cleanup verification; they are correctness evidence, not a performance
+benchmark.
 
 The opt-in native regressions start isolated PostgreSQL and pinned RisingWave
 containers. From the repository root:

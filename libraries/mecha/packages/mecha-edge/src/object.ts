@@ -29,7 +29,7 @@ import type { ClaimedRun, DispatchedRun, RunAnswer } from './dispatch.ts'
 import { hatchAt, type EdgeHatch } from './hatches.ts'
 import { verifyJwt } from '../../../services/auth/jwt.ts'
 import { providersFrom } from '../../../services/auth/oidc.ts'
-import { blobKeyOf, SIGNAL_MAX_BYTES } from './door.ts'
+import { blobKeyOf, SIGNAL_MAX_BYTES, withoutAuthCookies } from './door.ts'
 import { applyScripts, ChangedScript, NoLedger, OutOfOrderScript, type Script, UnrunnableScript } from '../../pglite-workerd/scripts.ts'
 import { snapshotAdmission, type PublicSnapshot } from './public-snapshot.ts'
 import type { BatchMachine, Computation, Output } from '../../compute-snapshot/src/index.ts'
@@ -53,6 +53,8 @@ export interface EdgeEnv {
   BLOB_URL?: string
   AIRLOCK_QUEUE?: { send(body: DispatchedRun): Promise<unknown> }
   AIRLOCK_SEAL_PUBLIC?: string
+  ANDROID_APK_KEY_HASHES?: string
+  NATIVE_SCHEMES?: string
 }
 
 export interface EdgeOptions {
@@ -145,22 +147,14 @@ export function edgeObject({ assets, tables, schema, storageFormat, machines = {
           const v = (this.env as unknown as Record<string, unknown>)[name]
           return typeof v === 'string' ? v : undefined
         }
-        const configuredProviders = (env('OIDC_PROVIDERS') ?? '')
-          .split(',')
-          .map((s) => s.trim())
-          .filter((name) => name !== '' && Boolean(env(`OIDC_${name.toUpperCase()}_CLIENT_ID`) || env(`OIDC_${name.toUpperCase()}_ISSUER`)))
-          .join(',')
-        const providers = providersFrom((name) => {
-          if (name === 'OIDC_PROVIDERS') return configuredProviders
-          if (/^OIDC_[A-Z0-9]+_CLIENT_ID$/.test(name)) return env(name) ?? (env(name.replace(/_CLIENT_ID$/, '_ISSUER')) ? 'origin' : undefined)
-          if (/^OIDC_[A-Z0-9]+_AUTHORIZE_PARAMS$/.test(name)) {
-            const p = name.slice('OIDC_'.length, -'_AUTHORIZE_PARAMS'.length).toLowerCase()
-            return env(name) ?? (env(name.replace(/_AUTHORIZE_PARAMS$/, '_ISSUER')) && !env(name.replace(/_AUTHORIZE_PARAMS$/, '_CLIENT_ID')) ? `provider=${p}` : undefined)
-          }
-          return env(name)
-        })
+        // A provider turned on without the settings to sign in through it
+        // refuses the object's start (providersFrom), as the service's does:
+        // the release writes each setting the program gives (bundle/edge.ts).
+        const providers = providersFrom(env)
         const cluster = await createEdgeCluster({
           db, tables, schema, secret: this.env.JWT_SECRET, log: console.error, drains, providers,
+          androidApkKeyHashes: env('ANDROID_APK_KEY_HASHES'),
+          nativeSchemes: env('NATIVE_SCHEMES'),
           ...(compute ? { compute: {
             ...compute,
             ...(compute.physicalSnapshots ? { retainSnapshot: async identity => {
@@ -635,6 +629,7 @@ export function edgeObject({ assets, tables, schema, storageFormat, machines = {
     }
 
     override async fetch(req: Request): Promise<Response> {
+      req = withoutAuthCookies(req)
       const path = new URL(req.url).pathname
       // Asked by the Worker once it holds an answer that ends this object. Ended from in here, on a
       // timer, the answer could be lost: a migration that landed once read as refused.

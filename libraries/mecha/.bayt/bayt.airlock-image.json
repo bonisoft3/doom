@@ -20,6 +20,7 @@
           "services/airlock/reentry.ts",
           "services/airlock/read.ts",
           "services/airlock/blobs.ts",
+          "services/airlock/multipart.ts",
           "services/airlock/seal.ts",
           "services/airlock/seal-tables.ts",
           "services/airlock/pdf.ts",
@@ -45,9 +46,20 @@
           "services/compute/endowments.ts",
           "services/compute/language.ts",
           "services/compute/workers.ts",
+          "services/compute/wasm-select.ts",
           "services/compute/query-stages.ts"
         ],
         "dst": "/app/compute/",
+        "link": true,
+        "parents": false,
+        "exclude": []
+      },
+      {
+        "from": null,
+        "srcs": [
+          "packages/compute-snapshot/src/json.ts"
+        ],
+        "dst": "/packages/compute-snapshot/src/",
         "link": true,
         "parents": false,
         "exclude": []
@@ -79,6 +91,7 @@
       "services/airlock/reentry.ts",
       "services/airlock/read.ts",
       "services/airlock/blobs.ts",
+      "services/airlock/multipart.ts",
       "services/airlock/seal.ts",
       "services/airlock/seal-tables.ts",
       "services/airlock/pdf.ts",
@@ -95,7 +108,9 @@
       "services/compute/endowments.ts",
       "services/compute/language.ts",
       "services/compute/workers.ts",
-      "services/compute/query-stages.ts"
+      "services/compute/wasm-select.ts",
+      "services/compute/query-stages.ts",
+      "packages/compute-snapshot/src/json.ts"
     ],
     "exclude": []
   },
@@ -191,6 +206,7 @@
           "services/airlock/reentry.ts",
           "services/airlock/read.ts",
           "services/airlock/blobs.ts",
+          "services/airlock/multipart.ts",
           "services/airlock/seal.ts",
           "services/airlock/seal-tables.ts",
           "services/airlock/pdf.ts",
@@ -207,7 +223,9 @@
           "services/compute/endowments.ts",
           "services/compute/language.ts",
           "services/compute/workers.ts",
-          "services/compute/query-stages.ts"
+          "services/compute/wasm-select.ts",
+          "services/compute/query-stages.ts",
+          "packages/compute-snapshot/src/json.ts"
         ],
         "exclude": []
       },
@@ -250,6 +268,7 @@
           "services/airlock/reentry.ts",
           "services/airlock/read.ts",
           "services/airlock/blobs.ts",
+          "services/airlock/multipart.ts",
           "services/airlock/seal.ts",
           "services/airlock/seal-tables.ts",
           "services/airlock/pdf.ts",
@@ -266,7 +285,9 @@
           "services/compute/endowments.ts",
           "services/compute/language.ts",
           "services/compute/workers.ts",
-          "services/compute/query-stages.ts"
+          "services/compute/wasm-select.ts",
+          "services/compute/query-stages.ts",
+          "packages/compute-snapshot/src/json.ts"
         ],
         "exclude": [],
         "defaultGlobs": null,
@@ -300,6 +321,7 @@
           "services/airlock/reentry.ts",
           "services/airlock/read.ts",
           "services/airlock/blobs.ts",
+          "services/airlock/multipart.ts",
           "services/airlock/seal.ts",
           "services/airlock/seal-tables.ts",
           "services/airlock/pdf.ts",
@@ -316,7 +338,9 @@
           "services/compute/endowments.ts",
           "services/compute/language.ts",
           "services/compute/workers.ts",
-          "services/compute/query-stages.ts"
+          "services/compute/wasm-select.ts",
+          "services/compute/query-stages.ts",
+          "packages/compute-snapshot/src/json.ts"
         ],
         "exclude": [],
         "defaultGlobs": null,

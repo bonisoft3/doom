@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1.0.11";
 import { replayDatabase, type UpgradeFixture } from "./check-replay.ts";
 
-const DATABASE = "bonitao/mecha-database:0.26.0@sha256:bc17c811912900b9ed4ba691167be6dc56f961b437dd765bebd4e53148aa92ec";
+const DATABASE = "bonitao/mecha-database:0.34.0@sha256:1e65261fd9507f7c935a939c43916fb3a61f335cf50002478b31a8d643a103df";
 
 async function docker(args: string[]) {
   const result = await new Deno.Command("docker", { args, stdout: "piped", stderr: "piped" }).output();
@@ -104,6 +104,23 @@ set -eu
       const findings = await replayDatabase({ ...options, appDir: context, actors });
       assertEquals(findings.filter(f => f.severity === "error").map(f => [f.severity, f.path, f.message]), [["error", `services/database/migrations/${actors}`,
         "hybrid_turn.step: calls now(), the transaction's clock: a machine reads time and randomness only through its clock and draw"]]);
+    });
+    await t.step("a row machine's guard or expression reading the clock is a finding; machine_clock() and an id's draw are not", async () => {
+      const rowMachines = { ApprovalMachine: { states: {
+        pending: { on: { approve: { target: "approved", guard: "NEW.total > 0 AND now() > NEW.created_at",
+          actions: { assign: { approved_at: { raw: "machine_clock()" }, ticket: { raw: "gen_random_uuid()" } } } } } },
+        approved: { entry: { assign: { stamped: { raw: "CURRENT_TIMESTAMP" } } },
+          after: { "60000": { target: "pending", guard: "NEW.created_at > machine_clock() - interval '2 hours'" } } },
+        expired: { entry: { assign: { stamped: { raw: "'now'::timestamptz" } } } },
+        lapsed: { on: { renew: { target: "pending", guard: "NEW.expires_at < 'now'" } } },
+      } } };
+      const findings = await replayDatabase({ ...options, appDir: context, rowMachines });
+      assertEquals(findings.filter(f => f.severity === "error").map(f => [f.path, f.message]), [
+        ["program.cue", "machine ApprovalMachine.states.pending.on.approve.guard calls now(), the transaction's clock: a row machine reads time only through machine_clock()"],
+        ["program.cue", "machine ApprovalMachine.states.approved.entry.assign.stamped.raw reads CURRENT_TIMESTAMP, the transaction's clock: a row machine reads time only through machine_clock()"],
+        ["program.cue", "machine ApprovalMachine.states.expired.entry.assign.stamped.raw casts to timestamptz, whose input reads the session: a row machine reads time only through machine_clock()"],
+        ["program.cue", "machine ApprovalMachine.states.lapsed.on.renew.guard compares with 'now', which a date or time reads as the transaction's clock: a row machine reads time only through machine_clock()"],
+      ]);
     });
   } finally {
     Deno.env.set("PATH", priorPath);

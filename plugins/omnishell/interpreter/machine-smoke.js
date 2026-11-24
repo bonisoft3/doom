@@ -31,6 +31,7 @@ function boot(html, handlerSource) {
   const calls = { puts: [], updates: [] };
   const subs = new Set();
   const store = batched({
+    answer: () => rows,
     query: async () => rows,
     subscribe: (_table, cb) => {
       subs.add(cb);
@@ -56,6 +57,7 @@ function boot(html, handlerSource) {
     if (handlerSource !== undefined && u.endsWith("log.js")) {
       return Promise.resolve(new Response(handlerSource));
     }
+    if (u.endsWith("/auth/oidc")) return Promise.resolve(Response.json({ providers: ["google", "apple"] }));
     return Promise.reject(new Error(`unexpected fetch ${u}`));
   };
 

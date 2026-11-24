@@ -77,7 +77,7 @@ app: pronto.#App & {
         primary: *"#f5f5f5" | string, secondary: *"#aaaaaa" | string, accent: *"#66aaff" | string, danger: *"#ff6666" | string,
         neutral: *"#111111" | string, surface: *"#1a1a1a" | string, border: *"#333333" | string, "surface-muted": *"#242424" | string
       }
-      shell: nav: *"topbar" | "tabbar" | "sidebar" | "dock" | "custom"
+      shell: nav: *"topbar" | "tabbar" | "sidebar" | "dock" | "custom" | "none"
     }
     flows: {}
   }
@@ -127,6 +127,49 @@ export function readProgram({ rate = RATE, count = `{name: "pricings", type: "in
     .replace(`{name: "failure", type: "string"},`, `{name: "failure", type: "string"},\n          ${count}`)
     .replace(/    effects: charge: \{[\s\S]*?\n    \}\n/, `    effects: {\n    ${rate}\n    }\n`);
   return auth ? program.replace("capabilities: {hatches: {},", "capabilities: {auth: {required: false, service: \"/auth\"}, hatches: {},") : program;
+}
+
+/** The read program with the signal `vendor`, whose event enters the read's
+ * state, counting its moves in `count`, a field of its own beside the read's. */
+export function signalledReadProgram(count = "nudges"): string {
+  return readProgram({ count: `{name: "pricings", type: "int32"},\n          {name: "lineage", type: "uuid"},\n          {name: "nudges", type: "int32"},` })
+    .replace("    effects: {", `    signals: vendor: {machine: "PaymentMachine", event: "pay", id: {path: true}, count: "${count}"}\n    effects: {`);
+}
+
+/** Two rows whose moves a ':' between the parts would spell alike: a text key,
+ * a state `b:pricing` beside `pricing`, each invoking a read a signal's event
+ * enters, and `pricing`'s entry writing the row `a` into `b:pricing`. */
+export function collidingSignalProgram(): string {
+  return signalledReadProgram()
+    .replace(`{name: "id", type: "uuid", pk: true}`, `{name: "id", type: "string", pk: true}`)
+    .replace(`pending: on: pay: "pricing"`, `pending: on: {pay: "pricing", other: "b:pricing"}
+        "b:pricing": invoke: {src: "rate-other", onDone: "settled", onError: "failed"}`)
+    .replace(`pricing: invoke: {`, `pricing: entry: [{effect: {table: "payment", op: "update", values: {status: "b:pricing"}, where: {id: "a"}}}]
+        pricing: invoke: {`)
+    .replace(`signals: vendor: {`, `signals: other: {machine: "PaymentMachine", event: "other", id: {path: true}, count: "nudges"}\n    signals: vendor: {`)
+    .replace("    effects: {", `    effects: {\n    ${RATE.replace("rate: {", `"rate-other": {`)}`);
+}
+
+/** Two machines on one entity, each with a read's state `pricing` a signal's
+ * event enters, and the first's `pricing` assigning the second's field into
+ * its own. */
+export function twoMachineSignalProgram(): string {
+  return readProgram({ count: `{name: "pricings", type: "int32"},\n          {name: "lineage", type: "uuid"},\n          {name: "nudges", type: "int32"},\n          {name: "zstatus", type: "string"},\n          {name: "zpricings", type: "int32"},\n          {name: "zlineage", type: "uuid"},` })
+    .replace(`pricing: invoke: {`, `pricing: entry: [{assign: {zstatus: "pricing"}}]\n        pricing: invoke: {`)
+    .replace("    mecha: rows: PaymentMachine: {", `    mecha: rows: PhaseMachine: {name: "PhaseMachine", entity: "Payment", field: "zstatus", initial: "idle", states: {idle: on: phase: "pricing", pricing: invoke: {src: "rate-other", onDone: "idle", onError: "idle"}}}\n    mecha: rows: PaymentMachine: {`)
+    .replace("    effects: {", `    signals: {\n      vendor: {machine: "PaymentMachine", event: "pay", id: {path: true}, count: "nudges"}\n      phase: {machine: "PhaseMachine", event: "phase", id: {path: true}, count: "nudges"}\n    }\n    effects: {\n    ${RATE.replace("rate: {", `"rate-other": {`).replace(`count: "pricings"`, `count: "zpricings"`).replace(`incarnation: "lineage"`, `incarnation: "zlineage"`)}`);
+}
+
+/** The sink of `rate` that keeps the vendor's origin and names the bridge
+ * `rates` where the compose stack runs. */
+const RATE_SIMULATED = `sink: {origin: "https://rates.example", credential: {scheme: "Bearer", secret: "RATES_KEY"}, targets: docker: bridge: "rates"}`;
+
+/** The read program with `rate`'s sink replaced by `sink`, and the bridge
+ * `rates`, declared as `bridge`, over the container hatch `vendor`. */
+export function bridgedReadProgram({ sink = RATE_SIMULATED, bridge = `{container: "vendor", port: 3000, simulator: dockerfile: from: name: "alpine:3.22"}` } = {}): string {
+  return readProgram({ rate: RATE.replace(/sink: \{.*\}\}/, sink) }) +
+    `\napp: capabilities: hatches: vendor: {kind: "container", note: "the vendor's API, played locally"}\napp: state: bridges: rates: ${bridge}\n` +
+    `_cluster: surface: targets: vendor: {activate: "", dockerfile: {from: name: "alpine:3.22"}, compose: {}}\n`;
 }
 
 export async function cue(args: string[], code: string): Promise<{ success: boolean; stdout: string; stderr: string }> {

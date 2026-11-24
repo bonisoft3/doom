@@ -5,8 +5,10 @@
 package pronto
 
 import (
+	"crypto/sha256"
 	"list"
 	"path"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/yaml"
 	"regexp"
@@ -81,8 +83,7 @@ import (
 #colorRoles: ["primary", "secondary", "accent", "danger", "neutral",
 	"surface", "border", "surface-muted"]
 
-// The five Apple-aligned navigation postures emit.cue renders at `:where(...)`
-// specificity:
+// The navigation postures emit.cue renders at `:where(...)` specificity:
 //   - `topbar`: fluid full-width sticky horizontal toolbar across viewports
 //   - `tabbar`: centered floating top pill capsule on tablet/desktop (>= 640px)
 //               that adapts to a pinned bottom tab bar on compact phones (< 640px)
@@ -91,8 +92,9 @@ import (
 //   - `dock`: centered floating pill capsule anchored near the bottom edge
 //             across viewports, leaving the top edge chrome-free
 //   - `custom`: zero-specificity link/control resets only; app CSS owns geometry
+//   - `none`: no shell navigation strip is mounted; app owns the full viewport
 // Required with no default so every app chooses its chrome explicitly.
-#NavPosture: "topbar" | "tabbar" | "sidebar" | "dock" | "custom"
+#NavPosture: "topbar" | "tabbar" | "sidebar" | "dock" | "custom" | "none"
 
 // Named 24x24 stroke icons Omnishell's chrome renders in `body > nav` links
 // (`plugins/omnishell/interpreter/chrome.js` `CHROME_ICONS`). Held equal to
@@ -409,8 +411,8 @@ import (
 	component: [string]: #Reference
 	// Which colour the terminal's own chrome resolves to, optional brand title
 	// rendered at the inline start of `body > nav`, and which navigation posture
-	// (`topbar`, `tabbar`, `sidebar`, `dock`, or `custom`) `design.css` emits at
-	// `:where(...)` specificity. `nav` has no default: every app chooses its
+	// (`topbar`, `tabbar`, `sidebar`, `dock`, `custom`, or `none`) `design.css` emits
+	// at `:where(...)` specificity. `nav` has no default: every app chooses its
 	// chrome explicitly.
 	shell: {
 		bg:        *"neutral" | string
@@ -421,6 +423,10 @@ import (
 		titleKey?: string & !=""
 		if titleKey != _|_ {
 			title: string & !=""
+		}
+		if nav == "none" {
+			title?:    _|_
+			titleKey?: _|_
 		}
 	}
 }
@@ -488,6 +494,19 @@ import (
 	// SQL expression; DDL: GENERATED ALWAYS AS (<expr>) STORED. Generated
 	// fields emit no NOT NULL/DEFAULT and never appear in forms.
 	generated?: string
+	// Field behaviour, in Google AIP-203's words (https://google.aip.dev/203),
+	// the same for every client whatever its role, as Drive marks a file's
+	// modifiedTime "Output only". An output-only field is set by the server
+	// alone: a value a client sends is cleared, never refused, so a client
+	// insert takes the default and a client update keeps the value. An
+	// immutable field is set when its row is created and never changed: a
+	// client update stating the same value passes, and one changing it is
+	// refused as an invalid argument. The server's writers (machines,
+	// computations, seeds, migrations, the service) write both. Neither is a
+	// key's, a generated field's, a retired one's or a row machine's state
+	// field's, and a field is not both.
+	outputOnly?: bool
+	immutable?:  bool
 	// The one statement of the field's constraint, `this` bound to the field
 	// value. Its SQL CHECK body and its CUE constraint are derived from the
 	// parsed expression (program_cel.cue), never written beside it.
@@ -891,12 +910,11 @@ import (
 	// Scheduled pipelines: a generate input ticks every `interval` and the
 	// action mutates `to` rows matched by `filter` (PostgREST fragment;
 	// tokens {cutoff} and {nowts} resolve to bloblang metadata at runtime).
-	interval?: string
+	interval?: #PipelineDuration
 	action?:   "delete" | "update"
 	filter?:   string
-	// Go-style duration of h/m/s units (e.g. "168h", "30m"); required when
-	// filter uses {cutoff}: cutoff = now - window.
-	window?: string
+	// Required when filter uses {cutoff}: cutoff = now - window.
+	window?: #PipelineDuration
 	set?:    {[string]: bool | int | string} // PATCH body for action "update"
 	// A cdc pipeline's browser twin of its bloblang: a pure ES module, rows →
 	// sink row, declared and served. The page's cluster runs no stream, so
@@ -907,6 +925,11 @@ import (
 		shim: *"pipelines/\(name).browser.js" | string
 	}
 }
+
+// A pipeline's period: ISO 8601's duration in whole hours, minutes and
+// seconds (PT1H, PT30M, PT1H30M), as the duration type spells one; a day or a
+// month is refused, having no fixed length.
+#PipelineDuration: =~"^PT([0-9]+H)?([0-9]+M)?([0-9]+S)?$" & !="PT"
 
 // The columns mecha writes on a tick, for the entity a #Schedule emits into.
 // Spelled here rather than injected at emit so the entity a reviewer reads is
@@ -1081,7 +1104,9 @@ import (
 #MechaState: {
 	type?: "final" | "normal"
 	on?: [string]~(Event,_):              #MechaTransitionValue
-	after?: [=~"^(0|[1-9][0-9]{0,11})$"]: string | (#MechaTransition & {target!: string}) | [(#MechaTransition & {target!: string}), ...(#MechaTransition & {target!: string})]
+	// XState's after: a key is milliseconds, or a name the machine's delays
+	// gives.
+	after?: [=~"^(0|[1-9][0-9]{0,11}|[a-z][a-zA-Z0-9_]*)$"]: string | (#MechaTransition & {target!: string}) | [(#MechaTransition & {target!: string}), ...(#MechaTransition & {target!: string})]
 	// XState's invoke, whose actor is an external effect's handler: entering
 	// the state claims the effect, and only its outcome leaves.
 	invoke?: {
@@ -1112,9 +1137,12 @@ import (
 		[for _, tr in M._on for act in tr.actions {act}],
 		[if M.states != _|_ for _, st in M.states if st.entry != _|_ for a in [if (st.entry & [...]) != _|_ {st.entry}, [st.entry]][0] {a}],
 		[if M.states != _|_ for _, st in M.states if st.exit != _|_ for a in [if (st.exit & [...]) != _|_ {st.exit}, [st.exit]][0] {a}],
-		[if M.states != _|_ for _, st in M.states if st.on != _|_ for _, tr in st.on for t in [if (tr & string) != _|_ {[]}, if (tr & [...]) != _|_ {tr}, [tr]][0] if t.actions != _|_ for a in [if (t.actions & [...]) != _|_ {t.actions}, [t.actions]][0] {a}],
-		[if M.states != _|_ for _, st in M.states if st.after != _|_ for _, tr in st.after for t in [if (tr & string) != _|_ {[]}, if (tr & [...]) != _|_ {tr}, [tr]][0] if t.actions != _|_ for a in [if (t.actions & [...]) != _|_ {t.actions}, [t.actions]][0] {a}],
-		[if M.states != _|_ for _, st in M.states if st.invoke != _|_ for tr in [st.invoke.onDone, st.invoke.onError] for t in [if (tr & string) != _|_ {[]}, if (tr & [...]) != _|_ {tr}, [tr]][0] if t.actions != _|_ for a in [if (t.actions & [...]) != _|_ {t.actions}, [t.actions]][0] {a}],
+		// A lone arrow's actions are asked of the arrow itself: wrapped in a
+		// list first, a missing `actions` stalls CUE 0.18.0-rc.4 without end
+		// when the machine is read under an inline (#emit & {...}).files.
+		[if M.states != _|_ for _, st in M.states if st.on != _|_ for _, tr in st.on for acts in [if (tr & string) != _|_ {[]}, if (tr & [...]) != _|_ {[for t in tr if t.actions != _|_ {t.actions}]}, if tr.actions != _|_ {[tr.actions]}, []][0] for a in [if (acts & [...]) != _|_ {acts}, [acts]][0] {a}],
+		[if M.states != _|_ for _, st in M.states if st.after != _|_ for _, tr in st.after for acts in [if (tr & string) != _|_ {[]}, if (tr & [...]) != _|_ {[for t in tr if t.actions != _|_ {t.actions}]}, if tr.actions != _|_ {[tr.actions]}, []][0] for a in [if (acts & [...]) != _|_ {acts}, [acts]][0] {a}],
+		[if M.states != _|_ for _, st in M.states if st.invoke != _|_ for _, tr in {done: st.invoke.onDone, failed: st.invoke.onError} for acts in [if (tr & string) != _|_ {[]}, if (tr & [...]) != _|_ {[for t in tr if t.actions != _|_ {t.actions}]}, if tr.actions != _|_ {[tr.actions]}, []][0] for a in [if (acts & [...]) != _|_ {acts}, [acts]][0] {a}],
 	])
 	hatches: list.SortStrings([for hn, _ in {
 		for a in M._actions if a.hatch != _|_
@@ -1140,6 +1168,10 @@ import (
 		if t.guard != _|_ {guard: t.guard}
 	}]
 	_timed: len(_timers) > 0
+
+	// XState's delays: a named delay is milliseconds, or the row's duration
+	// field read as the state is entered. A delay is never a date.
+	delays?: [=~"^[a-z][a-zA-Z0-9_]*$"]: (int & >=0 & <=999999999999) | string
 
 	timing?:  "BEFORE" | "AFTER"
 	field?:   string
@@ -1188,7 +1220,10 @@ import (
 	// which the handler never holds. Or a declared bridge, for a sink that
 	// does not speak HTTP, or mecha's AI gateway (`ai: "text" | "image"`).
 	// `contentType` names what an origin takes that is not JSON; its handler
-	// sends the body already encoded, as a string.
+	// sends the body already encoded, as a string. "multipart/form-data" is the
+	// one of its family, its boundary the airlock's: the handler sends a list
+	// of FormData parts, {name, value} or {name, filename, type?, bytes | blob}
+	// (bytes as base64, blob a content key), and the airlock encodes them.
 	//
 	// `targets` overrides the sink per release target, as ai.targets does the
 	// models: the entry wins, the rest take the default, and a target left with
@@ -1205,7 +1240,7 @@ import (
 		if ai != _|_ {tier: *"cheap" | mechaCluster.#AiBackendTier}
 		targets?: [("docker" | "cloudflare" | "gcp" | "k8s" | "aws")]: {origin?: mechaCluster.#Origin | #NamedOrigin, bridge?: string}
 		credential?:  #Credential
-		contentType?: =~"^[a-z]+/[a-z0-9][a-z0-9.+-]*$" & !="application/json"
+		contentType?: "multipart/form-data" | =~"^[a-z]+/[a-z0-9][a-z0-9.+-]*$" & !="application/json" & !~"^multipart/"
 	}
 
 	// A read: the effect is this HTTP request, a GET, whose answer is the
@@ -1323,17 +1358,43 @@ import (
 // Next.js's `rewrites`, a subset. `source` is path-to-regexp's literal and
 // `:name` segments, a parameter being letters, digits and `. _ ~ -`;
 // `destination` is a PostgREST path under `/crud`, naming the parameters it
-// uses, and takes the request's own query after its own. `methods`, as
-// Vercel's routes spell it, narrows what is otherwise every method. The
-// request is handed on as it came, its `Authorization` included, with the
-// path it asked for in `X-Rewrite-Path`. What the subset leaves out (`has`,
-// `missing`, wildcards, patterns) is refused, never ignored.
+// uses; a table or view takes the request's own query after it, a function
+// (`rpc/`) the destination's alone. `methods`, as Vercel's routes spell it,
+// narrows what is otherwise every method, the client's. The request is handed
+// on as it came, its `Authorization` included, with the method and the target
+// it asked, as sent, in `X-Forwarded-Method` and `X-Forwarded-Uri`, which the
+// door sets itself; a `PUT`, `PATCH` or `DELETE` reaches a function as the
+// `POST` PostgREST calls one by. `has` is Next.js's, its `query` items alone
+// (#RewriteHas). What the subset leaves out (`missing`, the other `has`
+// types, wildcards, patterns) is refused, never ignored.
 #Rewrite: {
 	source:      =~"^(/([A-Za-z0-9][A-Za-z0-9_-]*|:[a-z][A-Za-z0-9_]*))+$" & !~"^/(crud|signal|electric|auth|poke|blob-claim|blobs|img|health|omnishell|shell|seed-assets)(/|$)"
 	destination: =~"^/crud/(rpc/)?[a-z][a-z0-9_]*(\\?[^\\s{}\"`\\\\#]*)?$"
-	methods?: [#RewriteMethod, ...#RewriteMethod] & list.UniqueItems()
+	methods?:    [#RewriteMethod, ...#RewriteMethod] & list.UniqueItems()
+	has?:        [#RewriteHas, ...#RewriteHas]
 }
 #RewriteMethod: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"
+
+// One condition of a rewrite, every one of which the request meets: the query
+// holds `key` once, with a value, and `value`, a regular expression, matches
+// that value in full. An item gives the destination parameters as Next.js
+// names them: with no `value`, the key's letters, whatever else it holds
+// dropped (`job_id` is `:jobid`); with one, each group it names
+// (`(?<name>…)`), and the key none. A name given twice, which Next.js
+// would have the later replace, is refused, as is a key two items name.
+// The expression is the door's, Go's: what it does not take (a lookaround,
+// a backreference) is refused, as is what the door's file would read as
+// its own (a quote, a backquote, a brace before a letter) or lose where its
+// snippet is imported (the backslash before a brace: a brace itself is
+// `[{]` or `\x7B`).
+#RewriteHas: {
+	type:   "query"
+	key:    =~"^[A-Za-z0-9_.-]+$"
+	value?: string & !="" & !~"[\"`\n\r]|\\{[A-Za-z$]|\\\\[{}]"
+	if value != _|_ {
+		_compiles: regexp.Match("^(?:\(value))$", "")
+	}
+}
 
 // A role a token may name beside the cluster's own `anon`, `app_user` and
 // `service`: PostgreSQL's NOLOGIN role, which PostgREST's login may switch to
@@ -1345,6 +1406,7 @@ import (
 #TokenRole: close({
 	note: string & !=""
 })
+
 // A Postgres role name none of the cluster's own roles, nor one Postgres or a
 // managed database reserves. Emitted SQL quotes it.
 #TokenRoleName: =~"^[a-z][a-z0-9_]{0,62}$" & !~"^(anon|app_user|service|electric|authenticator|postgres|public|none|app|streaming_replica)$" & !~"^(pg_|cloudsql|rds|azure_)"
@@ -1373,7 +1435,7 @@ import (
 // audience, PGRST_JWKS and TRUSTED_*), nor a bridge's: BRIDGE_<NAME> binds a
 // container on the dispatcher Worker and BRIDGE_<NAME>_URL addresses one on
 // the mesh.
-#SecretName: =~"^[A-Z][A-Z0-9_]*$" & !~"^(SERVICE_JWT|PGRST_JWT_SECRET|PGRST_JWKS|TRUSTED_JWKS|TRUSTED_AUDIENCE|POSTGRES_PASSWORD|POSTGRES_USER|POSTGRES_DB|ELECTRIC_SECRET|ELECTRIC_PASSWORD|AUTHENTICATOR_PASSWORD|WAKE_URLS|RCLONE_[A-Z0-9_]*|REDIS_URL|CRUD_URL|MESH_EVENTS_URL|POKE_INTERVAL|DUCKSTREAM_ENGINE|COMPUTE_STATE_DIR|FELDERA_COMPILATION_PROFILE|CADDY_TLS_HOST_PORT|WEBAUTHN_ORIGIN|WEBAUTHN_RP_ID|AI_TARGET|AI_LOCAL_[A-Z0-9_]*|OIDC_[A-Z0-9_]*)$" & !~mechaCluster.#ReservedSecretName & !~"^BRIDGE_"
+#SecretName: =~"^[A-Z][A-Z0-9_]*$" & !~"^(SERVICE_JWT|PGRST_JWT_SECRET|PGRST_JWKS|TRUSTED_JWKS|TRUSTED_AUDIENCE|POSTGRES_PASSWORD|POSTGRES_USER|POSTGRES_DB|ELECTRIC_SECRET|ELECTRIC_PASSWORD|AUTHENTICATOR_PASSWORD|WAKE_URLS|RCLONE_[A-Z0-9_]*|REDIS_URL|CRUD_URL|MESH_EVENTS_URL|POKE_INTERVAL|DUCKSTREAM_ENGINE|COMPUTE_STATE_DIR|CADDY_TLS_HOST_PORT|WEBAUTHN_ORIGIN|WEBAUTHN_RP_ID|ANDROID_APK_KEY_HASHES|NATIVE_SCHEMES|AI_TARGET|AI_LOCAL_[A-Z0-9_]*|OIDC_[A-Z0-9_]*)$" & !~mechaCluster.#ReservedSecretName & !~"^BRIDGE_"
 
 #ActivepiecesAlias:      string & =~"^[a-zA-Z][a-zA-Z0-9_]*$"
 #ActivepiecesPath:       string & =~"^\\./pieces/[a-zA-Z0-9_-]+(/[a-zA-Z0-9_-]+)*$"
@@ -1804,6 +1866,31 @@ import (
 	creator?:     string
 }
 
+// A Google Ads tag: page views, remarketing and the conversion linker's
+// first-party _gcl_* cookies for the readers of `hosts`, run in a frame of the
+// app's origin. Any other host loads nothing, so a launch or a test reaches no
+// Google server. Every storage starts denied and follows what the terminal
+// states from meta.consent, which the tag requires.
+#GoogleTag: {
+	id:    =~"^AW-[0-9]+$"
+	hosts: [...=~"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"]
+}
+
+// The reader's consent to advertising: the app's tags storing and sending
+// for ads (Consent Mode's ad_storage, ad_user_data and ad_personalization).
+// The terminal asks every reader alike, wherever they are, in a bar on the
+// first view; `none` asks nobody and states `none.advertising` for everyone.
+// Measurement, the app's own analytics into its own lake, is never asked.
+#Consent: {
+	mode: *"bar" | "none"
+	none?: advertising!: "denied" | "granted"
+	// The privacy policy the bar links; a new version asks every reader again.
+	policy: {
+		url:     =~"^https://[^\\s]+$"
+		version: =~"^[0-9A-Za-z][0-9A-Za-z.-]*$"
+	}
+}
+
 #Llms: {
 	text?:     string
 	file?:     string
@@ -1863,6 +1950,12 @@ import (
 		rewrites?: [=~"^[a-z][a-z0-9-]*$"]: #Rewrite
 		// Each a role a token may name beside the cluster's own (#TokenRole).
 		tokenRoles?: [#TokenRoleName]: #TokenRole
+		// Who provisions the database's roles, their attributes, memberships and
+		// settings, and the schema's grants (docs/access.md#generated-or-checked):
+		// pronto's migrations ("generated", the default), or the instance's owner,
+		// which every release then checks before its migrations ("checked"),
+		// refusing any difference with the statements that fix it.
+		provisioning?:      "generated" | "checked"
 		_rawMigrationNames: [if rawMigrations != _|_ for migration in rawMigrations {migration.name}] & list.UniqueItems()
 		// Where the framework's own steps run, for an app whose steps already
 		// hold their default digits (#steps). The program writes each step's
@@ -2005,7 +2098,9 @@ import (
 		}
 		// Passed through to shell.yaml verbatim: the terminal owns the login
 		// chrome, keyed on `required`, and calls the auth service at `service`.
-		// Presence also switches the cluster's auth plane on (#emit).
+		// Presence also switches the cluster's auth plane on (#emit), and puts
+		// one Sign in in the nav for anyone not signed in as a person, opening
+		// in place onto the ways in (omnishell's GUIDE.md#signing-in).
 		// `self` names the signed-in person's own page for the strip the
 		// terminal draws: `route` is a route's screen name, whose :params the
 		// terminal fills from the session user and whose localized pattern it
@@ -2018,13 +2113,9 @@ import (
 			service:  string
 			mode:     *"passkey" | string
 			self?:    {route: string, name?: {table: string, column: string}}
-			// Where sign-in is not required, the strip offers a guest a passkey:
-			// one gesture that signs in, or keeps the guest's identity under a
-			// new passkey.
-			promote: *false | bool
 			// The providers a person may sign in through besides a passkey,
-			// each one the terminal offers (#emit): a way in at the gate and in
-			// a guest's strip, run by the cluster's auth service. A provider's
+			// each one the terminal offers (#emit): a way in at the gate and
+			// among the nav's, run by the cluster's auth service. A provider's
 			// person and a passkey's are two.
 			providers?: [string, ...string] & list.UniqueItems()
 			// A named provider's settings, the cluster's defaults for what the
@@ -2033,23 +2124,29 @@ import (
 			// registered there (`origin` for a public client named by the
 			// app's origin), the scope and further authorization parameters.
 			// Without a client here the deployment must give one. Never a
-			// secret, and never the terminal's.
+			// secret, and never the terminal's. `credential` signs Google in by
+			// its own button (Identity Services, FedCM where the browser has
+			// it) for a client registered to the app's origins, which the
+			// terminal is handed; Google's script runs in the auth service's
+			// page the terminal frames, never the app's. It has no redirect, so
+			// no native host signs in by it.
 			provider?: [string]~(Name,_): {
 				_providersPresent: true & (providers != _|_)
 				_named:            true & list.Contains(providers, Name)
 				issuer?:           string
-				releaseIssuer?:    string
 				internal?:         string
 				client?:           string
 				scope?:            string
 				params?:           string
+				credential?:       true
+				if credential != _|_ {_credentialIsGoogle: Name & "google"}
 			}
 		}
-		// The app ships a native host beside the web one, so every route
-		// projects deterministically to DivKit (phone) and winio (desktop) via
-		// project-native.ts. The host itself is the terminal's; this only says
-		// the app asks for it.
-		native: *false | bool
+		// The native hosts the app ships beside the web one, each for its
+		// store: every route projects deterministically to DivKit (phone) and
+		// winio (desktop) via project-native.ts. The hosts are the terminal's;
+		// this only says which the app asks for.
+		native: *[] | [...("android" | "ios")] & list.UniqueItems()
 		// Switches the cluster's blob plane on (#emit): rclone-s3 object store
 		// and imgproxy behind the caddy /blobs and /img routes.
 		blobs: *false | bool
@@ -2095,7 +2192,7 @@ import (
 			models?: mechaCluster.#AiTierOverrides
 			targets?: {
 				[("browser" | "pages" | "docker" | "local" | "gcp" | "k8s" | "aws")]: mechaCluster.#AiTierOverrides
-				cloudflare?: mechaCluster.#AiEdgeOverrides
+				cloudflare?:                                                          mechaCluster.#AiEdgeOverrides
 			}
 		}
 		// Escape hatches (ir kind "hatch"): what pronto is told not to look
@@ -2153,6 +2250,7 @@ import (
 				src!:  string & =~"^shell/hatches/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.(m?js)$"
 				files: [string, ...string] & [...(string & =~"^shell/hatches/([A-Za-z0-9_-]+/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*$")]
 			}
+
 			// The module the bundle starts from, one of `files`, which hold
 			// everything it imports beside its packages (its deno.json and lock
 			// among them), and the heap the isolate may hold, in MiB, which a
@@ -2331,6 +2429,8 @@ import (
 		wellKnown?: [string]: #WellKnownItem
 		preconnect?:  string | #PreconnectItem | [...(string | #PreconnectItem)]
 		dnsPrefetch?: string | [...string]
+		googleTag?:   #GoogleTag
+		consent?:     #Consent
 		themeColor?:  string
 		sitemap?:     #Sitemap
 		ir:           {source: *"ir.html" | string, sha256: *"" | string} // the pinned IR this program was compiled from
@@ -2632,14 +2732,32 @@ import (
 	// The XState a Mecha machine cannot run is refused rather than read as
 	// something else: its step is its reducer's, so it invokes nothing, and an
 	// event names one transition.
-	_mechaViolations: list.Concat([[if A.state.mecha.reducers != _|_ for hName, h in A.state.mecha.reducers for sName, st in h.machine.config.states for v in list.Concat([
+	// Each state is checked where it stands: a compound state's children by
+	// their path (`racing.closing`), beside the parent whose events they take.
+	_mechaViolations: list.Concat([[if A.state.mecha.reducers != _|_ for hName, h in A.state.mecha.reducers for sName, node in {
+		for n, s in h.machine.config.states {
+			(n): {st: s, parent: {}}
+			if s.states != _|_ for c, cs in s.states {"\(n).\(c)": {st: cs, parent: s}}
+		}
+	}
+	let st = node.st for v in list.Concat([
 		[if st.invoke != _|_ {"mecha \(hName).\(sName): a Mecha machine invokes nothing"}],
 		[if st.on != _|_ for ev, tv in st.on if (tv & [...]) != _|_ if len(tv) != 1 {"mecha \(hName).\(sName).on.\(ev): an event names one transition; a guarded alternative belongs in the guard"}],
 		// XState takes the machine's transition when the state's own guard
 		// refuses; one event names one transition here, so it is the state's
 		// or the machine's.
 		[if h.machine.config.on != _|_ if st.on != _|_ for ev, _ in st.on if h.machine.config.on[ev] != _|_ {"mecha \(hName).\(sName).on.\(ev): the machine takes \(ev) in every state; a state does not take it as well"}],
-	]) {v}], [if A.state.mecha.reducers != _|_ for hName, h in A.state.mecha.reducers if h.machine.config.on != _|_ for ev, tv in h.machine.config.on if (tv & [...]) != _|_ if len(tv) != 1 {
+		// Nor does a child take an event the state it is a child of takes.
+		[if node.parent.on != _|_ if st.on != _|_ for ev, _ in st.on if node.parent.on[ev] != _|_ {"mecha \(hName).\(sName).on.\(ev): the state it is a child of takes \(ev); a child does not take it as well"}],
+		// XState reads a delay that is not a number as a name in `delays`.
+		[if st.after != _|_ for delay, _ in st.after if !(delay =~ "^[0-9]+$") if h.machine.setup.delays == _|_ || h.machine.setup.delays[delay] == _|_ {"mecha \(hName).\(sName).after.\(delay): no delay \(delay) in setup.delays"}],
+		[if st.after != _|_ if st.type != _|_ if st.type == "final" {"mecha \(hName).\(sName): a final state starts no timer"}],
+		// One level of XState's nesting: a compound state's children, atomic.
+		[if st.states != _|_ for cName, ct in st.states if ct.states != _|_ {"mecha \(hName).\(sName).\(cName): a child state holds no states of its own"}],
+		[if st.type != _|_ if st.type == "parallel" {"mecha \(hName).\(sName): a Mecha machine has no parallel states"}],
+	]) {v}], [if A.state.mecha.reducers != _|_ for hName, h in A.state.mecha.reducers if h.machine.setup.ports != _|_ if h.machine.setup.ports.wake != _|_ {
+		"mecha \(hName).setup.ports.wake: a timer is a state's after, its delay a number of milliseconds or a name in setup.delays"
+	}],[if A.state.mecha.reducers != _|_ for hName, h in A.state.mecha.reducers if h.machine.config.on != _|_ for ev, tv in h.machine.config.on if (tv & [...]) != _|_ if len(tv) != 1 {
 		"mecha \(hName).on.\(ev): an event names one transition; a guarded alternative belongs in the guard"
 	}]])
 	_mechaRefusal: [if len(_mechaViolations) == 0 {true}, _mechaViolations[0]][0] & true
@@ -2708,6 +2826,13 @@ import (
 				[for f in e.fields if f.name == m.field if f.retired {
 					"machine \(mn) field \(en).\(m.field) is retired and cannot hold transitions"
 				}],
+				// A client moves the machine by writing its state field, which the
+				// interpreter reads as the target: a field a client's value is cleared
+				// from, or may not change, would make every such move a silent no-op
+				// or a refusal. A Cortex machine's events arrive as command rows.
+				[if m.cortex == _|_ for f in e.fields if f.name == m.field for b in ["outputOnly", "immutable"] if f[b] != _|_ if f[b] {
+					"machine \(mn) field \(en).\(m.field) is \(b) and cannot hold transitions: a client moves the machine by writing it"
+				}],
 				[for f in e.fields if f.name == m.field if f.default != _|_ if strings.TrimSpace(f.default) != "'"+strings.Replace(m.initial, "'", "''", -1)+"'" {
 					"machine \(mn) initial \(m.initial) disagrees with \(en).\(m.field) default \(f.default)"
 				}],
@@ -2716,6 +2841,12 @@ import (
 				}],
 				[for i, row in e.seed if row[m.field] != _|_ if !list.Contains([for state, _ in m.states {state}], row[m.field]) {
 					"machine \(mn) seed \(en)[\(i)].\(m.field) value \(row[m.field]) is not a state"
+				}],
+				// A seed restores its row standing in a state, entering nothing:
+				// a timer or an invocation the state would start, nothing starts.
+				[for i, row in e.seed if row[m.field] != _|_ if row[m.field] != m.initial if m.states[row[m.field]] != _|_
+				if m.states[row[m.field]].after != _|_ || m.states[row[m.field]].invoke != _|_ {
+					"machine \(mn) seed \(en)[\(i)] stands in \(row[m.field]), whose after or invoke a seed does not start: seed it in a state without either"
 				}],
 			])
 		},
@@ -2741,6 +2872,17 @@ import (
 		[if A.state.mecha.rows != _|_ for mn, m in A.state.mecha.rows if m.states != _|_ for sn, st in m.states if st.type != _|_ if st.type == "final" if st.after != _|_ {
 			"machine \(mn) final state \(sn) cannot declare after"
 		}],
+		[if A.state.mecha.rows != _|_ for mn, m in A.state.mecha.rows for t in m._timers if (t.delay & =~"^[0-9]+$") == _|_ if m.delays == _|_ || m.delays[t.delay] == _|_ {
+			"machine \(mn) state \(t.state) waits after \(t.delay), which its delays does not name"
+		}],
+		[if A.state.mecha.rows != _|_ for mn, m in A.state.mecha.rows if m.delays != _|_ for dn, d in m.delays if (d & string) != _|_
+		for en, e in A.state.entities if en == m.entity || e.table == m.entity
+		let found = [for f in e.fields if f.name == d {f}]
+		for f in [if len(found) > 0 {found[0]}, {name: d, type: "absent"}][:1]
+		if f.type != "duration" {
+			[if f.type == "absent" {"machine \(mn) delay \(dn) reads \(d), which \(en) does not declare"},
+				"machine \(mn) delay \(dn) reads \(d), a \(f.type): a delay is a duration field, never a date"][0]
+		}],
 		[if len(A._timedMachines) > 0 for en, e in A.state.entities if e.table == "schedule" || e.table == "machine_timer_tick" {
 			"timed machines reserve table \(e.table), declared by \(en)"
 		}],
@@ -2752,8 +2894,16 @@ import (
 
 	_authProviders: [if (A.capabilities & null) == _|_ if A.capabilities.auth != _|_ if A.capabilities.auth.providers != _|_ for p in A.capabilities.auth.providers {p}]
 	_authTargetViolations: list.Concat([
-		[if len(_authProviders) > 0 for target in A.meta.targets if target == "pages" {
-			"pages release target does not support social sign-in providers; only guest sessions run in the browser tier"
+		// An iOS host ships on the App Store, which requires Sign in with Apple
+		// beside any other provider (App Review Guideline 4.8).
+		[if (A.capabilities & null) == _|_ if list.Contains(A.capabilities.native, "ios") if len(_authProviders) > 0 if !list.Contains(_authProviders, "apple") {
+			"an iOS host ships on the App Store, which requires Sign in with Apple beside \(_authProviders[0]) (App Review Guideline 4.8): add apple to capabilities.auth.providers"
+		}],
+		[if (A.capabilities & null) == _|_ if len(A.capabilities.native) > 0 if A.capabilities.auth != _|_ if A.capabilities.auth.provider != _|_ for p, v in A.capabilities.auth.provider if v.credential != _|_ {
+			"\(p) signs in by its own button (credential), which no native host draws: drop credential or capabilities.native"
+		}],
+		[if (A.capabilities & null) == _|_ if len(A.capabilities.native) > 0 if list.Contains(_authProviders, "bluesky") {
+			"bluesky offers no native sign-in yet: drop it or capabilities.native"
 		}],
 	])
 	_authTargetRefusal: [if len(_authTargetViolations) == 0 {true}, _authTargetViolations[0]][0] & true
@@ -2822,22 +2972,112 @@ import (
 			len([for e in ent for f in e.fields if f.pk != _|_ if f.pk {f}]) != 1 {
 			"signal \(n): one machine's event, a plain target in every state that takes it, over a row with one primary key and the declared count field"
 		},
+		// A read's count is its interpreter's alone, which refuses the signal's
+		// own increment of it.
+		for n, sg in _signals if A.state.mecha.rows[sg.machine] != _|_
+		let m = A.state.mecha.rows[sg.machine]
+		if m.states != _|_ for _, st in m.states if st.on != _|_ if st.on[sg.event] != _|_
+		let to = st.on[sg.event]
+		if (to & string) != _|_ if m.states[to] != _|_ if m.states[to].invoke != _|_
+		let src = m.states[to].invoke.src
+		if _reads[src] != _|_ if _reads[src].count == sg.count {
+			"signal \(n) counts in \(sg.count), where the read \(src) counts its entries and only its machine writes: give the signal a count field of its own"
+		},
 	]
 	_signalRefusal: [if len(_signalViolations) == 0 {true}, _signalViolations[0]][0] & true
 	// A destination names only its source's parameters, and two rewrites one
 	// request matches would leave the answer to their order.
-	_rewrites: [if A.state.rewrites != _|_ {A.state.rewrites}, {}][0]
+	_rewrites:        [if A.state.rewrites != _|_ {A.state.rewrites}, {}][0]
 	_rewriteSegments: {for n, r in _rewrites {(n): strings.Split(r.source, "/")}}
+	// The parameters a rewrite's `has` gives its destination: the letters
+	// of a key that states no value, where it has any, and the groups a
+	// value's expression names, which the expression itself tells: made
+	// optional it matches nothing, and names every group it has.
+	_rewriteHas: {for n, r in _rewrites {
+		(n): [if r.has != _|_ for h in r.has for p in [
+			if h.value == _|_ if h.key =~ "[A-Za-z]" {regexp.ReplaceAll("[^A-Za-z]", h.key, "")},
+			if h.value != _|_ for g, _ in regexp.FindNamedSubmatch("(?:\(h.value))?", "") {g},
+		] {p}]
+	}}
 	_rewriteViolations: [
 		for n, r in _rewrites
-		for t in regexp.FindAll("::|[A-Za-z0-9_]+::?[A-Za-z0-9_]*|:[a-z][A-Za-z0-9_]*|[A-Za-z0-9_]+|[^:A-Za-z0-9_]+|:", r.destination, -1)
-		if t =~ "^:[a-z]" if !strings.Contains(r.source + "/", "/" + t + "/") {
-			"rewrite \(n): the destination names \(t), which the source does not"
+		for t in regexp.FindAll("::|[A-Za-z0-9_]+::?[A-Za-z0-9_]*|:[A-Za-z][A-Za-z0-9_]*|[A-Za-z0-9_]+|[^:A-Za-z0-9_]+|:", r.destination, -1)
+		if t =~ "^:[A-Za-z]" if !strings.Contains(r.source + "/", "/" + t + "/") if !list.Contains(_rewriteHas[n], strings.TrimPrefix(t, ":")) {
+			"rewrite \(n): the destination names \(t), where the source and `has` give \(strings.Join(list.Concat([[for p in regexp.FindAll("(:[a-z][A-Za-z0-9_]*|$)", r.source, -1) if p != "" {p}], [for p in _rewriteHas[n] {":" + p}], [if !strings.Contains(r.source, ":") if len(_rewriteHas[n]) == 0 {"no parameter"}]]), ", "))"
+		},
+		// Next.js lets a name given twice be the later's, `has` after the
+		// source: a key's letters make that easy to do unseen (`page1` and
+		// `page2` are both `:page`), so here each name is given once.
+		for n, r in _rewrites for p in _rewriteHas[n] if strings.Contains(r.source + "/", "/:" + p + "/") {
+			"rewrite \(n): `has` and the source both give :\(p), where Next.js would have the one of `has` replace the source's: name one of them by a group of its value, (?<name>…)"
+		},
+		for n, r in _rewrites for i, p in _rewriteHas[n] if list.Contains(list.Drop(_rewriteHas[n], i + 1), p) if !list.Contains(list.Take(_rewriteHas[n], i), p) {
+			"rewrite \(n): `has` gives :\(p) twice, where Next.js would have the later replace the earlier: name one of them by a group of its value, (?<name>…)"
+		},
+		// The door reads a key's one value, so one item states all of it.
+		for n, r in _rewrites if r.has != _|_ for i, h in r.has if list.Contains([for o in list.Drop(r.has, i + 1) {o.key}], h.key) if !list.Contains([for o in list.Take(r.has, i) {o.key}], h.key) {
+			"rewrite \(n): two `has` items name the key \(h.key), and one item states all a key's value meets"
+		},
+		// Go's expression takes a name declared twice, and the door gives
+		// the parameter the last of them, empty where that one took no part
+		// in the match. The expression tells its names and not how often
+		// each is declared, and a group is declared in no other spelling
+		// than these, so one written twice is refused, declared twice or not.
+		for n, r in _rewrites if r.has != _|_ for h in r.has if h.value != _|_
+		for g, _ in regexp.FindNamedSubmatch("(?:\(h.value))?", "") if len(regexp.FindAll("\\(\\?P?<\(g)>", h.value, -1)) > 1 {
+			"rewrite \(n): a `has` value declares the group \(g) more than once, and each group name is declared once: the door would give the parameter of the one that took no part, empty"
+		},
+		// A group's name is a parameter's, as the destination writes one.
+		for n, r in _rewrites for p in _rewriteHas[n] if p !~ "^[A-Za-z][A-Za-z0-9_]*$" {
+			"rewrite \(n): a `has` value names the group \(p), and a parameter is a letter, then letters, digits and _"
 		},
 		// The door tries a rewrite before its own routes, so a parameter in
 		// the first segment would answer /health and the shell's files.
 		for n, _ in _rewrites if strings.HasPrefix(_rewriteSegments[n][1], ":") {
 			"rewrite \(n): the source begins with a parameter, and its first segment is a word"
+		},
+		// PostgREST reads the query of a function's POST as filters on what
+		// it returns, never as its arguments, and the door calls a function
+		// by POST for a PUT, PATCH or DELETE too; no `methods` is every one.
+		for n, r in _rewrites if r.destination =~ "^/crud/rpc/[^?]*\\?"
+		if len([if r.methods == _|_ {""}, if r.methods != _|_ for m in r.methods if m != "GET" if m != "HEAD" {m}]) > 0 {
+			"rewrite \(n): a function's destination has a query, which is its arguments under GET and HEAD alone, so its methods name no other; under any other the function reads the path and query from X-Forwarded-Uri"
+		},
+		// PostgREST takes the last of an argument its query names twice,
+		// so a function's destination names each key once, written as
+		// PostgREST reads it: an escape would hide one named twice.
+		for n, r in _rewrites if r.destination =~ "^/crud/rpc/[^?]*\\?."
+		let keys = [for pair in strings.Split(strings.SplitN(r.destination, "?", 2)[1], "&") {strings.SplitN(pair, "=", 2)[0]}]
+		for i, k in keys if strings.Contains(k, "%") || (list.Contains(list.Drop(keys, i + 1), k) && !list.Contains(list.Take(keys, i), k)) {
+			[
+				if strings.Contains(k, "%") {"rewrite \(n): a function's destination writes the key \(k) with an escape, and a key is written as PostgREST reads it, so that one named twice is seen"},
+				"rewrite \(n): a function's destination names \(k) twice, and PostgREST takes the last, so the one before it is never the argument",
+			][0]
+		},
+		// What PostgREST makes of a function's query it decides pair by
+		// pair, by the key and by how the value opens, so a parameter a
+		// function's destination places is the whole value of a key
+		// PostgREST reads as an argument's name: the door holds what the
+		// parameter is (emit.cue's _rewriteOperand), and nothing written
+		// around it. The keys are PostgREST's own (`reserved` and
+		// `reservedEmbeddable` in its QueryParams.hs, at the version
+		// cluster.cue pins) and any that is more than a name, which it reads
+		// as a path. rewrites.integration.test.ts holds this to PostgREST.
+		for n, r in _rewrites if r.destination =~ "^/crud/rpc/[^?]*\\?."
+		for pair in strings.Split(strings.SplitN(r.destination, "?", 2)[1], "&") if pair =~ ":[A-Za-z]"
+		let placed = [for t in regexp.FindAll("::|[A-Za-z0-9_]+::?[A-Za-z0-9_]*|:[A-Za-z][A-Za-z0-9_]*|[A-Za-z0-9_]+|[^:A-Za-z0-9_]+|:", pair, -1) if t =~ "^:[A-Za-z]" {t}]
+		if len(placed) > 0
+		let kv = strings.SplitN(pair, "=", 2)
+		if len(kv) != 2 || kv[len(kv)-1] != placed[0] {
+			"rewrite \(n): a function's destination places \(placed[0]) within \(pair), and a parameter is the whole value of its argument: beside other text PostgREST may read it as a filter on what the function returns"
+		},
+		for n, r in _rewrites if r.destination =~ "^/crud/rpc/[^?]*\\?."
+		for pair in strings.Split(strings.SplitN(r.destination, "?", 2)[1], "&") if pair =~ ":[A-Za-z]"
+		let placed = [for t in regexp.FindAll("::|[A-Za-z0-9_]+::?[A-Za-z0-9_]*|:[A-Za-z][A-Za-z0-9_]*|[A-Za-z0-9_]+|[^:A-Za-z0-9_]+|:", pair, -1) if t =~ "^:[A-Za-z]" {t}]
+		if len(placed) > 0
+		let kv = strings.SplitN(pair, "=", 2)
+		if len(kv) == 2 if kv[1] == placed[0] if kv[0] !~ "^[A-Za-z_][A-Za-z0-9_]*$" || kv[0] =~ "^(select|columns|on_conflict|order|limit|offset|and|or)$" {
+			"rewrite \(n): a function's destination places \(placed[0]) under \(kv[0]), which PostgREST does not read as an argument's name: a name is letters, digits and _, and none of select, columns, on_conflict, order, limit, offset, and, or"
 		},
 		for n, r in _rewrites if strings.Contains(r.source, ":")
 		let ps = regexp.FindAll(":[a-z][A-Za-z0-9_]*", r.source, -1)
@@ -2866,7 +3106,7 @@ import (
 	_groupOver: [for n, e in A.state.entities if e.access != _|_ if e.access.scope == "private" if e.access.groups != _|_ for g in e.access.groups {
 		group:  g.group
 		entity: n
-		over: [if g.of == _|_ {e.table}, for f in e.fields if g.of != _|_ if f.name == g.of if f.ref != _|_ {f.ref}, "\(e.table).\(g.of)"][0]
+		over:   [if g.of == _|_ {e.table}, for f in e.fields if g.of != _|_ if f.name == g.of if f.ref != _|_ {f.ref}, "\(e.table).\(g.of)"][0]
 	}]
 	_groupViolations: [
 		// A membership names a group as "<key>:<name>" and no entity, so one
@@ -2962,7 +3202,7 @@ import (
 	// A row handed to another owner leaves the previous one a grant, which the
 	// cluster writes from the row alone: its key, the grantee and the role.
 	_handoverViolations: [
-		if len(_groupViolations) + len(_grantViolations) == 0
+		if len(_groupViolations)+len(_grantViolations) == 0
 		for n, e in A.state.entities if e.access != _|_ if e.access.scope == "private" if e.access.shared != _|_
 		for _, v in A.state.entities if v.table == e.access.shared.via for f in v.fields
 		if f.required if !f.retired if f.default == _|_ if f.generated == _|_ if !(f.pk && f.type == "uuid")
@@ -2971,8 +3211,8 @@ import (
 		},
 	]
 	_handoverRefusal: [if len(_handoverViolations) == 0 {true}, _handoverViolations[0]][0] & true
-	_groupRefusal: [if len(_groupViolations) == 0 {true}, _groupViolations[0]][0] & true
-	_grantRefusal: [if len(_grantViolations) == 0 {true}, _grantViolations[0]][0] & true
+	_groupRefusal:    [if len(_groupViolations) == 0 {true}, _groupViolations[0]][0] & true
+	_grantRefusal:    [if len(_grantViolations) == 0 {true}, _grantViolations[0]][0] & true
 	_invokes: [
 		if A.state.mecha.rows != _|_
 		for mName, m in A.state.mecha.rows
@@ -3098,8 +3338,9 @@ import (
 			"effect \(n) is a read and declares \(w): a GET is safe (RFC 9110 §9.2.1), so nothing claims it, and it has no handler and sends no body"
 		}],
 		[for n, x in _reads
-		for b in list.Concat([[if x.sink.bridge != _|_ {x.sink.bridge}], [if x.sink.targets != _|_ for _, at in x.sink.targets if at.bridge != _|_ {at.bridge}]]) {
-			"effect \(n) is a GET on bridge \(b): a bridge stands in for a sink that does not speak HTTP, so there is nothing of it to GET"
+		for b in list.Concat([[if x.sink.bridge != _|_ {x.sink.bridge}], [if x.sink.targets != _|_ for _, at in x.sink.targets if at.bridge != _|_ {at.bridge}]])
+		if _declaredBridges[b] != _|_ if _declaredBridges[b].action != _|_ {
+			"effect \(n) is a GET on bridge \(b), whose Activepieces action answers only what is posted to it"
 		}],
 		[for n, x in _reads if x.sink.ai != _|_ {
 			"effect \(n) is a GET on the AI gateway, which answers only what is posted to it"
@@ -3213,6 +3454,34 @@ import (
 	])
 	_secretRefusal: [if len(_secretViolations) == 0 {true}, _secretViolations[0]][0] & true
 
+	// Field behaviour (#Field.outputOnly, #Field.immutable, AIP-203). A key is
+	// the name a client creates its row by, a generated or retired field is
+	// written by nobody already, and output-only already admits no client
+	// write, immutable or not. A form is a client's write: it names no
+	// output-only field, and an update form no immutable one.
+	_behaviorFields: [for en, e in A.state.entities for f in e.fields
+		for b in ["outputOnly", "immutable"] if f[b] != _|_ if f[b] {entity: en, field: f, behavior: b}]
+	_behaviorViolations: list.Concat([
+		[for s in _behaviorFields for k in ["pk", "retired"] if s.field[k] {
+			"entity \(s.entity) field \(s.field.name) is \(s.behavior), and is \([if k == "pk" {"a primary key: a client names the key it creates its row by"}, "retired: nothing writes it"][0])"
+		}],
+		[for s in _behaviorFields if s.field.generated != _|_ {
+			"entity \(s.entity) field \(s.field.name) is \(s.behavior), and is generated: PostgreSQL computes it, and nobody writes it"
+		}],
+		[for s in _behaviorFields if s.behavior == "outputOnly" if s.field.immutable != _|_ if s.field.immutable {
+			"entity \(s.entity) field \(s.field.name) is outputOnly and immutable: a field no client writes has no change of a client's to refuse"
+		}],
+		[for sn, s in A.surface.screens for fm in s.forms for en, e in A.state.entities if en == fm.entity || e.table == fm.entity
+		for ff in fm.fields for f in e.fields if f.name == ff.name if f.outputOnly != _|_ if f.outputOnly {
+			"screen \(sn) form \(fm.id) writes \(en).\(f.name), which is outputOnly: the server sets it, and clears a value a client sends"
+		}],
+		[for sn, s in A.surface.screens for fm in s.forms if fm.action == "update" for en, e in A.state.entities if en == fm.entity || e.table == fm.entity
+		for ff in fm.fields for f in e.fields if f.name == ff.name if f.immutable != _|_ if f.immutable {
+			"screen \(sn) form \(fm.id) updates \(en).\(f.name), which is immutable: it is set when the row is created and never changed"
+		}],
+	])
+	_behaviorRefusal: [if len(_behaviorViolations) == 0 {true}, _behaviorViolations[0]][0] & true
+
 	_declaredBridges: [if A.state.bridges != _|_ {A.state.bridges}, {}][0]
 	_bridgeViolations: list.Concat([
 		[for n, b in _declaredBridges if b.isolate == _|_ if A.capabilities.hatches[b.container] == _|_ {
@@ -3241,7 +3510,7 @@ import (
 		// directory, where a shim is found by its name.
 		[for hn, h in A.capabilities.hatches if h.kind == "isolate"
 		let names = [for f in h.files if strings.HasSuffix(f, ".wasm") || strings.HasSuffix(f, ".wasm.js") {path.Base(f, path.Unix)}]
-		for i, n in names if list.Contains(list.Drop(names, i+1), n) {
+		for i, n in names if list.Contains(list.Drop(names, i + 1), n) {
 			"isolate hatch \(hn) has two files named \(n): its WebAssembly and shims share one directory beside the bundle"
 		}],
 		[for n, b in _declaredBridges if A.capabilities.hatches[b.container] != _|_ if A.capabilities.hatches[b.container].activepieces != _|_ if b.port != 8080 {
@@ -4232,6 +4501,162 @@ import (
 	][0]
 }
 
+#consentPlan: {
+	let C = self
+	raw?:    _
+	enabled: C.raw != _|_
+	// The hosts of the tags consent governs: nowhere else is anything sent,
+	// so nowhere else is anyone asked.
+	hosts: [...string]
+
+	_errors: list.Concat([
+		[if enabled if len(C.hosts) == 0 {"consent governs what a tag sends, and the app declares none: declare meta.googleTag"}],
+		[if enabled if C.raw.mode == "none" if C.raw.none == _|_ {"consent mode none asks nobody, so it states what everyone gets: write none.advertising"}],
+		[if enabled if C.raw.mode == "bar" if C.raw.none != _|_ {"consent.none is what mode none states; the bar asks instead"}],
+	])
+
+	terminal: [if enabled {
+		mode:   C.raw.mode
+		policy: C.raw.policy
+		hosts:  C.hosts
+		if C.raw.none != _|_ {none: C.raw.none}
+	}, null][0]
+}
+
+#googleTagPlan: {
+	let G = self
+	raw?:     _
+	enabled:  G.raw != _|_
+	consent?: _
+
+	// The tag frame: a document of this origin, so the cookies it writes are
+	// first-party, in a realm of its own, so Google's scripts run under its
+	// policy and never under the terminal's lockdown and Trusted Types.
+	frame:  "shell/tag.html"
+	_hosts: [if enabled {json.Marshal(G.raw.hosts)}, ""][0]
+
+	_errors: list.Concat([
+		[if enabled if len(G.raw.hosts) == 0 {"googleTag.hosts must name the hosts whose readers the tag measures"}],
+		[if enabled if list.Contains(G.targets, "pages") {"googleTag needs its frame served beside the app, which a pages release, one file, cannot"}],
+		[if enabled if G.consent == _|_ {"googleTag stores Google's cookies only with the reader's consent: declare meta.consent"}],
+	])
+	targets: [...string]
+
+	// The app's side: `gtag` takes consent and event commands for the frame.
+	// On a declared host alone, the terminal's first consent update mounts the
+	// frame, which is told that consent, the page it measures and the landing
+	// click ids before it configures, and then each route the reader reaches.
+	bridge: [if enabled {
+		"""
+			{
+			  const hosts = \(_hosts);
+			  const landing = new URL(location.href);
+			  const queue = [];
+			  let frame = null;
+			  let ready = false;
+			  const post = (message) => ready ? frame.contentWindow.postMessage(message, location.origin) : queue.push(message);
+			  const mount = (consent) => {
+			    frame = document.createElement("iframe");
+			    frame.src = \(json.Marshal("/"+frame));
+			    // Or the frame's own referrer, this page, stands in for an empty one.
+			    frame.referrerPolicy = "no-referrer";
+			    frame.hidden = true;
+			    frame.tabIndex = -1;
+			    frame.setAttribute("aria-hidden", "true");
+			    addEventListener("message", (event) => {
+			      if (event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.kind !== "ready") return;
+			      const click = {};
+			      for (const key of ["gclid", "gbraid", "wbraid"]) if (landing.searchParams.has(key)) click[key] = landing.searchParams.get(key);
+			      frame.contentWindow.postMessage({kind: "init", consent, page_location: landing.href, page_referrer: document.referrer, click}, location.origin);
+			      ready = true;
+			      for (const message of queue.splice(0)) post(message);
+			    });
+			    document.body.append(frame);
+			  };
+			  window.gtag = function gtag(command, ...args) {
+			    if (command !== "consent" && command !== "event") throw new TypeError(`the tag frame takes consent and event commands, not ${command}`);
+			    if (!hosts.includes(location.hostname)) return;
+			    if (frame !== null) return post({kind: "gtag", args: [command, ...args]});
+			    if (command !== "consent" || args[0] !== "update") throw new Error("the terminal states the reader's consent before any other command reaches the tag frame");
+			    mount(args[1]);
+			  };
+			  if (hosts.includes(location.hostname)) {
+			    let shown = landing.href;
+			    globalThis.navigation?.addEventListener("currententrychange", (event) => {
+			      if (location.href === shown) return;
+			      if (event.navigationType !== "replace") post({kind: "page_view", page_location: location.href, page_referrer: shown});
+			      shown = location.href;
+			    });
+			  }
+			}
+			"""
+	}, ""][0]
+	tag:        [if enabled {"<script>\(bridge)</script>"}, ""][0]
+	bridgeHash: "'sha256-\(base64.Encode(null, sha256.Sum256(bridge)))'"
+	// What the terminal's policy admits beside its own, by directive: the
+	// bridge, and nothing of Google's.
+	sources: [if enabled {script: [bridgeHash]}, {}][0]
+
+	_frameScript: [if enabled {
+		let src = "https://www.googletagmanager.com/gtag/js?id=\(G.raw.id)"
+		"""
+			if (parent === window || !\(_hosts).includes(location.hostname)) throw new Error("the tag frame runs framed by the app on a declared host");
+			const dataLayer = window.dataLayer = [];
+			function gtag() { dataLayer.push(arguments); }
+			gtag("consent", "default", {ad_storage: "denied", ad_user_data: "denied", ad_personalization: "denied", analytics_storage: "denied"});
+			gtag("set", "ads_data_redaction", true);
+			addEventListener("message", (event) => {
+			  if (event.origin !== location.origin || event.source !== parent) return;
+			  const message = event.data;
+			  if (message.kind === "init") {
+			    gtag("consent", "update", message.consent);
+			    if (Object.keys(message.click).length > 0) history.replaceState(null, "", "?" + new URLSearchParams(message.click));
+			    gtag("js", new Date());
+			    gtag("config", \(json.Marshal(G.raw.id)), {page_location: message.page_location, page_referrer: message.page_referrer});
+			    const tag = document.createElement("script");
+			    tag.async = true;
+			    tag.src = \(json.Marshal(src));
+			    document.head.append(tag);
+			  } else if (message.kind === "page_view") {
+			    gtag("event", "page_view", {send_to: \(json.Marshal(G.raw.id)), page_location: message.page_location, page_referrer: message.page_referrer});
+			  } else if (message.kind === "gtag") {
+			    gtag(...message.args);
+			  } else {
+			    throw new TypeError(`not a tag frame message: ${message.kind}`);
+			  }
+			});
+			parent.postMessage({kind: "ready"}, location.origin);
+			"""
+	}, ""][0]
+	// Google's Ads lists (developers.google.com/tag-platform/security/guides/csp);
+	// a remarketing pixel goes to the reader's own www.google.<TLD>, which no
+	// list can name.
+	framePolicy: strings.Join([
+		"default-src 'none'",
+		"base-uri 'none'",
+		"object-src 'none'",
+		"form-action 'none'",
+		"script-src 'sha256-\(base64.Encode(null, sha256.Sum256(_frameScript)))' https://www.googletagmanager.com https://googleads.g.doubleclick.net https://www.googleadservices.com https://www.google.com",
+		"connect-src https://www.googletagmanager.com https://www.google.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://ad.doubleclick.net https://pagead2.googlesyndication.com",
+		"img-src https:",
+		"frame-src https://www.googletagmanager.com",
+	], "; ")
+	frameHtml: [if enabled {
+		"""
+			<!doctype html>
+			<html>
+			<head>
+			<meta charset="utf-8">
+			<meta http-equiv="Content-Security-Policy" content="\(strings.Replace(framePolicy, "'", "&#39;", -1))">
+			<script>\(_frameScript)</script>
+			</head>
+			<body></body>
+			</html>
+
+			"""
+	}, ""][0]
+}
+
 #envelopePlan: {
 	let P = self
 	meta:          _
@@ -4246,6 +4671,17 @@ import (
 	hints: #hintsPlan & {
 		if P.meta.preconnect != _|_ {preconnect: P.meta.preconnect}
 		if P.meta.dnsPrefetch != _|_ {dnsPrefetch: P.meta.dnsPrefetch}
+	}
+
+	googleTag: #googleTagPlan & {
+		targets: P.meta.targets
+		if P.meta.googleTag != _|_ {raw: P.meta.googleTag}
+		if P.meta.consent != _|_ {consent: P.meta.consent}
+	}
+
+	consent: #consentPlan & {
+		if P.meta.consent != _|_ {raw: P.meta.consent}
+		hosts: [if P.meta.googleTag != _|_ {P.meta.googleTag.hosts}, []][0]
 	}
 
 	manifest: #manifestPlan & {
@@ -4284,6 +4720,8 @@ import (
 
 	_errors: list.Concat([
 		P.hints._errors,
+		P.googleTag._errors,
+		P.consent._errors,
 		P.manifest._errors,
 		P.social._errors,
 		P.llms._errors,
@@ -4291,7 +4729,7 @@ import (
 		P.sitemap._errors,
 	])
 
-	_hasEnvelopeInjections: P.meta.favicon != _|_ || P.hints.links != "" || P.manifest.links != "" || P.social.links != "" || P.sitemap.tag != ""
+	_hasEnvelopeInjections: P.meta.favicon != _|_ || P.hints.links != "" || P.googleTag.tag != "" || P.manifest.links != "" || P.social.links != "" || P.sitemap.tag != ""
 
 	headLinks: [
 		if !_hasEnvelopeInjections {
@@ -4301,6 +4739,7 @@ import (
 			strings.Join([
 				for s in [
 					P.hints.links,
+					P.googleTag.tag,
 					[if P.meta.favicon != _|_ {P.favicon.links}, "<link rel=\"icon\" href=\"data:,\">"][0],
 					P.manifest.links,
 					P.social.links,
@@ -4323,6 +4762,12 @@ import (
 				text:   P.manifest.jsonText
 			}
 		}
+		if P.googleTag.enabled {
+			(P.googleTag.frame): {
+				format: "text"
+				text:   P.googleTag.frameHtml
+			}
+		}
 		for k, f in P.llms.files {
 			(k): f
 		}
@@ -4342,6 +4787,11 @@ import (
 			if P.manifest.enabled {
 				file:   "shell/manifest.webmanifest"
 				target: "/srv/manifest.webmanifest"
+				watch:  true
+			},
+			if P.googleTag.enabled {
+				file:   P.googleTag.frame
+				target: "/srv/\(P.googleTag.frame)"
 				watch:  true
 			},
 		],

@@ -1,7 +1,7 @@
 // A guest the app offers no sign-in to gets no strip: signing out only mints
-// another. A provider is a sign-in as much as a passkey is: counting only the
-// passkey took the strip, and the only way to sign in, from an app whose one
-// route signs in through Google.
+// another. Declaring auth is offering one, a provider's or a passkey's alike:
+// counting only some ways in once took the strip, and the only way to sign in,
+// from an app whose one route signs in through Google.
 import { describe, expect, it } from "@test/harness";
 import { parseHTML } from "npm:linkedom@0.18.4";
 import { CHROME_ICONS, drawStrip, hasStrip, localizeStrip } from "../interpreter/chrome.js";
@@ -12,10 +12,10 @@ const guest = { user: { guest: true } };
 
 describe("hasStrip", () => {
   it("leaves a guest no strip when there is nothing to gain", () => {
-    expect(hasStrip({ routes: routes(1), auth: {} }, guest)).toBe(false);
+    expect(hasStrip({ routes: routes(1) }, guest)).toBe(false);
   });
-  it("gives a guest the strip for a passkey or a provider", () => {
-    expect(hasStrip({ routes: routes(1), auth: { promote: true } }, guest)).toBe(true);
+  it("gives a guest the strip wherever the app declares auth", () => {
+    expect(hasStrip({ routes: routes(1), auth: {} }, guest)).toBe(true);
     expect(hasStrip({ routes: routes(1), auth: { providers: ["google"] } }, guest)).toBe(true);
     expect(hasStrip({ routes: routes(1), auth: { providers: ["google"] } }, null, true)).toBe(true);
   });
@@ -23,6 +23,10 @@ describe("hasStrip", () => {
     expect(hasStrip({ routes: routes(1), auth: {} }, { user: { guest: false } })).toBe(true);
     expect(hasStrip({ routes: routes(2), auth: {} }, null)).toBe(true);
     expect(hasStrip({ routes: routes(1), brand: { label: "Daily Five" }, auth: {} }, null)).toBe(true);
+  });
+  it("never shows a strip when shell.nav is none", () => {
+    expect(hasStrip({ nav: "none", routes: routes(2), brand: { label: "App" }, auth: { providers: ["google"] } }, { user: { guest: false } })).toBe(false);
+    expect(hasStrip({ nav: "none", routes: routes(1), auth: {} }, null, true)).toBe(false);
   });
 });
 
@@ -122,5 +126,11 @@ describe("drawStrip icons and brand title", () => {
       es: { app_brand: "Cinco Diario", nav_play: "Jugar" },
     });
     expect(complete).toEqual([]);
+
+    const navNone = checkChrome(
+      { nav: "none", ...baseShell, brand: undefined, routes: [...baseShell.routes, { path: "/two", screen: "two", nav: { label: "Two" }, files: { html: "b.html", css: "b.css" } }] },
+      { en: {}, es: {} },
+    );
+    expect(navNone).toEqual([]);
   });
 });

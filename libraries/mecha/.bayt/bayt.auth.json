@@ -9,7 +9,9 @@
       "PGRST_JWT_SECRET": "${PGRST_JWT_SECRET:-mecha-dev-secret-please-override-32ch}",
       "WEBAUTHN_RP_ID": "${WEBAUTHN_RP_ID:-localhost}",
       "WEBAUTHN_ORIGIN": "${WEBAUTHN_ORIGIN:-https://localhost:*}",
-      "OIDC_PROVIDERS": ""
+      "ANDROID_APK_KEY_HASHES": "${ANDROID_APK_KEY_HASHES:-}",
+      "NATIVE_SCHEMES": "${NATIVE_SCHEMES:-}",
+      "OIDC_PROVIDERS": "${OIDC_PROVIDERS:-}"
     },
     "ports": [],
     "volumes": [],
@@ -74,7 +76,9 @@
       "PGRST_JWT_SECRET": "${PGRST_JWT_SECRET:-mecha-dev-secret-please-override-32ch}",
       "WEBAUTHN_RP_ID": "${WEBAUTHN_RP_ID:-localhost}",
       "WEBAUTHN_ORIGIN": "${WEBAUTHN_ORIGIN:-https://localhost:*}",
-      "OIDC_PROVIDERS": ""
+      "ANDROID_APK_KEY_HASHES": "${ANDROID_APK_KEY_HASHES:-}",
+      "NATIVE_SCHEMES": "${NATIVE_SCHEMES:-}",
+      "OIDC_PROVIDERS": "${OIDC_PROVIDERS:-}"
     },
     "after": {
       "database": "healthy",
@@ -192,10 +196,16 @@
         "globs": [
           "services/auth/deno.json",
           "services/auth/deno.lock",
+          "services/auth/atproto.ts",
+          "services/auth/claims.ts",
+          "services/auth/core.ts",
+          "services/auth/handles.ts",
           "services/auth/jwt.ts",
           "services/auth/main.ts",
           "services/auth/oidc.ts",
-          "services/auth/schema.ts"
+          "services/auth/schema.ts",
+          "services/auth/session.ts",
+          "services/auth/where.ts"
         ],
         "exclude": []
       },
@@ -214,10 +224,16 @@
             "globs": [
               "services/auth/deno.json",
               "services/auth/deno.lock",
+              "services/auth/atproto.ts",
+              "services/auth/claims.ts",
+              "services/auth/core.ts",
+              "services/auth/handles.ts",
               "services/auth/jwt.ts",
               "services/auth/main.ts",
               "services/auth/oidc.ts",
-              "services/auth/schema.ts"
+              "services/auth/schema.ts",
+              "services/auth/session.ts",
+              "services/auth/where.ts"
             ],
             "exclude": []
           }

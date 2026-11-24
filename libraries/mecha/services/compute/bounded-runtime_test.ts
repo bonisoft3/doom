@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { type BoundedOptions, BoundedRuntime } from "./bounded-runtime.ts";
 import { encodeWasmQueryInput } from "../../packages/compute-snapshot/src/bounded.ts";
+import { strictJson } from "./workers.ts";
 
 const source =
 	`export const reads=[]; export const queries={}; export const finish=()=>({});
@@ -64,6 +65,50 @@ Deno.test("bounded captures survive restart and retain frozen multi-query inputs
 			replay.push(...page);
 		}
 		assertEquals(replay, pages.flat());
+	} finally {
+		await Deno.remove(directory, { recursive: true });
+	}
+});
+// Regression: the capture paged its input with OFFSET, rescanning every earlier
+// row on each page, and held one hex hash per row in the JS heap to sort; on
+// golaberto's archive the compute container ran out of memory. The digest is
+// unchanged by moving the sort into DuckDB, so earlier captures stay valid.
+Deno.test("a capture digests every row of a relation many pages long, as before", async () => {
+	const directory = await Deno.makeTempDir();
+	try {
+		const config = options(directory);
+		config.queries = {
+			items: "SELECT i::VARCHAR AS id, i::INTEGER AS value FROM range(10000) t(i)",
+		};
+		const capture = await (await BoundedRuntime.create(config)).capture();
+		const hex = async (text: string) =>
+			Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))))
+				.map((b) => b.toString(16).padStart(2, "0")).join("");
+		const rows = (await Promise.all(
+			Array.from({ length: 10000 }, (_, i) => hex(strictJson({ id: String(i), value: i }))),
+		)).sort();
+		const expected = await hex(`v1\0items\0${rows.map((h) => `${h}\n`).join("")}\0`);
+		assertEquals(capture.digest, expected);
+	} finally {
+		await Deno.remove(directory, { recursive: true });
+	}
+});
+// The rows are bound to DuckDB as a list of their exact text: a value full of
+// the characters JSON escapes must hash as the text JavaScript encoded.
+Deno.test("a capture stores and digests each row's exact text", async () => {
+	const directory = await Deno.makeTempDir();
+	try {
+		const config = options(directory);
+		const values = ['q"uo"te', "back\\slash", "new\nline", "ação ✓", ""];
+		config.queries = {
+			items: `SELECT * FROM (VALUES ${values.map((v, i) => `('${i}', ${`'${v.replaceAll("'", "''")}'`})`).join(",")}) t(id, value)`,
+		};
+		const capture = await (await BoundedRuntime.create(config)).capture();
+		const hex = async (text: string) =>
+			Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))))
+				.map((b) => b.toString(16).padStart(2, "0")).join("");
+		const rows = (await Promise.all(values.map((value, i) => hex(strictJson({ id: String(i), value }))))).sort();
+		assertEquals(capture.digest, await hex(`v1\0items\0${rows.map((h) => `${h}\n`).join("")}\0`));
 	} finally {
 		await Deno.remove(directory, { recursive: true });
 	}
@@ -179,34 +224,13 @@ Deno.test("bounded query limits fail before returning an oversized relation", as
 	try {
 		const config = options(directory);
 		config.source =
-			`export const reads=[];export const queries={};export const finish=()=>({});export async function plan(host){await host.query('SELECT * FROM range(4097)');return {checkpoint:null,writes:{},done:true}}`;
+			`export const reads=[];export const queries={};export const finish=()=>({});export async function plan(host){await host.query("SELECT repeat('x',1024) AS x FROM range(8192)");return {checkpoint:null,writes:{},done:true}}`;
 		const runtime = await BoundedRuntime.create(config);
 		const capture = await runtime.capture();
 		await assertRejects(
 			() => runtime.calculate(capture),
 			Error,
-			"execution query exceeds page limit",
-		);
-	} finally {
-		await Deno.remove(directory, { recursive: true });
-	}
-});
-Deno.test("bounded query checks the same relation it returns", async () => {
-	const directory = await Deno.makeTempDir();
-	try {
-		const config = options(directory);
-		const sql =
-			"SELECT i FROM range(CASE WHEN contains(current_query(), 'AS'||chr(32)||'size') THEN 1 ELSE 4097 END) t(i)";
-		config.source =
-			`export const reads=[];export const queries={};export const finish=()=>({});export async function plan(host){await host.query(${
-				JSON.stringify(sql)
-			});return {checkpoint:null,writes:{},done:true}}`;
-		const runtime = await BoundedRuntime.create(config);
-		const capture = await runtime.capture();
-		await assertRejects(
-			() => runtime.calculate(capture),
-			Error,
-			"execution query exceeds page limit",
+			"execution query exceeds byte limit",
 		);
 	} finally {
 		await Deno.remove(directory, { recursive: true });
@@ -342,7 +366,7 @@ export async function plan(host){
 		await assertRejects(
 			() => runtime.calculate(capture),
 			Error,
-			"execution query row exceeds page limit",
+			"execution query row exceeds page byte limit",
 		);
 	} finally {
 		await Deno.remove(directory, { recursive: true });
@@ -605,8 +629,8 @@ Deno.test("bounded default conversion rejects unsafe integer carriers and preser
 			const runtime = await BoundedRuntime.create(config);
 			await assertRejects(
 				() => runtime.capture(),
-				RangeError,
-				"exact integers",
+				Error,
+				"is not finite lossless JSON",
 			);
 		}
 		const config = options(directory);
@@ -719,6 +743,57 @@ Deno.test("bounded sink batches preserve JSON strings and replace keys only acro
 		}
 		const replay = await runtime.calculate(capture);
 		await runtime.release(capture, replay);
+	} finally {
+		await Deno.remove(directory, { recursive: true });
+	}
+});
+
+Deno.test("bounded step WASM ceiling is hardware-independent across 1, 2, and 8 workers", async () => {
+	const directory = await Deno.makeTempDir();
+	try {
+		const base = options(directory);
+		base.spec.wasm = ["kernel.wasm"];
+		base.queries = {};
+		base.source = `export const reads=[]; export const queries={}; export const finish=()=>({});
+      export async function plan(host){
+        const out = await Promise.all(Array.from({length: host.maxJobs}, (_, i) => host.wasm('kernel',{id:String(i)})));
+        return {checkpoint:host.maxJobs,writes:{sink:out},done:true};
+      }`;
+		let expected: unknown[] | undefined;
+		for (const concurrency of [1, 2, 8] as const) {
+			const runtime = await BoundedRuntime.create({
+				...base,
+				runner: {
+					concurrency,
+					run: (jobs: { input: string }[]) =>
+						Promise.resolve(jobs.map((j) => JSON.parse(j.input))),
+				},
+			});
+			const capture = await runtime.capture();
+			const output = await runtime.calculate(capture);
+			const rows = [];
+			for await (const page of runtime.pages(output, "sink")) rows.push(...page);
+			assertEquals(rows.length, 64);
+			expected ??= rows;
+			assertEquals(rows, expected);
+			await runtime.release(capture, output);
+		}
+
+		const overflow = await BoundedRuntime.create({
+			...base,
+			runner: {
+				concurrency: 2,
+				run: (jobs: { input: string }[]) =>
+					Promise.resolve(jobs.map((j) => JSON.parse(j.input))),
+			},
+			source: base.source.replace("host.maxJobs", "host.maxJobs + 1"),
+		});
+		const cap2 = await overflow.capture();
+		await assertRejects(
+			() => overflow.calculate(cap2),
+			Error,
+			"a bounded step runs at most 64 WASM jobs",
+		);
 	} finally {
 		await Deno.remove(directory, { recursive: true });
 	}

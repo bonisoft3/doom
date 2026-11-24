@@ -75,8 +75,21 @@ activate_mise() {
 	fi
 }
 
-if [ ! -x "$mise_install_path" ]; then
-	echo "Mise not found. Starting installation and setup..."
+mise_at_least() (
+	installed=$("$mise_install_path" --version 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+/ {print $1; exit}')
+	[ -n "$installed" ] || exit 1
+	awk -v a="$installed" -v b="${mise_version#v}" 'BEGIN {
+		na = split(a, va, "."); nb = split(b, vb, "."); n = na > nb ? na : nb
+		for (i = 1; i <= n; i++) {
+			da = (i <= na ? va[i] + 0 : 0); db = (i <= nb ? vb[i] + 0 : 0)
+			if (da != db) exit (da < db ? 1 : 0)
+		}
+		exit 0
+	}'
+)
+
+if [ ! -x "$mise_install_path" ] || ! mise_at_least; then
+	echo "Mise missing or older than $mise_version. Starting installation and setup..."
 	if ! { install_mise && setup_mise; }; then
 		echo "bootstrap failed" >&2
 		[ "$sourced" -eq 1 ] && return 1

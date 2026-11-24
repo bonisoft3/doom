@@ -57,6 +57,7 @@
 // transactions; sink writes retain the service role's policies and triggers.
 
 import pg from "npm:pg@8.16.3";
+import { openNativeReadiness } from "./native-readiness.ts";
 import { NativeRuntime } from "./native-runtime.ts";
 import { reconcileNativeResources } from "./native-cleanup.ts";
 import { isGlobalIncrementalProgram } from "./native-sources.ts";
@@ -96,7 +97,7 @@ import {
   stringFromValue,
 } from "npm:@duckdb/node-api@1.5.6-r.1";
 import type { ModuleSource } from "npm:@endo/module-source@1.4.0";
-import { admit, Cage, IDENTIFIER, type Job, Runner, strictJson } from "./workers.ts";
+import { admit, Cage, IDENTIFIER, type Job, normalizeSelect, Runner, strictJson } from "./workers.ts";
 
 const RPC_IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
 
@@ -413,7 +414,13 @@ export class Computation implements Runnable {
     let { jobs } = await cage.ask({ inputs, seed: this.seed });
     while (true) {
       const planned = this.jobs(jobs);
-      if (ran.some((job, i) => job.wasm !== planned[i]?.wasm || job.input !== planned[i].input)) {
+      if (
+        ran.some((job, i) =>
+          job.wasm !== planned[i]?.wasm ||
+          job.input !== planned[i].input ||
+          !isDeepStrictEqual(job.select, planned[i].select)
+        )
+      ) {
         throw new Error(`computation ${this.name}: plan changed the jobs it was answered`);
       }
       if (planned.length === ran.length) break;
@@ -476,7 +483,8 @@ export class Computation implements Runnable {
       if (typeof job !== "object" || job === null || !this.wasm.has(job.wasm) || !("input" in job)) {
         throw new Error(`computation ${this.name}: a job is no {wasm, input} of ${[...this.wasm]}`);
       }
-      return { wasm: job.wasm, input: strictJson(job.input) };
+      const select = normalizeSelect((job as { select?: unknown }).select);
+      return select ? { wasm: job.wasm, input: strictJson(job.input), select } : { wasm: job.wasm, input: strictJson(job.input) };
     });
   }
 }
@@ -726,10 +734,12 @@ async function main() {
   const stems = files.map(stem);
   if (new Set(stems).size !== stems.length) throw new Error(`two wasm modules share a name: ${files}`);
   const databaseUrl = need("DATABASE_URL");
+  const configuredWorkers = Deno.env.get("COMPUTE_WASM_WORKERS");
+  const concurrency = configuredWorkers ? Number(configuredWorkers) : undefined;
   await using jobCache = await PostgresJobCache.open(databaseUrl);
   using runner = await Runner.cached(Object.fromEntries(
     await Promise.all(files.map(async (f) => [stem(f), await Deno.readFile(f)])),
-  ), jobCache);
+  ), jobCache, concurrency === undefined ? {} : { concurrency });
   const computations: Computation[] = [];
   for (const spec of specs) computations.push(await Computation.load(spec, runner));
   const jwt = Deno.env.get("SERVICE_JWT");
@@ -879,36 +889,24 @@ async function main() {
       return true;
     },
   };
-  let stopping = false;
-  const polling = (async () => {
-    while (!stopping && native.length) {
-      const { rows: active } = await nativeDb.query<{ name: string }>(
-        "SELECT name FROM compute.batch WHERE requested > coalesce(claimed, completed) AND wake IS NOT NULL",
-      );
-      const queued = new Set(active.map((row) => row.name));
-      const flush = { done: false };
-      const dirty: string[] = [];
-      for (const runtime of native) {
-        if (queued.has(runtime.spec.name)) {
-          await runtime.check();
-          continue;
-        }
-        if (await runtime.pending(flush)) dirty.push(runtime.spec.name);
-      }
-      if (dirty.length) await coordinator.invalidateNames(dirty);
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
-  })();
-  polling.catch((error) => engineFailure.resolve(error));
-  const server = serve(service, jwt, Number(Deno.env.get("PORT") || 9997));
+  let readiness: Awaited<ReturnType<typeof openNativeReadiness>> | undefined;
+  let server: ReturnType<typeof serve> | undefined;
   try {
-    await Promise.race([server.finished, coordinator.promise, engineFailure.promise.then((error) => { throw error; })]);
+    readiness = await openNativeReadiness(databaseUrl, nativeDb, native, coordinator);
+    server = serve(service, jwt, Number(Deno.env.get("PORT") || 9997));
+    await Promise.race([server.finished, coordinator.promise, readiness.promise, engineFailure.promise.then((error) => { throw error; })]);
   } finally {
-    stopping = true;
-    await server.shutdown();
-    await coordinator.close();
-    for (const runtime of native) await runtime.close();
+    const closed = await Promise.allSettled([
+      readiness?.close(), server?.shutdown(),
+    ]);
+    const batchesClosed = await Promise.allSettled([coordinator.close()]);
+    const engines = await Promise.allSettled(native.map((runtime) => runtime.close()));
     await nativeDb.end();
+    const errors = [...closed, ...batchesClosed, ...engines].flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length) {
+      // deno-lint-ignore no-unsafe-finally
+      throw new AggregateError(errors, "native computation shutdown failed");
+    }
   }
 }
 

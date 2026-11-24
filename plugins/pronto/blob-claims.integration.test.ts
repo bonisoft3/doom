@@ -28,19 +28,18 @@ async function run(cmd: string, args: string[], stdin?: string) {
 
 async function token(sub: string): Promise<string> {
   const b64 = (t: string | Uint8Array) => btoa(typeof t === "string" ? t : String.fromCharCode(...t)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-  const body = `${b64(JSON.stringify({ alg: "HS256", typ: "JWT" }))}.${b64(JSON.stringify({ role: "app_user", sub, guest: true }))}`;
+  const body = `${b64(JSON.stringify({ alg: "HS256", typ: "JWT" }))}.${b64(JSON.stringify({ role: "app_user", sub, acr: "0" }))}`;
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return `${body}.${b64(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body))))}`;
 }
 
-async function doorRoutes(): Promise<string> {
-  const door = await Deno.readTextFile(new URL("./assets/Caddyfile", import.meta.url));
-  const route = (name: string) => {
-    const found = door.match(new RegExp(`  handle /${name}/\\* \\{\\n[\\s\\S]*?\\n  \\}\\n`))?.[0];
-    if (!found) throw new Error(`the door has no ${name} route`);
-    return found;
-  };
-  return `{\n  admin off\n  auto_https off\n}\n(bounded-crud) {\n}\n(bounded-blobs) {\n}\n:8080 {\n${route("blob-claim")}${route("blobs")}\n}\n`;
+/** A request written to the socket as given, for what fetch does not send: a Connection header naming others. */
+async function raw(port: string | undefined, head: string, body = ""): Promise<{ status: number; body: string }> {
+  const conn = await Deno.connect({ hostname: "127.0.0.1", port: Number(port) });
+  const bytes = new TextEncoder().encode(body);
+  await conn.write(new TextEncoder().encode(`${head}\r\nContent-Length: ${bytes.length}\r\n\r\n${body}`));
+  const answer = await new Response(conn.readable).text();
+  return { status: Number(answer.split(" ")[1]), body: answer.slice(answer.indexOf("\r\n\r\n") + 4) };
 }
 
 Deno.test({ name: "a session writes only the keys it claimed, once, and reads back the same bytes", sanitizeOps: false, sanitizeResources: false, fn: async (t) => {
@@ -48,7 +47,8 @@ Deno.test({ name: "a session writes only the keys it claimed, once, and reads ba
   const tag = crypto.randomUUID().slice(0, 8);
   const network = `blobs-${tag}`, db = `blobs-pg-${tag}`, rest = `blobs-rest-${tag}`, store = `blobs-s3-${tag}`, door = `blobs-door-${tag}`;
   const dir = await Deno.makeTempDir();
-  await Deno.writeTextFile(`${dir}/Caddyfile`, await doorRoutes());
+  // The door the app is given, whole: its routes in the snippet every site block imports.
+  await Deno.writeTextFile(`${dir}/Caddyfile`, files["docker/Caddyfile"].text);
   const psql = (sql: string) => run("docker", ["exec", "-i", db, "psql", "-qtAX", "-v", "ON_ERROR_STOP=1", "-U", "postgres"], sql);
   const must = async (r: Promise<{ ok: boolean; err: string }>) => {
     const done = await r;
@@ -69,7 +69,7 @@ Deno.test({ name: "a session writes only the keys it claimed, once, and reads ba
       "-e", "PGRST_DB_URI=postgres://postgres:pw@database:5432/postgres", "-e", "PGRST_DB_ANON_ROLE=anon", "-e", `PGRST_JWT_SECRET=${SECRET}`, pinned("postgrest/postgrest")]));
     await must(run("docker", ["run", "-d", "--rm", "--name", store, "--network", network, "--network-alias", "rclone-s3", "--entrypoint", "sh", pinned("rclone/rclone"),
       "-c", "mkdir -p /data/mecha-objects && exec rclone serve s3 --addr=0.0.0.0:3900 --vfs-cache-mode=off /data"]));
-    await must(run("docker", ["run", "-d", "--rm", "--name", door, "--network", network, "-p", "127.0.0.1::8080", "-v", `${dir}/Caddyfile:/etc/caddy/Caddyfile:ro`,
+    await must(run("docker", ["run", "-d", "--rm", "--name", door, "--network", network, "-p", "127.0.0.1::8080", "-e", "ORIGIN=http://door.example", "-e", "ELECTRIC_SECRET=unused", "-v", `${dir}/Caddyfile:/etc/caddy/Caddyfile:ro`,
       pinned("caddy"), "caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]));
     const port = (await run("docker", ["port", door, "8080"])).out.split(":").pop();
     const at = (path: string, init: RequestInit = {}) => fetch(`http://127.0.0.1:${port}${path}`, init);
@@ -108,6 +108,18 @@ Deno.test({ name: "a session writes only the keys it claimed, once, and reads ba
       // rclone serve s3 ignores If-None-Match, so the claimant may replace its own.
       assertEquals(await status(`/blobs/mecha-objects/${key}`, { method: "PUT", body: new Uint8Array([1]), headers: two }), 403);
       assertEquals((await (await at(`/blobs/mecha-objects/${key}`)).arrayBuffer()).byteLength, bytes.length);
+    });
+    await t.step("the key is the door's to state: one a client names at /crud claims nothing", async () => {
+      const forged = `${crypto.randomUUID()}.jpg`;
+      const direct = await status("/crud/rpc/claim_upload", { method: "POST", body: "{}", headers: { ...one, "content-type": "application/json", "x-blob-path": `/blob-claim/${forged}` } });
+      assertEquals(direct >= 400 && direct < 500, true, `answered ${direct}`);
+      assertEquals((await psql(`SELECT count(*) FROM blob_plane.claim WHERE key = '${forged}'`)).out, "0");
+    });
+    await t.step("a client's Connection header cannot drop the key the door states", async () => {
+      const kept = `${crypto.randomUUID()}.jpg`;
+      const claimed = await raw(port, `POST /blob-claim/${kept} HTTP/1.1\r\nHost: door\r\nAuthorization: ${one.authorization}\r\nConnection: X-Blob-Path, close`, "{}");
+      assertEquals(claimed.status < 300, true, `answered ${claimed.status}`);
+      assertEquals((await psql(`SELECT count(*) FROM blob_plane.claim WHERE key = '${kept}'`)).out, "1");
     });
     await t.step("no listing and no delete", async () => {
       assertEquals(await status("/blobs/mecha-objects/"), 405);

@@ -25,7 +25,7 @@ import {
 } from "./vendor/mecha-client.js";
 import { canCoalesceSchemaEq, coalesceReads, columnOrder, compareBy, embedDeps, embedTables, parseFilter, parseFilterSpec, parseLimit, parseSelect, ProgramError, progressiveReadsComment, routeOf, stripProgressiveReads, takeProgressiveReads } from "./fragment.js";
 export { progressiveReadsComment, stripProgressiveReads, takeProgressiveReads };
-import { evaluateRole } from "./jessie.js";
+import { evaluateRole, sesAddress } from "./jessie.js";
 import { judge } from "./validate.js";
 import { assetURL } from "./preloads.js";
 
@@ -108,20 +108,51 @@ const later = (fn) => {
   return cancel;
 };
 
+// A native host's bridge holds its session; a page's is in localStorage.
+function currentSession() {
+  const bridge = globalThis.AuthBridge ?? globalThis.__omnishellAuth;
+  if (typeof bridge?.loadSession === "function") {
+    const loaded = bridge.loadSession();
+    return loaded ? (typeof loaded === "string" ? JSON.parse(loaded) : loaded) : null;
+  }
+  if (typeof localStorage === "undefined") return null;
+  const raw = localStorage.getItem("pronto-token");
+  return raw ? JSON.parse(raw) : null;
+}
+
+function writeSession(next) {
+  const serialized = JSON.stringify(next);
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem("pronto-token", serialized);
+  }
+  const bridge = globalThis.AuthBridge ?? globalThis.__omnishellAuth;
+  if (typeof bridge?.saveSession === "function") {
+    bridge.saveSession(next);
+  }
+}
+
+function clearStoredSession() {
+  if (typeof localStorage !== "undefined") {
+    localStorage.removeItem("pronto-token");
+  }
+  const bridge = globalThis.AuthBridge ?? globalThis.__omnishellAuth;
+  if (typeof bridge?.clearSession === "function") {
+    bridge.clearSession();
+  }
+}
+
 function token() {
-  const session = sessionStorage.getItem("pronto-token");
-  return session ? JSON.parse(session).token : null;
+  return currentSession()?.token ?? null;
 }
 
 function userId() {
-  const session = sessionStorage.getItem("pronto-token");
-  return session ? (JSON.parse(session).user?.id ?? null) : null;
+  return currentSession()?.user?.id ?? null;
 }
 
 /** Whether the reader is a guest: no session yet, or a guest's. */
 function guest() {
-  const session = sessionStorage.getItem("pronto-token");
-  return session === null || JSON.parse(session).user?.guest === true;
+  const s = currentSession();
+  return s === null || s.user?.guest === true;
 }
 
 // The request-only reads a server-rendered document was drawn from, carried in
@@ -240,14 +271,59 @@ const CONFLICT_SENDS = 5;
 const CONFLICT_FIRST_MS = 25;
 const reloading = new Set();
 
-async function send(url, init) {
+let inflightRefresh = null;
+let previousRendererBearer = null;
+
+async function tryRefreshSession(requestUrl, held, refreshUrl) {
+  const refreshToken = held?.refresh_token ?? held?.refreshToken;
+  if (!refreshToken) return null;
+  if (inflightRefresh) return inflightRefresh;
+  const endpoint = refreshUrl ?? new URL("/auth/refresh", new URL(requestUrl, globalThis.location?.origin || globalThis.__omnishellOrigin || "https://localhost")).href;
+  inflightRefresh = (async () => {
+    try {
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (refreshUrl && (r.status >= 500 || r.status === 408 || r.status === 429)) return r;
+      if (!r.ok) return null;
+      const body = await r.json();
+      if (!body?.token) return null;
+      const updated = {
+        ...held,
+        token: body.token,
+        ...(body.refresh_token ? { refresh_token: body.refresh_token } : {}),
+        ...(body.user ? { user: body.user } : {}),
+      };
+      if (refreshUrl) previousRendererBearer = `Bearer ${held.token}`;
+      writeSession(updated);
+      return body.token;
+    } finally {
+      inflightRefresh = null;
+    }
+  })();
+  return inflightRefresh;
+}
+
+async function send(url, init, refreshUrl, retriedRefresh = false) {
   if (init?.signal?.aborted) {
     throw init.signal.reason ?? new DOMException("aborted", "AbortError");
   }
   if (pendingSession && !token()) await pendingSession();
-  const t = token();
-  if (t && !init?.headers?.Authorization && !init?.headers?.authorization) {
-    init = { ...init, headers: { ...init?.headers, Authorization: `Bearer ${t}` } };
+  const sender = currentSession();
+  const address = url instanceof Request ? url.url : String(url);
+  const electric = address.includes("/electric/");
+  const headers = new Headers(init?.headers ?? (url instanceof Request ? url.headers : undefined));
+  const bearer = sender?.token ? `Bearer ${sender.token}` : null;
+  const sentBearer = headers.get("authorization");
+  // Public shapes use the session directly. Electric can back off with the
+  // previous header even after another read has successfully refreshed it.
+  const sessionShape = refreshUrl && electric && bearer && sentBearer &&
+    (sentBearer === bearer || sentBearer === previousRendererBearer);
+  if (bearer && (!sentBearer || (sessionShape && sentBearer !== bearer))) {
+    headers.set("Authorization", bearer);
+    init = { ...init, headers };
   }
   let res;
   let conflicted = false;
@@ -262,14 +338,33 @@ async function send(url, init) {
   // answers an expired shape token with 401 so the stream re-mints at /auth/shape.
   if (
     res.status === 401 &&
-    !String(url).includes("/electric/") &&
+    (!electric || sessionShape) &&
+    !address.endsWith("/auth/refresh") &&
     !(await res.clone().text()).includes('"code":"42501"')
   ) {
+    // The request was its sender's: another tab that made this device another
+    // account's meanwhile is no reason to retry it as that account, nor to
+    // end that account's session for it. The other tab's change reloads this one.
+    const current = currentSession();
+    if ((current?.user?.id ?? null) !== (sender?.user?.id ?? null)) {
+      throw new DOMException("the session changed while the request was out", "AbortError");
+    }
+    if (!retriedRefresh) {
+      // Renewed since it was sent, by another request: sent again with that token.
+      const refreshed = current && current.token !== sender?.token
+        ? current.token
+        : await tryRefreshSession(address, current, refreshUrl);
+      if (refreshed instanceof Response) return { res: refreshed.clone(), conflicted: false };
+      if (refreshed) {
+        headers.set("Authorization", `Bearer ${refreshed}`);
+        return send(url, { ...init, headers }, refreshUrl, true);
+      }
+    }
     // Expired/invalid token: re-gate through the login screen. The reload
     // tears the page down, so this promise never settles while the store is
     // open. The server terminal's reload is its end (server/render.ts inhabit).
-    sessionStorage.removeItem("pronto-token");
-    location.reload();
+    clearStoredSession();
+    globalThis.location?.reload?.();
     return new Promise((resolve) => {
       reloading.add(() =>
         resolve({
@@ -282,7 +377,7 @@ async function send(url, init) {
   return { res, conflicted };
 }
 
-export async function http(url, init) {
+export async function http(url, init, refreshUrl = /** @type {string | undefined} */ (undefined)) {
   if ((init?.method ?? "GET") === "GET" && init?.cache !== "no-store") {
     const body = takeServedBody(url);
     if (body !== undefined) {
@@ -293,7 +388,7 @@ export async function http(url, init) {
   const headers = { ...init?.headers };
   const t = token();
   if (t) headers.Authorization = `Bearer ${t}`;
-  const { res, conflicted } = await send(url, { ...init, headers });
+  const { res, conflicted } = await send(url, { ...init, headers }, refreshUrl);
   if (!res.ok) {
     const method = init?.method ?? "GET";
     const detail = await res.text();
@@ -451,7 +546,27 @@ export function othersFor(p, sinkRow, mine, pair, compareTxid) {
   return total;
 }
 
-export function createStore(base = "", cfg = {}, { request = http, schedule: enqueue = later } = {}) {
+// The offline worker keeps what the page fetches while the worker controls
+// it (offline-first-sw.js), and a first visit fetches before the worker it
+// registers (boot.js) has claimed the page. So a page that starts with no
+// controller fetches `urls` again once one takes over, and the worker keeps
+// them then. Answers what stops waiting for it.
+export function refetchOnControl(container, urls, fetcher) {
+  if (container == null || container.controller != null || urls.length === 0) return () => {};
+  const again = () => {
+    for (const url of urls) {
+      Promise.resolve().then(() => fetcher(url)).catch(() => {});
+    }
+  };
+  container.addEventListener("controllerchange", again, { once: true });
+  return () => container.removeEventListener("controllerchange", again);
+}
+
+export function createStore(base = "", cfg = {}, {
+  refreshUrl = /** @type {string | undefined} */ (undefined),
+  request = (url, init) => http(url, init, refreshUrl),
+  schedule: enqueue = later,
+} = {}) {
   servedToReader = cfg.mintedGuest === true;
   pendingSession = cfg.ensureSession ?? null;
   prefetchedPages.clear();
@@ -475,6 +590,12 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   // open from now and each view loads its rows as a subset. Every other
   // table is read whole.
   const lazy = (table) => cfg.read?.[table] === "lazy";
+  const hostStorage = globalThis.__omnishellStorage;
+  const sql = cfg.sql ?? globalThis.__omnishellSql ?? hostStorage?.sql;
+  const deviceStorage = cfg.deviceStorage ?? globalThis.__omnishellDeviceStorage ?? (
+    hostStorage?.kv ? { getItem: (k) => hostStorage.kv.get(k), setItem: (k, v) => hostStorage.kv.set(k, v) } : undefined
+  );
+  const provisional = cfg.provisional ?? globalThis.__omnishellProvisional;
   const client = createMechaClient({
     carriers: cfg.carriers,
     // cfg.keys names the pk of every table whose pk is not "id" (pipeline
@@ -498,9 +619,12 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     electricUrl: `${base || globalThis.location?.origin || ""}/electric`,
     crudUrl: `${base}/crud`,
     authUrl: `${base}/auth`,
-    fetcher: (url, init) => send(url, init).then(({ res }) => res),
+    fetcher: (url, init) => send(url, init, refreshUrl).then(({ res }) => res),
     token,
     subject: userId,
+    ...(sql ? { sql } : {}),
+    ...(deviceStorage ? { deviceStorage } : {}),
+    ...(provisional ? { provisional } : {}),
   });
 
   // Debug seam: the running client is inspectable from the console.
@@ -526,6 +650,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   // unsynced collection is empty, not authoritative.
   async function wholeCollection(table, site) {
     whole(table, site);
+    await client.ready;
     const c = client.collections[table];
     if (c === undefined) throw new Error(`${site} reads ${table}, which has no collection`);
     if (!c.isReady()) await c.toArrayWhenReady();
@@ -545,16 +670,21 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   // embeds come in with it, by the join's own lazy load. A read stating no
   // clause the engine can bind, or a join it cannot keep, is bounded only by
   // its tables.
-  function snapshotDemands(table, opts) {
+  // `create` false asks only after the views the read would lean on, and
+  // answers null where one is not open.
+  function snapshotDemands(table, opts, create = true) {
     const tables = snapshotTables(table, opts).filter(lazy);
     const stated = (opts.filter ?? "").split("&").filter(part => {
       const at = part.indexOf("=");
       return !["limit", "offset"].includes(part.slice(0, at)) && STATED.test(part.slice(at + 1));
     }).join("&");
     const bound = tables.includes(table) && stated !== ""
-      ? maintainedView(table, { filter: stated, select: opts.select }, true)
+      ? maintainedView(table, { filter: stated, select: opts.select }, create)
       : null;
-    return bound === null ? tables.map(completeDemand) : [bound];
+    if (bound !== null) return [bound];
+    if (create) return tables.map(completeDemand);
+    const open = tables.map((t) => maintainedView(t, { filter: `${keyOf(t)}=not.is.null` }, false));
+    return open.includes(null) ? null : open;
   }
 
   // Adapter references alone do not prevent TanStack's five-second GC after
@@ -598,8 +728,8 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     return c;
   }
 
-  // Validations by table (shell.yaml); each table's modules load on its first
-  // write, through the same compartment a handler runs in.
+  // Validations by table (shell.yaml); every table's modules load with the
+  // store, through the same compartment a handler runs in.
   const validations = cfg.validations ?? {};
   const predicates = new Map();
   function predicatesFor(table) {
@@ -629,6 +759,30 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
       predicates.set(table, p);
     }
     return p;
+  }
+  // At boot rather than on a table's first write, as a screen's handlers load
+  // when it mounts: the offline worker keeps only what the page fetched
+  // (offline-first-sw.js), so a guard first reached offline would have no
+  // module to judge with. A load that fails here is dropped, and the table's
+  // first write tries again. A store that keeps no reads renders a document
+  // on the server (keepReads below), where there is no worker to keep them
+  // and a store per render, so its modules load on a write, if one comes.
+  let unwatchControl = () => {};
+  if (cfg.keepReads !== false) {
+    for (const table of Object.keys(validations)) predicatesFor(table).catch(() => {});
+    const sources = [];
+    for (const byName of Object.values(validations)) {
+      for (const v of Object.values(byName)) {
+        try {
+          sources.push(assetURL(new URL(v.src, cfg.appBase)));
+        } catch {
+          // A source with no address fails its table's load, which says so.
+        }
+      }
+    }
+    // A validation runs in the cage, so the worker keeps the cage's bundle too.
+    if (sources.length > 0) sources.push(sesAddress());
+    unwatchControl = refetchOnControl(globalThis.navigator?.serviceWorker, sources, (url) => fetch(url));
   }
 
   // The store seat: every validation of the table judges the row the write
@@ -693,6 +847,9 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   // Server tables never arrive here: Postgres owns their uniques, and their
   // bootstrap rows are 900_seed.sql.
   const preparedAt = new Map();
+  // The local tables whose preparation has finished: before then a ready
+  // collection may still lack its bootstrap rows.
+  const prepared = new Set();
   const restoredTabs = new Map();
   const ensurePrepared = (table) => {
     if (local[table] === undefined) {
@@ -700,15 +857,27 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     }
     let p = preparedAt.get(table);
     if (p === undefined) {
+      // Dropped on rejection, as a validation's load is: a bootstrap write
+      // that failed once would otherwise refuse the table for the session.
+      // The next use resumes after the steps that finished (prepare).
       p = prepare(table);
+      const mine = p;
+      p.then(() => prepared.add(table), () => {
+        if (preparedAt.get(table) === mine) preparedAt.delete(table);
+      });
       preparedAt.set(table, p);
     }
     return p;
   };
+  // The steps of a table's preparation it has finished, counted, so a retry
+  // after a failure resumes rather than seeding rows the collection holds.
+  const preparedSteps = new Map();
   async function prepare(table) {
-    await seed(table);
-    await fill(table);
-    await reconcile(table);
+    const steps = [seed, fill, reconcile];
+    for (let i = preparedSteps.get(table) ?? 0; i < steps.length; i++) {
+      await steps[i](table);
+      preparedSteps.set(table, i + 1);
+    }
   }
 
   // Every row of a local collection carries each column shell.yaml lists as
@@ -740,6 +909,54 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     const filled = { ...row };
     for (const col of cols) if (!(col.name in filled)) filled[col.name] = unset(col.type);
     return filled;
+  };
+
+  // A client's write, held to its fields' behaviour (pronto's
+  // #Field.outputOnly and #Field.immutable, in Google AIP-203's words) before
+  // its optimistic row stands, so the row never shows what the server will
+  // not keep: an output-only value is dropped, as the server clears it, and
+  // a change of an immutable one is refused, as the server refuses it, while
+  // the value its row holds passes. `have` is the standing row an update
+  // changes, where the store holds it. For a tab or device table this is the
+  // enforcement. A json value is the value it states, as the server's jsonb
+  // compares it: an object restated with its keys in another order is the
+  // same object.
+  const sortedKeys = (v) => Array.isArray(v) ? v.map(sortedKeys)
+    : v !== null && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortedKeys(v[k])])) : v;
+  const canonical = (field, value) => {
+    if (value === null || value === undefined) return "null";
+    if (field.type === "json" || field.type === "geojson") {
+      let stated = value;
+      if (typeof stated === "string") {
+        try {
+          stated = JSON.parse(stated);
+        } catch {
+          // Text that is no JSON is compared as itself.
+        }
+      }
+      return JSON.stringify(sortedKeys(stated));
+    }
+    try {
+      return JSON.stringify(carrier().normalizeValue(field, value, "canonical"));
+    } catch {
+      return JSON.stringify(value);
+    }
+  };
+  const behaved = (table, row, have) => {
+    if (row === undefined) return row;
+    let out = row;
+    for (const field of cfg.schema?.[table]?.fields ?? []) {
+      if (!(field.name in row)) continue;
+      if (field.outputOnly) {
+        if (out === row) out = { ...row };
+        delete out[field.name];
+      } else if (field.immutable && have !== undefined && canonical(field, row[field.name]) !== canonical(field, have[field.name])) {
+        const err = new Error(`${table}.${field.name} is immutable: it is set when its row is created and never changed`);
+        err.name = "NonRetriableError";
+        throw err;
+      }
+    }
+    return out;
   };
 
   // Written straight through the client, not through create(): a seed is the
@@ -1274,7 +1491,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   //
   // What each term is, and why the pipeline states per reader whether its read
   // counted them, is plugins/pronto/docs/access.md#a-count-the-reader-is-inside-of.
-  async function project(table, rows) {
+  function projectNow(table, rows) {
     const p = foldSinks.get(table);
     if (p === undefined || rows.length === 0 || p.pair === undefined) return rows;
     const source = client.collections[p.from];
@@ -1303,7 +1520,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   }
 
   const query = async (table, order, opts = {}) =>
-    project(table, await read(table, order, opts));
+    projectNow(table, await read(table, order, opts));
 
   // Server reads as the tab last read them, by reader and address: a later
   // read of the same address answers from here at once, as a view answers
@@ -1616,12 +1833,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     return rows;
   }
 
-  function answersLocally(table, order, opts) {
-    if (pendingSession && !token()) return false;
-    if (maintainedView(table, { ...opts, order }, false)?.complete()) return true;
-    const tables = snapshotTables(table, opts);
-    return tables.length > 0 && tables.every((t) => !lazy(t) && client.collections[t]?.isReady?.());
-  }
+  const answersLocally = (table, order, opts) => fromTab(table, order, opts) !== undefined;
 
   /** One read of a screen not on show yet, kept for the page at `at` as a document's would be,
    * and with the reader's own token, so it holds for any reader. */
@@ -1638,23 +1850,33 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     notifySeeded(memoKey(url));
   }
 
-  async function read(table, order, opts = {}) {
-    order ??= opts.order;
+  // What decides, before any row is looked at, who answers a read: the
+  // server alone (`server`), a seed still on its way (`seed`), or the tab.
+  // read() acts on it and answer() reads it, so the two cannot disagree.
+  function owner(table, order, opts, touch = false) {
     // Independently synchronized collections can be ready before an accepted write arrives.
-    if (opts.confirmed && local[table] === undefined) return readServer(table, order, opts);
+    if (opts.confirmed && local[table] === undefined) return "server";
     const url = `${crud(table)}?${search(order, opts)}`;
     const rKey = recallKey(table, order, opts);
-    const isLocalReady = () => answersLocally(table, order, opts);
-    if (!opts.confirmed && !requestOnly(table) && local[table] === undefined && !recalled.has(rKey) &&
+    if (activeSeed !== null && !opts.confirmed && !requestOnly(table) && local[table] === undefined && !recalled.has(rKey) &&
         !hasServedRead(url) && !(keepsReads && answered.has(memoKey(url))) &&
-        !isLocalReady()) {
-      await awaitSeedForUrl(url);
-    }
-    const heldAnswer = keepsReads ? kept(answered, memoKey(url)) : undefined;
+        !answersLocally(table, order, opts)) return "seed";
+    const heldAnswer = keepsReads ? (touch ? kept(answered, memoKey(url)) : answered.get(memoKey(url))) : undefined;
     const servedForPage = !opts.confirmed && (hasServedRead(url) || Boolean(heldAnswer?.served && isServedAtPage(heldAnswer.servedAt)));
-    if (requestOnly(table) || (servedForPage && !recalled.has(rKey))) {
-      return readServer(table, order, opts);
+    if (requestOnly(table) || (servedForPage && !recalled.has(rKey))) return "server";
+    return "tab";
+  }
+
+  async function read(table, order, opts = {}) {
+    order ??= opts.order;
+    const url = `${crud(table)}?${search(order, opts)}`;
+    const rKey = recallKey(table, order, opts);
+    let by = owner(table, order, opts, true);
+    if (by === "seed") {
+      await awaitSeedForUrl(url);
+      by = owner(table, order, opts, true);
     }
+    if (by === "server") return readServer(table, order, opts);
     await Promise.all([table, ...embedDeps(opts.select, table, cfg.schema), ...accessDeps(table)].map(ensurePrepared));
     // A read the engine already maintains needs no re-derivation: the view is
     // the filter and the order, kept current by the deltas that woke us.
@@ -1695,32 +1917,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
           ...snapshotTables(table, opts).filter(t => !lazy(t)).map(t => wholeCollection(t, `a read of ${table}`)),
           ...demands.map(entry => settled(entry)),
         ]);
-        const all = c.toArray;
-        // The snapshot is a fresh array, so it is sorted in place, and copied
-        // only where a predicate, a cap or an embed makes a different one.
-        const rows = access[table] === undefined && preds.length === 0
-          ? all
-          : all.filter((r) => visible(table, r) && preds.every((p) => p(r)));
-        if (order) rows.sort(compareBy(order, orderOf(table)));
-        const limit = parseLimit(opts.filter);
-        const capped = limit === undefined ? rows : rows.slice(0, limit);
-        if (embeds.length === 0) return recall(key, table, opts, capped);
-        return recall(key, table, opts, capped.map((row) => {
-          const out = { ...row };
-          for (const { alias, table: rel, cols } of embeds) {
-            // A collection is keyed by the same column keyOf names, so the
-            // joined row is one lookup; a scan of the related table per row
-            // is the product of the two tables per read.
-            const target = client.collections[rel].get(row[`${alias}_id`]);
-            // null embed mirrors PostgREST under RLS: a joined row this
-            // reader cannot see binds blank, never leaks.
-            out[alias] =
-              target !== undefined && visible(rel, target)
-                ? Object.fromEntries(cols.map((col) => [col, target[col]]))
-                : null;
-          }
-          return out;
-        }));
+        return recall(key, table, opts, localRows(table, order, opts, c, preds, embeds));
       } finally {
         for (const release of releases) release();
       }
@@ -1728,6 +1925,97 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     // Server-computed read: fts, embed-path filter, or untranslatable
     // select/filter.
     return readServer(table, order, opts);
+  }
+
+  // A read evaluated over the collection as it stands.
+  function localRows(table, order, opts, c, preds, embeds) {
+    const all = c.toArray;
+    // The snapshot is a fresh array, so it is sorted in place, and copied
+    // only where a predicate, a cap or an embed makes a different one.
+    const rows = access[table] === undefined && preds.length === 0
+      ? all
+      : all.filter((r) => visible(table, r) && preds.every((p) => p(r)));
+    if (order) rows.sort(compareBy(order, orderOf(table)));
+    const limit = parseLimit(opts.filter);
+    const capped = limit === undefined ? rows : rows.slice(0, limit);
+    if (embeds.length === 0) return capped;
+    return capped.map((row) => {
+      const out = { ...row };
+      for (const { alias, table: rel, cols } of embeds) {
+        // A collection is keyed by the same column keyOf names, so the
+        // joined row is one lookup; a scan of the related table per row
+        // is the product of the two tables per read.
+        const target = client.collections[rel].get(row[`${alias}_id`]);
+        // null embed mirrors PostgREST under RLS: a joined row this
+        // reader cannot see binds blank, never leaks.
+        out[alias] =
+          target !== undefined && visible(rel, target)
+            ? Object.fromEntries(cols.map((col) => [col, target[col]]))
+            : null;
+      }
+      return out;
+    });
+  }
+
+  // What the tab's collections answer of a read now, before any projection,
+  // or undefined where they cannot yet: a session still being minted (unless
+  // every table is the tab's own), a table not yet prepared or synced, a view
+  // or the subsets a lazy table leans on not yet whole.
+  function fromTab(table, order, opts) {
+    if (!answers(table, opts)) return undefined;
+    const tables = [table, ...embedDeps(opts.select, table, cfg.schema), ...accessDeps(table)];
+    if (pendingSession && !token() && !tables.every((t) => local[t] !== undefined)) return undefined;
+    if (tables.some((t) => local[t] !== undefined && !prepared.has(t))) return undefined;
+    if (tables.some((t) => !lazy(t) && client.collections[t]?.isReady?.() !== true)) return undefined;
+    const held = maintainedView(table, { ...opts, order }, false);
+    if (held !== null) return held.complete() ? held.view.toArray : undefined;
+    const demands = snapshotDemands(table, opts, false);
+    if (demands === null || !demands.every((entry) => entry.complete())) return undefined;
+    return localRows(table, order, opts, client.collections[table], queryPredicates(table, opts.filter), parseSelect(opts.select));
+  }
+
+  // A read as `query` answers it, answered at once from what the tab holds,
+  // its own writes included before the server has accepted them; undefined
+  // where only a trip could answer it.
+  function answer(table, order, opts = {}) {
+    order ??= opts.order;
+    if (owner(table, order, opts) !== "tab") return undefined;
+    const rows = fromTab(table, order, opts);
+    return rows === undefined ? undefined : projectNow(table, rows);
+  }
+
+  // Whether a read can ever be answered from what the tab holds: not a table
+  // read only from the server, nor a read the server computes (a text search,
+  // a join the tab cannot make).
+  function answers(table, opts = {}) {
+    if (requestOnly(table) || client.collections[table] === undefined) return false;
+    if (routeOf(parseFilterSpec(opts.filter), parseSelect(opts.select), parseLimit(opts.filter)) === "server") return false;
+    const preds = queryPredicates(table, opts.filter);
+    return preds !== null && localEmbeds(table, parseSelect(opts.select));
+  }
+
+  // How many tables have rows on their way into the tab: an eager collection
+  // whose sync has begun and not yet held its first snapshot, and a local
+  // table being prepared. Zero says no such sync or preparation is in
+  // progress, not that every table answers. A collection no read has opened
+  // has not begun, so it is not counted; a lazy table's views are its reads'.
+  // A table a grant reaches is a union of shapes, ready with its base, so a
+  // grant's shape still loading is asked of the union's sources. A failed
+  // preparation is not in progress, and the table does not answer either
+  // until its next use prepares it again. A table posed into (pose, the
+  // fixture seam) is marked ready, so it is not counted whether or not its
+  // snapshot, or a grant's, arrived: zero after a pose does not say the tab
+  // holds the server's rows. A provisional session's collections are marked
+  // ready empty by mecha's client, so they count as local from the start.
+  function syncing() {
+    let n = 0;
+    for (const t of tables) {
+      if (lazy(t) || requestOnly(t) || posed.has(t)) continue;
+      const c = client.collections[t];
+      const shapes = [c, ...(c?.utils?.sources?.() ?? [])];
+      if (shapes.some((s) => s?.status === "loading") || (preparedAt.has(t) && !prepared.has(t))) n++;
+    }
+    return n;
   }
 
   // Server-computed regions have one blind spot the collections cannot
@@ -2177,7 +2465,11 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   // key wins where it does — a caller states identity in one place. `absent`
   // holds columns stated only if the row is inserted, judged against the
   // collection as the write lands: a machine's first write from its fallback.
-  async function write(table, edits, onRefused) {
+  // `onApplied` is told when the rows stand in the tab's own collection, the
+  // optimistic view every later read answers from, which is before the server
+  // has said yes: a writer that reads its rows back waits for this and not
+  // for the acceptance. A refusal before then is the write's rejection.
+  async function write(table, edits, onRefused, onApplied) {
     if (edits.length === 0) return;
     await ensurePrepared(table);
     const key = keyOf(table);
@@ -2192,11 +2484,12 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
       for (const [i, row] of rows.entries()) {
         const filter = `${key}=eq.${encodeURIComponent(row[key])}`;
         const have = (await readServer(table, null, { filter }))[0];
-        const stated = have === undefined ? inserted(row, i) : row;
+        const stated = have === undefined ? behaved(table, inserted(row, i)) : behaved(table, row, have);
         await validate(table, have === undefined ? "insert" : "update", stated, have, edgeIndex);
         commands.push({ row: stated, method: have === undefined ? "POST" : "PATCH", filter: have === undefined ? undefined : filter });
       }
       for (const command of commands) await serverCommand(table, command.method, command.row, command.filter);
+      onApplied?.();
       return;
     }
     const collection = await mutationCollection(table, "a write by key");
@@ -2209,8 +2502,8 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     const edgeIndex = new Map();
     for (const [i, row] of rows.entries()) {
       const have = byKey.get(String(row[key]));
-      if (have === undefined) await validate(table, "insert", blank(table, inserted(row, i)), undefined, edgeIndex);
-      else await validate(table, "update", row, have, edgeIndex);
+      if (have === undefined) await validate(table, "insert", blank(table, behaved(table, inserted(row, i))), undefined, edgeIndex);
+      else await validate(table, "update", behaved(table, row, have), have, edgeIndex);
     }
     // Judging awaits, so the collection may have moved under the snapshot the
     // verdicts were read from; the partition the client calls carry is the one
@@ -2220,25 +2513,21 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     const standing = [];
     for (const [i, row] of rows.entries()) {
       const have = now.get(String(row[key]));
-      if (have === undefined) fresh.push(blank(table, inserted(row, i)));
-      else standing.push({ key: have[key], changes: row });
+      if (have === undefined) fresh.push(blank(table, behaved(table, inserted(row, i))));
+      else standing.push({ key: have[key], changes: behaved(table, row, have) });
     }
     // Standing rows change before fresh ones arrive, so a batch that demotes one
     // row and promotes another never holds both in a unique's domain, not even
     // for the one change event between the two calls.
     if (standing.length > 0) {
-      await settle(
-        onSettled(client.update(table, standing), table, standing.map((e) => String(e.key))),
-        ACCEPT_MS,
-        onRefused,
-      );
+      const updated = onSettled(client.update(table, standing), table, standing.map((e) => String(e.key)));
+      if (fresh.length === 0) onApplied?.();
+      await settle(updated, ACCEPT_MS, onRefused);
     }
     if (fresh.length > 0) {
-      await settle(
-        onSettled(client.insert(table, fresh), table, fresh.map((r) => String(r[key]))),
-        ACCEPT_MS,
-        onRefused,
-      );
+      const inserted = onSettled(client.insert(table, fresh), table, fresh.map((r) => String(r[key])));
+      onApplied?.();
+      await settle(inserted, ACCEPT_MS, onRefused);
     }
   }
 
@@ -2249,7 +2538,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     if (rows.length === 0) return;
     await ensurePrepared(table);
     const key = keyOf(table);
-    const filled = rows.map((r) => blank(table, r));
+    const filled = rows.map((r) => blank(table, behaved(table, r)));
     const edgeIndex = new Map();
     for (const row of filled) await validate(table, "insert", row, undefined, edgeIndex);
     if (requestOnly(table)) return serverCommand(table, "POST", filled);
@@ -2346,6 +2635,9 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     if (edits.length === 0) return;
     await ensurePrepared(table);
     const key = keyOf(table);
+    // A server-read table's standing row is the server's to judge an
+    // immutable change against; a held one is judged once it is held, below.
+    edits = edits.map((e) => ({ ...e, changes: behaved(table, e.changes) }));
     for (const edit of edits) {
       if (edit.ifTxid === undefined) continue;
       if (typeof edit.ifTxid !== "string" || !/^[1-9][0-9]*$/.test(edit.ifTxid) || BigInt(edit.ifTxid) > 9223372036854775807n) {
@@ -2370,6 +2662,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
       return;
     }
     await holding(table, edits.map((e) => e.key), async () => {
+      for (const e of edits) behaved(table, e.changes, client.collections[table].get(e.key));
       // The key last: a `changes` naming the key cannot redirect the judgement
       // onto a row other than the one this edit identifies.
       const edgeIndex = new Map();
@@ -2501,7 +2794,10 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     for (const [table, value] of Object.entries(saved ?? {})) {
       if (local[table] !== "tab" ||
           JSON.stringify(value.schema) !== JSON.stringify(cfg.schema?.[table])) continue;
-      if (preparedAt.has(table)) throw new Error(`tab recovery after ${table} was prepared`);
+      // A preparation that failed after its seed resumes past it (prepare), so
+      // the saved rows would never be read: a started one refuses as a
+      // finished one does.
+      if (preparedAt.has(table) || preparedSteps.has(table)) throw new Error(`tab recovery after ${table} was prepared`);
       restoredTabs.set(table, value.rows);
     }
   }
@@ -2646,6 +2942,9 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
   };
   return {
     query,
+    answer,
+    answers,
+    syncing,
     orderOf,
     seedReads,
     readAhead,
@@ -2663,10 +2962,43 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
     // A host-DOM hatch's authorized call, past the collections: it makes the
     // guest's session as every other write does.
     http,
+    adoptProvisionalSubject: (fromSubject, toSubject) => client.adoptProvisionalSubject(fromSubject, toSubject),
+    async wipeAccountData(deletedSubject) {
+      clearAllServed();
+      if (sql) {
+        const existing = new Set(
+          (await Promise.resolve(sql.query("SELECT name FROM sqlite_master WHERE type = 'table'")))
+            .map((r) => String(r?.name ?? "")),
+        );
+        if (existing.has("mecha_outbox")) await Promise.resolve(sql.exec("DELETE FROM mecha_outbox"));
+        if (existing.has("mecha_shape_row")) {
+          if (deletedSubject && deletedSubject !== "anon") {
+            await Promise.resolve(sql.exec("DELETE FROM mecha_shape_row WHERE subject = ?", [deletedSubject]));
+          } else {
+            await Promise.resolve(sql.exec("DELETE FROM mecha_shape_row WHERE subject != '' AND subject != 'anon'"));
+          }
+        }
+        if (existing.has("mecha_shape_meta")) {
+          if (deletedSubject && deletedSubject !== "anon") {
+            await Promise.resolve(sql.exec("DELETE FROM mecha_shape_meta WHERE subject = ?", [deletedSubject]));
+          } else {
+            await Promise.resolve(sql.exec("DELETE FROM mecha_shape_meta WHERE subject != '' AND subject != 'anon'"));
+          }
+        }
+        if (existing.has("__omnishell_kv")) await Promise.resolve(sql.exec("DELETE FROM __omnishell_kv"));
+      }
+      if (hostStorage?.kv && typeof hostStorage.kv.clear === "function") {
+        hostStorage.kv.clear();
+      }
+      if (typeof globalThis.localStorage !== "undefined") {
+        globalThis.localStorage.clear();
+      }
+    },
     flushNotifications,
     tabSnapshot,
     restoreTabs,
     async close() {
+      unwatchControl();
       activeSeed = null;
       notifyAllSeedWaiters();
       await client.ready;
@@ -2676,6 +3008,7 @@ export function createStore(base = "", cfg = {}, { request = http, schedule: enq
       for (const entry of mutatilazys.values()) {
         while (entry.refs > 0) entry.release();
       }
+      client.dispose?.();
       await Promise.all(Object.values(client.collections).map(c => c.cleanup()));
       for (const abort of reloading) abort();
       reloading.clear();

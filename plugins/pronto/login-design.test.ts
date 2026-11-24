@@ -12,7 +12,7 @@ function withDesign(designCue: string): string {
   );
 }
 
-function navProgram(nav: "topbar" | "tabbar" | "sidebar" | "dock" | "custom"): string {
+function navProgram(nav: "topbar" | "tabbar" | "sidebar" | "dock" | "custom" | "none"): string {
   return paymentProgram() + `\napp: surface: design: shell: nav: "${nav}"\n`;
 }
 
@@ -93,7 +93,7 @@ Deno.test("design refuses preset keys, legacy strip name, and requires explicit 
       dark: { primary: "#f5f5f5", secondary: "#aaaaaa", accent: "#66aaff", danger: "#ff6666", neutral: "#111111", surface: "#1a1a1a", border: "#333333", "surface-muted": "#242424" }
     }`)),
     Error,
-    'unresolved disjunction "topbar" | "tabbar" | "sidebar" | "dock" | "custom"',
+    'unresolved disjunction "topbar" | "tabbar" | "sidebar" | "dock" | "custom" | "none"',
   );
   await assertRejects(
     () => emitFiles(paymentProgram() + `\napp: surface: design: shell: nav: "strip"\n`),
@@ -122,9 +122,9 @@ Deno.test("shell.nav emits zero-specificity :where(...) rules for topbar, tabbar
   assertStringIncludes(topbarCss, "color-mix(in srgb, currentColor 9%, transparent)");
   assertStringIncludes(topbarCss, ":where(body > nav > a:hover) {");
   assertStringIncludes(topbarCss, ":where(body > nav .shell-me) { margin-inline-start: auto; flex: none;");
-  assertStringIncludes(topbarCss, ":where(body > nav .shell-who) { max-width: var(--shell-who-max, 24ch); }");
+  assertStringIncludes(topbarCss, ":where(body > nav .shell-chip-who) { max-width: var(--shell-who-max, 24ch); }");
   assertStringIncludes(topbarCss, ":where(body > nav > a ~ .shell-me) {");
-  assertStringIncludes(topbarCss, ":where(body > nav :is(.shell-signout, .shell-signin, .shell-register, .shell-provider))");
+  assertStringIncludes(topbarCss, ":where(body > nav :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider))");
   assertStringIncludes(topbarCss, ':where(body > nav > a[data-display="icon-only"])');
   assert(
     topbarCss.lastIndexOf(':where(body > nav > a[data-display="icon-only"])') >
@@ -161,7 +161,7 @@ Deno.test("shell.nav emits zero-specificity :where(...) rules for topbar, tabbar
   assertStringIncludes(sidebarCss, "@media not all and (min-width: 860px) {");
   assertFalse(sidebarCss.includes("@media (max-width: 859px)"));
   assertStringIncludes(sidebarCss, "@media print {");
-  assertStringIncludes(sidebarCss, ":where(body > nav :is(.shell-signout, .shell-signin, .shell-register, .shell-provider))");
+  assertStringIncludes(sidebarCss, ":where(body > nav :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider))");
   assertFalse(FLOW_PHYSICAL.test(sidebarCss));
 
   const dockCss = (await emitFiles(navProgram("dock")))["shell/design.css"].text;
@@ -179,8 +179,20 @@ Deno.test("shell.nav emits zero-specificity :where(...) rules for topbar, tabbar
   assertFalse(customCss.includes(':where(body > nav > a[aria-current="page"]) {'));
   assertStringIncludes(customCss, ":where(body > nav a) { color: inherit; text-decoration: none; }");
   assertStringIncludes(customCss, ":where(body > nav .shell-nav-icon) { flex: none;");
-  assertStringIncludes(customCss, ":where(body > nav :is(.shell-signout, .shell-signin, .shell-register, .shell-provider))");
+  assertStringIncludes(customCss, ":where(body > nav :is(.shell-signout, .shell-signin, .shell-person, .shell-passkey, .shell-auth-choice, .shell-provider))");
   assertFalse(FLOW_PHYSICAL.test(customCss));
+
+  const noneFiles = await emitFiles(navProgram("none"));
+  const noneCss = noneFiles["shell/design.css"].text;
+  assertEquals((noneFiles["shell/shell.yaml"].data as { nav?: string }).nav, "none");
+  assertStringIncludes(noneCss, "None posture (`shell.nav: \"none\"`): no shell navigation strip is mounted.");
+  assertFalse(noneCss.includes(":where(body > nav) {"));
+  assertFalse(FLOW_PHYSICAL.test(noneCss));
+  await assertRejects(
+    () => emitFiles(paymentProgram() + `\napp: surface: design: shell: { nav: "none", title: "App" }\n`),
+    Error,
+    "explicit error (_|_ literal)",
+  );
 
   // Omnishell's standalone browser suite (`nav-postures.pw.ts`) cannot import
   // pronto in `bonisoft3/omnishell`, so hold its checked-in posture fixtures

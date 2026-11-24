@@ -107,6 +107,20 @@ Deno.test("release-docker runs a program's effects: the airlock, its daprd and t
   assertStringIncludes(rd.dockerfile.epilogue.join("\n"), "for n in crud database auth airlock-mesh airlock;");
 });
 
+// Regression: a server out of restarts stayed dead while process-compose kept
+// the rest of the appliance running, so the container looked alive with a
+// component gone (golaberto's compute reached 14 of its 15 restarts).
+Deno.test("a server out of restarts ends the appliance, and a one-off does not", async () => {
+  const rd = await releaseDocker(paymentProgram().replace("targets: []", 'targets: ["docker"]'));
+  const heredoc = rd.dockerfile.preamble.find((l) => l.includes("/.bayt/process-compose.appliance.yaml"))!;
+  const overlay = parse(heredoc.slice(heredoc.indexOf("\n") + 1, heredoc.lastIndexOf("APPLIANCE"))) as {
+    processes: Record<string, { availability?: { exit_on_end?: boolean } }>;
+  };
+  const ending = Object.entries(overlay.processes).filter(([, p]) => p.availability?.exit_on_end === true).map(([n]) => n);
+  for (const server of ["electric", "airlock-mesh", "airlock"]) assert(ending.includes(server), `${server} does not end the appliance: ${ending}`);
+  assert(!ending.includes("airlock-upgrade"), "a one-off ends the appliance");
+});
+
 Deno.test("a bridge on docker runs in the appliance as a process its daprd dials by the container's name", async () => {
   const rd = await releaseDocker(bridged('{container: "transport", port: 8090, targets: ["docker"], appliance: {srcs: ["/bin/fetch"], command: ["/bin/fetch", "--listen", "127.0.0.1:8090"]}}'));
   assert(rd.deps.includes(":transport-appliance:outs"), `the bridge's build is no dependency: ${rd.deps}`);
@@ -216,11 +230,29 @@ Deno.test("release-docker runs the change feed as compose does: Conduit, the bus
   for (const s of ["ENV MECHA_MESH_DIR=/mesh-events", "ENV MECHA_TRANSFORM_DIR=/transform"]) assertStringIncludes(preamble, s);
   for (const p of ["conduit", "transform"]) assert(rd.dockerfile.cmd.includes(p), `${p} is not started: ${rd.dockerfile.cmd}`);
   const packages = await exportJson('_build.project.targets["release-docker"].dockerfile.defaultPreamble', code);
-  assertStringIncludes(JSON.stringify(packages.value), "redis-server");
+  assert(!JSON.stringify(packages.value).includes("redis-server="));
+  const redisCopy = rd.dockerfile.copy.find((entry: { from?: { name?: string } }) => entry.from?.name?.startsWith("redis:"));
+  assert(redisCopy?.from?.name, "the appliance must copy the pinned Redis binaries used by Compose");
+  assertStringIncludes(redisCopy.from.name, "redis:8.2.11-bookworm@sha256:");
+  assertEquals(redisCopy.srcs, ["/usr/local/bin/redis-server", "/usr/local/bin/redis-cli"]);
 });
 
 // The appliance runs computations on RisingWave; DuckDB snapshots are used
 // only on pages and cloudflare.
+Deno.test("release trimming excludes the native snapshot reader", async () => {
+  const code = paymentProgram().replace("targets: []", 'targets: ["docker"]') +
+    '\napp: state: drains: "settle-count": {on: ["payment"], call: "count_settled"}\n' +
+    'app: state: entities: Total: {table: "total", durability: "live", fields: [{name: "id", type: "uuid", pk: true}, {name: "n", type: "int"}]}\n' +
+    'app: state: computations: totals: {to: ["Total"], risingwave: "duckstream/totals.risingwave.json"}\n';
+  const rd = await releaseDocker(code);
+  const env = overlayOf(rd).processes.transform.environment;
+  const manifest = env?.find((value: string) => value.startsWith("CDC_GROUPS="));
+  assert(manifest);
+  const groups = JSON.parse(manifest.slice("CDC_GROUPS=".length));
+  assertEquals(groups.length, 1);
+  assert(groups[0].endsWith("-settle-count"));
+});
+
 Deno.test("release-docker runs a program's computations on RisingWave", async () => {
   const code = paymentProgram().replace("targets: []", 'targets: ["docker"]') +
     '\napp: state: entities: Total: {table: "total", durability: "live", fields: [{name: "id", type: "uuid", pk: true}, {name: "n", type: "int"}]}\n' +
@@ -611,4 +643,16 @@ Deno.test("the appliance's clock ends on a refused poke, so it restarts", async 
   assertStringIncludes(line, "exit 1");
   assert(!line.includes('|| echo "clock: poke failed"'), "the clock swallows a refused poke");
   assertEquals(overlayOf(rd).processes.clock.availability?.restart, "on_failure");
+});
+
+// Regression: the appliance's auth ran the local stack's environment, which
+// turns on no provider, so a docker release offered none of its program's.
+Deno.test("the appliance turns on the providers the program offers, which the deployment may still name", async () => {
+  const withGoogle = paymentProgram()
+    .replace("targets: []", 'targets: ["docker"]')
+    .replace("capabilities: {hatches: {},", `capabilities: {auth: {required: false, service: "/auth", providers: ["google"], provider: google: {issuer: "https://id.example.com", client: "origin"}}, hatches: {},`);
+  const auth = overlayOf(await releaseDocker(withGoogle)).processes.auth;
+  assertEquals(auth.environment, ["OIDC_PROVIDERS=${OIDC_PROVIDERS:-google}"]);
+  const without = overlayOf(await releaseDocker(paymentProgram().replace("targets: []", 'targets: ["docker"]'))).processes;
+  assertEquals("auth" in without, false);
 });
