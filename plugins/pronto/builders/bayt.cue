@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/yaml"
 	"list"
 	"regexp"
@@ -48,7 +49,7 @@ import (
 
 #Toolchain: {
 	...
-	tools:     {"github:bonisoft3/bayt": "0.73.1", ...}
+	tools:     {"github:bonisoft3/bayt": "0.73.2", ...}
 	hostTools: {"github:F1bonacc1/process-compose": "v1.122.0", ...}
 	say: say: {
 		...
@@ -376,7 +377,7 @@ import (
 	_localIntegrateDo: """
 		\(B._installBrowser)
 		let base_tmp = (if (($env.RUNNER_TEMP? | default "") != "") { $env.RUNNER_TEMP } else { $nu.temp-dir })
-		let work = ($base_tmp | path join $"bayt-host-\(project.name)-($nu.pid)-(random int 100000..999999)")
+		let work = ($base_tmp | path join $"bayt-host-\(B.meta.app)-($nu.pid)-(random int 100000..999999)")
 		let wbin = ($work | path join "bin")
 		mkdir $wbin
 		if $os == "windows" {
@@ -513,7 +514,7 @@ import (
 		["workspaceroot-pronto-sources_bayt"],
 	])
 
-	_mechaRuntime: mecha.#Runtime & {"project": project.name, "cluster": B.cluster}
+	_mechaRuntime: mecha.#Runtime & {"project": B.meta.app, "cluster": B.cluster}
 	// A runner rebuilds the stack its closure brings up, from the sources the
 	// runtime's images are built from. Launch reaches them through `:outs`
 	// edges, which a `:srcs` view does not follow, so each is named.
@@ -848,7 +849,7 @@ import (
 					// own the closure brings the plane up, and under the verb, which
 					// brought it up first, this is a health check — see the visual
 					// check in omnishell/terminal.cue. Qualified, as bayt names it.
-					depends_on: "\(project.name)-launch": condition: "service_healthy"
+					depends_on: "\(B.meta.app)-launch": condition: "service_healthy"
 					command: [
 						"deno", "run", "--node-modules-dir=auto",
 						"--allow-read", "--allow-write", "--allow-net",
@@ -872,7 +873,7 @@ import (
 			}
 			if B.cluster.capabilities.server {
 				let schema = B.cluster.surface.schema
-				"replay": core.#target & {
+				"replay": {
 					activate: "mise x --"
 					entrypoint: {
 						do:    #"let pronto = (if (($env.PRONTO_DIR? | default '') != '') { $env.PRONTO_DIR } else { (^mise where github:bonisoft3/pronto | str trim) }); if (($env.BAYT_LOCAL_WORK_DIR? | default '') != '') { let work = $env.BAYT_LOCAL_WORK_DIR; let pgroll = ($work | path join 'pgroll'); if ('.bayt/bayt.migrate.json' | path exists) and (not ($pgroll | path exists)) { mkdir $pgroll; let m = (open .bayt/bayt.migrate.json | get dockerfile); ($m | get -o copy | default []) | each {|c| cp ($c.srcs.0) ($pgroll | path join ($c.dst | path basename)) } | ignore; ($m | get -o epilogue | default []) | each {|e| let lines = ($e | lines); if ($lines.0 | str starts-with "COPY <<'PGROLL' /tmp/") { let name = ($lines.0 | parse "COPY <<'PGROLL' /tmp/{name}.parts" | get 0.name); ($lines | skip 1 | take while {|l| $l != "PGROLL" } | str join "" | decode base64) | save --raw -f ($pgroll | path join $name) } else if ($lines.0 | str starts-with "COPY <<'PGROLL' /pgroll/") { let name = ($lines.0 | parse "COPY <<'PGROLL' /pgroll/{name}" | get 0.name); $lines.1 | save --raw -f ($pgroll | path join $name) } else if ($lines.0 | str starts-with "COPY <<'RECONCILE' /pgroll/") { let name = ($lines.0 | parse "COPY <<'RECONCILE' /pgroll/{name}" | get 0.name); ($lines | skip 1 | drop 1 | str join "\n") | save --raw -f ($pgroll | path join $name) } } | ignore }; let os = (match $nu.os-info.name { 'macos' => 'macos', 'windows' => 'windows', _ => 'linux' }); let sh = (if ('services/migrate/migrate.nu' | path exists) { 'services/migrate/migrate.nu' } else if ('services/migrate/migrate.sh' | path exists) and ($os != 'windows') { 'services/migrate/migrate.sh' } else { ((^mise where github:bonisoft3/mecha | str trim) | path join 'services/migrate/migrate.nu') }); with-env { PRONTO_REPLAY_INITDB: ($work | path join 'initdb.d'), PRONTO_REPLAY_PGROLL_DIR: $pgroll, PRONTO_MIGRATE_SH: $sh } { ^deno run --config ($pronto | path join 'deno.json') --allow-read --allow-write --allow-run --allow-env ($pronto | path join 'check-replay.ts') . } } else { ^deno run --config ($pronto | path join 'deno.json') --allow-read --allow-write --allow-run --allow-env ($pronto | path join 'check-replay.ts') . }"#
@@ -886,7 +887,7 @@ import (
 						after: (schema.target): "healthy"
 					}
 				}
-				"ci-replay": core.#target & {
+				"ci-replay": {
 					activate: ""
 					taskfile: incremental: false
 					deps: list.Concat([
@@ -1008,7 +1009,7 @@ import (
 								PGRST_JWT_SECRET: B.cluster.surface.jwtSecret
 							}
 						}
-						depends_on: "\(project.name)-launch": condition: "service_healthy"
+						depends_on: "\(B.meta.app)-launch": condition: "service_healthy"
 						// `$$` so compose leaves a variable to the container's shell.
 						command: ["mise", "x", "--", "nu", "-c", strings.Join([for x in c.cmds {strings.Replace(x, "$", "$$", -1)}], "; ")]
 					}
@@ -1061,6 +1062,25 @@ import (
 				// The transform runs the pipelines and the drains' streams.
 				let _streams = len(B.cluster.state.pipelines) > 0
 
+				// Durable retry (mecha's change-capture): a released appliance hands
+				// each generated stream's failed record to its group's retry stream,
+				// which mesh-events' daprd redelivers to the stream's /replay with
+				// backoff and dead-letters past its attempts.
+				let _replays = [for p in B.cluster.state.pipelines if p.replay != _|_ if p.group != _|_ {p}]
+				let _replayPort = 4195
+				let _subscriptions = strings.Join([for p in _replays {yaml.Marshal({
+					apiVersion: "dapr.io/v2alpha1"
+					kind:       "Subscription"
+					metadata: name: "\(p.group)-retry"
+					spec: {
+						pubsubname:      "redis-streams"
+						topic:           "\(p.group)-retry"
+						routes: default: "/\(p.name)/replay"
+						deadLetterTopic: "\(p.group)-dead"
+					}
+					scopes: ["mechaed"]
+				})}], "---\n")
+
 				// The ticker sweeps schedules and timers; the airlock runs for as
 				// long as the appliance does, so nothing wakes it.
 				let _wakes = len(B.cluster.state.schedules) > 0 || len(B.cluster.state.timers) > 0
@@ -1107,16 +1127,16 @@ import (
 					version: "0.5"
 					processes: {
 						database: {
-							command: (_command & {args: list.Concat([["docker-entrypoint.sh", "postgres"], mecha.#PostgresArgs, ["-c", "fsync=on", "-c", "synchronous_commit=on", "-c", "full_page_writes=on", "-c", "shared_buffers=512MB"]])}).out
+							command: (_command & {args: list.Concat([["docker-entrypoint.sh", "postgres"], mecha.#PostgresArgs, ["-c", "fsync=on", "-c", "synchronous_commit=on", "-c", "full_page_writes=on", "-c", "shared_buffers=512MB", "-c", "max_slot_wal_keep_size=${PG_MAX_SLOT_WAL_KEEP_SIZE:-1GB}"]])}).out
 						}
-						// A release turns on the providers the program offers, which
-						// the local stack leaves off (mecha's OIDC_PROVIDERS):
-						// process-compose appends this list to the base's.
-						if len(B.cluster.capabilities.signIn) > 0 {
-							auth: environment: ["OIDC_PROVIDERS=${OIDC_PROVIDERS:-\(strings.Join([for p, _ in B.cluster.capabilities.signIn {p}], ","))}"]
+						// The bus keeps what it acknowledged to Conduit across a restart:
+						// its log written before each reply in Debian's directory for it,
+						// a cut or torn tail repaired on load.
+						if _capture {
+							redis: command: (_command & {literal: true, args: ["sh", "-c", "mkdir -p /var/lib/redis && exec redis-server --port \"$REDIS_PORT\" --save '' --appendonly yes --appendfsync always --aof-load-corrupt-tail-max-size 65536 --maxmemory \"${REDIS_MAXMEMORY:-256mb}\" --maxmemory-policy noeviction --dir /var/lib/redis"]}).out
 						}
 						electric: {
-							command: (_command & {args: ["env", "DATABASE_URL=postgresql://electric:${ELECTRIC_PASSWORD:-dev-electric-password}@127.0.0.1:5432/${POSTGRES_DB:-\(B.meta.app)}?sslmode=disable", "ELECTRIC_SECRET=${ELECTRIC_SECRET:-dev-electric-secret}", "ELECTRIC_MANUAL_TABLE_PUBLISHING=true", "ELECTRIC_PORT=3002", "ELECTRIC_STORAGE_DIR=${PGDATA:-/var/lib/pgsql/data}/electric", "LD_LIBRARY_PATH=/electric-libs", "ELIXIR_ERL_OPTIONS=+fnu", "/electric-app/bin/entrypoint", "start"]}).out
+							command: (_command & {args: ["sh", "-c", "set -eu; lost=$$(psql \"\(_db)\" -XAt -v ON_ERROR_STOP=1 -c \"SELECT 1 FROM pg_replication_slots WHERE slot_name = 'electric_slot_default' AND wal_status = 'lost';\"); if [ \"$$lost\" = \"1\" ]; then echo 'electric: slot electric_slot_default was lost; dropping it and clearing shape storage to rebuild' >&2; psql \"\(_db)\" -X -v ON_ERROR_STOP=1 -c \"SELECT pg_drop_replication_slot('electric_slot_default');\"; rm -rf \"${PGDATA:-/var/lib/pgsql/data}/electric\"; fi; exec env \"DATABASE_URL=postgresql://electric:${ELECTRIC_PASSWORD:-dev-electric-password}@127.0.0.1:5432/${POSTGRES_DB:-\(B.meta.app)}?sslmode=disable\" \"ELECTRIC_SECRET=${ELECTRIC_SECRET:-dev-electric-secret}\" ELECTRIC_MANUAL_TABLE_PUBLISHING=true ELECTRIC_PORT=3002 \"ELECTRIC_STORAGE_DIR=${PGDATA:-/var/lib/pgsql/data}/electric\" LD_LIBRARY_PATH=/electric-libs ELIXIR_ERL_OPTIONS=+fnu /electric-app/bin/entrypoint start"]}).out
 						}
 						if _effects {
 							"airlock-upgrade": {
@@ -1190,7 +1210,14 @@ import (
 							}
 						}
 						if _streams {
-							transform: environment: ["CDC_GROUPS=\(B.cluster.surface.targets.transform.entrypoint.env.CDC_GROUPS)"]
+							transform: environment: list.Concat([
+								["CDC_GROUPS=\(B.cluster.surface.targets.transform.entrypoint.env.CDC_GROUPS)"],
+								[if len(_replays) > 0 {"CDC_REPLAY_PORT=\(_replayPort)"}],
+								[if len(_replays) > 0 {"CDC_RETRY_GROUPS=\(json.Marshal([for p in _replays {p.group}]))"}],
+							])
+						}
+						if len(_replays) > 0 {
+							"mesh-events": environment: ["MESH_SUBSCRIPTIONS_DIR=/mesh-events/subscriptions", "MESH_APP_PORT=\(_replayPort)"]
 						}
 						if _risingwave {
 							risingwave: {
@@ -1213,8 +1240,11 @@ import (
 
 						// A server out of restarts ends the appliance, so the container exits
 						// for its supervisor; the base file's cap alone would leave it running
-						// with the server gone.
-						for n, t in B.cluster.surface.targets if t.compose != _|_ if t.compose.restart != _|_ if t.compose.restart == "on-failure" {
+						// with the server gone. Skip `compute`: process-compose v1.122.0 drops
+						// base env entries whose value contains `=` (such as COMPUTATIONS) when
+						// merging a process across `-f` files, so the epilogue sets
+						// `compute.availability.exit_on_end` directly in process-compose.yaml.
+						for n, t in B.cluster.surface.targets if t.compose != _|_ if t.compose.restart != _|_ if t.compose.restart == "on-failure" && n != "compute" {
 							(n): availability: exit_on_end: true
 						}
 					}
@@ -1236,7 +1266,7 @@ import (
 				// no port a bridge's process of it listens on.
 				let _portCheck = strings.Join([for c, a in _containers {"'if [ \"$PORT\" = \(a.port) ]; then echo \"appliance: PORT \(a.port) is where the bridge process \(c) listens; set another\" >&2; exit 1; fi' "}], "")
 				let _hosts = strings.Join(list.Concat([["crud", "database", "auth"], if _effects {["airlock-mesh", "airlock"]}, if _wakes {["ticker"]}, if _risingwave {["risingwave"]}, [for c, _ in _containers {c}]]), " ")
-				"release-docker": core.#target & {
+				"release-docker": {
 					activate: ""
 					deps: list.Concat([
 						[":database", ":crud", ":caddy", ":electric:outs"],
@@ -1340,6 +1370,7 @@ import (
 							if _streams {[
 								{from: {ref: ":transform"}, srcs: ["/redpanda-connect"], dst: "/usr/local/bin/redpanda-connect"},
 								{from: {ref: ":transform"}, srcs: ["/cdc-trace.yaml"], dst: "/transform/cdc-trace.yaml"},
+								{from: {ref: ":transform"}, srcs: ["/durable-retry.yaml"], dst: "/transform/durable-retry.yaml"},
 							]},
 							// The timers' check, which the overlay's timer-check runs.
 							if _timers {[
@@ -1412,6 +1443,7 @@ import (
 								"ENV MECHA_TRANSFORM_DIR=/transform",
 							]},
 							["COPY <<'APPLIANCE' /.bayt/process-compose.appliance.yaml\n\(yaml.Marshal(_overlay))APPLIANCE"],
+							[if len(_replays) > 0 {"COPY <<'SUBSCRIPTIONS' /mesh-events/subscriptions/retry.yaml\n\(_subscriptions)SUBSCRIPTIONS"}],
 							if _wakes {[
 								#"RUN printf '%s\n' '#!/bin/sh' 'set -e' 'while sleep "${POKE_INTERVAL_SECONDS:-60}"; do' '  curl -fsS -X POST -H "Authorization: Bearer ${SERVICE_JWT}" "http://ticker:\#(mecha.#AppliancePort.ticker)/poke?caller=appliance" >/dev/null || { echo "clock: the ticker refused its poke" >&2; exit 1; }' 'done' > /usr/local/bin/appliance-clock.sh && chmod 755 /usr/local/bin/appliance-clock.sh"#,
 							]},
@@ -1462,7 +1494,17 @@ import (
 							// The extensions came with compute's image: it installs none at start.
 							if _compute {"RUN --network=none deno check --cached-only --frozen --config /compute-app/deno.json /compute-app/main.ts /compute-app/cage.ts /compute-app/step-worker.ts && touch /compute-app/extensions/\(mecha.#DuckdbExtensionsMarker)"},
 							if _risingwave {
-								#"RUN nu -c 'let f = "/.bayt/process-compose.yaml"; open $f | upsert processes.compute.depends_on.risingwave {condition: "process_healthy"} | if ("transform" in $in.processes) { update processes.transform.entrypoint {|p| $p.processes.transform.entrypoint | each {|a| $a | str replace " ($$cdir | path join '\''events.yaml'\'')" "" } } } else { $in } | to yaml | save -f $f'"#
+								#"RUN nu -c 'let f = "/.bayt/process-compose.yaml"; open $f | upsert processes.compute.depends_on.risingwave {condition: "process_healthy"} | upsert processes.compute.availability.exit_on_end true | if ("transform" in $in.processes) { update processes.transform.entrypoint {|p| $p.processes.transform.entrypoint | each {|a| $a | str replace " ($$cdir | path join '\''events.yaml'\'')" "" } } } else { $in } | to yaml | save -f $f'"#
+							},
+							// A release turns on the providers the program offers, which the
+							// local stack leaves off (mecha's OIDC_PROVIDERS). Rewrite the
+							// base file instead of merging `auth` via the overlay:
+							// process-compose v1.122.0 drops base env entries whose value
+							// contains `=` (such as OIDC_GOOGLE_AUTHORIZE_PARAMS) when
+							// merging a process across `-f` files.
+							if len(B.cluster.capabilities.signIn) > 0 {
+								let _providers = strings.Join([for p, _ in B.cluster.capabilities.signIn {p}], ",")
+								#"RUN nu -c 'let f = "/.bayt/process-compose.yaml"; open $f | update processes.auth.environment {|p| $p.processes.auth.environment | where {|x| not ($x | str starts-with "OIDC_PROVIDERS=") } | append "OIDC_PROVIDERS=${OIDC_PROVIDERS:-\#(_providers)}" } | to yaml | save -f $f'"#
 							},
 							// A bridge's port is no port an appliance process takes, the ones bayt
 							// assigns the app included, and no other bridge's.

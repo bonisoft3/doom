@@ -6,8 +6,8 @@ import (
 	saycfg "bonisoft.org/plugins/sayt:say"
 )
 
-#Version:     "1.14.0"
-#SaytVersion: "0.49.1"
+#Version:     "1.15.0"
+#SaytVersion: "0.49.2"
 
 // Checkout-only modules: the compiler's test fixtures read omnishell beside
 // pronto, and the portable types are refreshed from the checkout's mecha
@@ -41,7 +41,7 @@ import (
 
 #Tools: {
 	...
-	"github:cue-lang/cue":     "0.18.0-rc.4"
+	"github:cue-lang/cue":     "0.18.0"
 	"github:denoland/deno":    "v2.9.7"
 	"github:go-task/task":     "v3.54.0"
 	"github:nushell/nushell":  "0.116.1"

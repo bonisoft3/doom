@@ -429,7 +429,7 @@ export def render-manifests [
 	} else { {services: {}} }
 	let runtime = (runtime-services $compose)
 	let airlock = (airlock-services $compose $facts)
-	{App: ({database: {tokenRoles: $facts.tokenRoles, declaredRoles: ($facts.declaredRoles? | default [])}, runtime: $runtime, doors: ($facts.doors? | default [])} | merge (if ($airlock | is-empty) { {} } else { {airlock: $airlock} }))} | to json | save -f $roles_file
+	{App: ({database: {tokenRoles: $facts.tokenRoles, declaredRoles: ($facts.declaredRoles? | default [])}, runtime: $runtime, replays: ($facts.replays? | default []), doors: ($facts.doors? | default [])} | merge (if ($airlock | is-empty) { {} } else { {airlock: $airlock} }))} | to json | save -f $roles_file
 	let inputs = [$cue_path $roles_file] | append (if ($data | is-not-empty) { [$data] } else { [] })
 	let res = (do { cue export --expression $expr --out text ...$inputs } | complete)
 	rm $roles_file
@@ -517,6 +517,17 @@ export def auth-provider-environment [environment: record, providers: list<strin
 		oidc: $settings, oidcSecrets: ($secrets | columns), secretValues: $secrets
 		oidcSecretDigest: (if ($secrets | is-empty) { "" } else { $secrets | sort | to json --raw | hash sha256 })
 	}
+}
+
+# The release's own client of each issuer that registers its clients, in
+# place of the origin (../identity/register.ts): the release's settings with
+# the registered clients' ids.
+export def register-clients [settings: record, origin: string, app_dir?: string]: nothing -> record {
+	let dir = if ($app_dir | is-not-empty) { $app_dir } else if ("DESIGN.md" | path exists) { "." } else { "" }
+	let app_args = if ($dir | is-not-empty) { [--app $dir] } else { [] }
+	let registered = ($settings | to json | deno run --no-config --allow-net --allow-read ($k8s_dir | path join .. identity register.ts) $origin ...$app_args | complete)
+	if $registered.exit_code != 0 { error make { msg: $"registering ($origin)'s sign-in clients: ($registered.stderr | str trim)" } }
+	$registered.stdout | from json
 }
 
 export def opaque-secret [name: string, namespace: string, values: record, --labels: record = {}]: nothing -> record {
@@ -956,11 +967,17 @@ export def main [
 	let root = (git rev-parse --show-toplevel | str trim)
 	let app_source_dir = $app_info.dir
 
-	let meta_res = (do { cue export --expression "{name: App.name, namespace: App.namespace, type: App.type, image: App.image, render: App.render}" $app_info.cue_path } | complete)
+	let meta_expr = if $cluster_env == "gke" {
+		"{app: {name: App.name, namespace: App.namespace, type: App.type, image: App.image, render: App.render}, gke: GKE}"
+	} else {
+		"{app: {name: App.name, namespace: App.namespace, type: App.type, image: App.image, render: App.render}}"
+	}
+	let meta_res = (do { cue export --expression $meta_expr $app_info.cue_path } | complete)
 	if $meta_res.exit_code != 0 {
 		error make { msg: $"Failed to read release metadata from ($app_info.cue_path): ($meta_res.stderr)" }
 	}
-	let app_meta = ($meta_res.stdout | from json)
+	let meta_payload = ($meta_res.stdout | from json)
+	let app_meta = $meta_payload.app
 
 	let target_ns = $app_meta.namespace
 	let gateway_host = ($manifests | from yaml | where kind == "Gateway" | get 0.spec.listeners.0.hostname)
@@ -977,7 +994,7 @@ export def main [
 	}
 
 	let target_env = if $cluster_env == "gke" {
-		let config = (^cue export --expression GKE --out json $app_info.cue_path | from json)
+		let config = $meta_payload.gke
 		let kubeconfig = (mktemp -t kubeconfig.XXXXXX | str trim)
 		kubectl config view --minify --flatten --context $config.context | save -f $kubeconfig
 		$env.KUBECONFIG = $kubeconfig
@@ -1050,7 +1067,8 @@ export def main [
 	# The providers compose gives the auth service, and each one's client:
 	# compose refuses to render a provider whose client is unset.
 	let providers = (do { cd $app_source_dir; ^cue export . -e $PROGRAM_PROVIDERS --out json } | from json)
-	let oidc = (auth-provider-environment (do { cd $app_source_dir; docker compose --profile "*" config --format json } | from json | get services.auth.environment) $providers)
+	let provided = (auth-provider-environment (do { cd $app_source_dir; docker compose --profile "*" config --format json } | from json | get services.auth.environment) $providers)
+	let oidc = ($provided | update oidc (register-clients $provided.oidc $"https://($gateway_host)" $app_source_dir))
 	# An issuer the release trusts, TRUSTED_JWKS, for the roles the program
 	# declares: its public keys are checked here, before anything is applied,
 	# and digested so a change of keys rolls crud. Unset, crud verifies the
