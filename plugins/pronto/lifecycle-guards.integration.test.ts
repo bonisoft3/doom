@@ -1,7 +1,7 @@
 import { assertEquals, assertStringIncludes } from "jsr:@std/assert@1.0.11";
 import { cue, paymentProgram } from "./effects-fixtures.ts";
 
-const DATABASE = "bonitao/mecha-database:0.35.0@sha256:848b00d3e43564b2c17a535a2afbf8699ee0221a5f4cc8f92a1a265cd57a2a55";
+const DATABASE = "bonitao/mecha-database:0.36.0@sha256:587d8894546245ae5233ceb980794f3966c147c195b07819b6495df89bcb8d8b";
 async function run(args: string[], input?: string) {
   const child = new Deno.Command("docker", { args, stdin: input === undefined ? "null" : "piped", stdout: "piped", stderr: "piped" }).spawn();
   if (input !== undefined) {

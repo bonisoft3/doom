@@ -26,6 +26,7 @@ RUN set -e; install -D -m 644 '/omnishell/interpreter/shell.js' '/served/omnishe
   install -D -m 644 '/omnishell/interpreter/passkey-signals.js' '/served/omnishell/interpreter/passkey-signals.js'; \
   install -D -m 644 '/omnishell/interpreter/signin.js' '/served/omnishell/interpreter/signin.js'; \
   install -D -m 644 '/omnishell/interpreter/consent.js' '/served/omnishell/interpreter/consent.js'; \
+  install -D -m 644 '/omnishell/interpreter/conversions.js' '/served/omnishell/interpreter/conversions.js'; \
   install -D -m 644 '/omnishell/interpreter/markup.js' '/served/omnishell/interpreter/markup.js'; \
   install -D -m 644 '/omnishell/interpreter/script-url.js' '/served/omnishell/interpreter/script-url.js'; \
   install -D -m 644 '/omnishell/interpreter/deferred-boot.js' '/served/omnishell/interpreter/deferred-boot.js'; \

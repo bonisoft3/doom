@@ -139,7 +139,7 @@
     {"path":"program_derived.cue","sha256":"59ed81519fe788b718425a26f820fd60ab997c93f8fee61e58c12414993d59bb","derived":true},
     {"path":"shell/screens/arena.css","sha256":"6ab8aefbcb21b064c53cb1e60e0623f2f3e66251184ddb5580875a9bd185a9e0","derived":false},
     {"path":"shell/screens/lobby.css","sha256":"9ebd0c4e90c50491dcec6bdcc635455f0976bb46bc1b45b909026fbaac8eb35e","derived":false},
-    {"path":"shell/design.css","sha256":"07e85bead73350faac3ab6643e93b4394cc3ce11847b98cfa4867340fc1d45e7","derived":true}
+    {"path":"shell/design.css","sha256":"61d3af4c7efbdb3268bb86b56a8a4c7bee082570b504c21e45c694a0bf320ad8","derived":true}
   ],
   "cel_ir": [
     {"cel":"this >= 0"},

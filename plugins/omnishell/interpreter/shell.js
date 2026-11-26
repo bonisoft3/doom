@@ -20,6 +20,7 @@ import { parseMarkup } from "./markup.js";
 
 import { chromeText, describe, drawStrip, hasStrip, localizeStrip, nameOf, offersSignin, ownName, providerHref, stripRoutes, supportsPasskeys } from "./chrome.js";
 import { startConsent } from "./consent.js";
+import { startConversions } from "./conversions.js";
 import { localeAt, localeTable, ProgramError, restatedHref, routeAt, routeHref, screenEnv, Unanswered } from "./fragment.js";
 import { activateScreenStyle, fetchText, forgetFiles, interpretScreen, prefetchScreen, templateHash, submitsOnChange, AssetMissing } from "./screen.js";
 import { compileCatalog } from "./vendor/messages.js";
@@ -32,7 +33,7 @@ export { routeAt } from "./fragment.js";
 import { assetURL, preloadLinkedScreens, preloadScreen, releaseOf, setRelease } from "./preloads.js";
 import { startLinkPrefetch } from "./link-prefetch.js";
 import { signalName } from "./passkey-signals.js";
-import { accountLives, adoptDeviceSession, adoptGuest, askAhead, cover, deviceAccounts, deviceName, dropAhead, forgetAccount, forgetSession, keepsWork, learnDeviceAlone, loginCeremony, mintGuest, nameForm, nameTaken, postJson, providerFrame, providersOffered, recoveryKey, registerCeremony, rememberAccount, renameAccount, renderLogin, renderSession, renderSignin, sessionOwner, storedSessionOwner, syncAuthDOM, uncover, upgradeEarlierGuest } from "./signin.js";
+import { accountLives, adoptDeviceSession, adoptGuest, askAhead, cover, deviceAccounts, deviceName, dropAhead, forgetAccount, forgetSession, keepsWork, learnDeviceAlone, loginCeremony, mintGuest, nameForm, nameTaken, postJson, providersOffered, recoveryKey, registerCeremony, rememberAccount, renameAccount, renderLogin, renderSession, renderSignin, sessionOwner, storedSessionOwner, syncAuthDOM, uncover, upgradeEarlierGuest } from "./signin.js";
 
 const releaseKey = (imports) => templateHash(JSON.stringify(imports));
 // How often an open page asks whether a deployment landed, besides whenever it
@@ -393,6 +394,10 @@ export async function createShell({ config, mount, preload = true, hostDomModule
         now: Date.now,
       }).catch(banner);
     }
+    // After consent is stated, which the bridge takes before any event.
+    const conversions = cfg.conversions
+      ? startConversions({ conversions: cfg.conversions, gtag: globalThis.gtag, storage: sessionStorage })
+      : null;
     const dataPlane = import("./data-sync.js");
     const offered = cfg.auth ? providersOffered(cfg) : null;
 
@@ -420,7 +425,7 @@ export async function createShell({ config, mount, preload = true, hostDomModule
       if (sessionOwner(e.newValue === null ? null : JSON.parse(e.newValue)) !== sessionOwner(session)) location.reload();
     });
     if (cfg.auth) await upgradeEarlierGuest(cfg);
-    const adopted = cfg.auth?.required || (cfg.tables?.length ?? 0) > 0 ? await adoptDeviceSession(cfg) : null;
+    const adopted = cfg.auth?.required || (cfg.tables?.length ?? 0) > 0 ? await adoptDeviceSession(cfg, conversions?.signedIn) : null;
     if (offered !== null) Object.assign(cfg.auth, await offered);
     if (cfg.auth?.required) {
       const stored = localStorage.getItem("pronto-token");
@@ -442,7 +447,7 @@ export async function createShell({ config, mount, preload = true, hostDomModule
       } else {
         const gate = localeAt(cfg, location.pathname || "/", location.search ?? "", globalThis.navigator?.languages);
         await Promise.all([catalogued, ensureMessages(gate.locale)]);
-        session = await renderLogin(mount, cfg, (key) => chrome(key, gate.locale));
+        session = await renderLogin(mount, cfg, (key) => chrome(key, gate.locale), conversions?.made);
         // The gate takes its own chrome down. The navigation stack appends
         // each screen beside whatever is already mounted rather than replacing
         // it, so nothing else will: left here, the login form outlives the
@@ -869,6 +874,7 @@ export async function createShell({ config, mount, preload = true, hostDomModule
     // the gate.
     const adopt = async (outcome) => {
       const next = outcome.session;
+      conversions?.signedIn(outcome.activeSession, next, outcome.transitionMode !== "in-place");
       if (outcome.transitionMode !== "in-place") {
         signedIn = !next.user.guest;
         if (!outcome.sameOwner) sessionStorage.removeItem(recoveryKey);
@@ -1171,22 +1177,19 @@ export async function createShell({ config, mount, preload = true, hostDomModule
       if (!res.ok) throw new Error(`${res.status} POST ${cfg.auth.service}/oidc/${provider}/start`);
       location.href = (await res.json()).to;
     };
+    globalThis.addEventListener?.("message", (e) => {
+      if (e.origin !== location.origin || e.data?.fallback !== "redirect" || e.data?.add === true) return;
+      if (typeof e.data.provider !== "string" || !cfg.auth?.service || sessionLifecycle.busy()) return;
+      if (e.source && ![...document.querySelectorAll("iframe.shell-provider-active")].some((f) => f.contentWindow === e.source)) return;
+      const here = `${location.pathname ?? "/"}${location.search ?? ""}${location.hash ?? ""}`;
+      void startProvider(e.data.provider, here);
+    });
     document.addEventListener("click", (e) => {
       const providerEl = e.target?.closest?.("[data-auth-provider], .shell-me a.shell-provider[data-provider]");
       if (providerEl && cfg.auth?.service) {
         if (providerEl.localName !== "label") e.preventDefault();
         if (sessionLifecycle.busy()) return;
         const provider = providerEl.dataset.authProvider ?? providerEl.dataset.provider;
-        // A provider signing in by its own button has no redirect: the app's
-        // control gives way to that button, which the person presses next.
-        if (cfg.auth.credential?.[provider] !== undefined) {
-          const holder = document.createElement("div");
-          holder.className = "shell-provider-button";
-          holder.dataset.provider = provider;
-          holder.append(providerFrame(cfg, provider, "button"));
-          providerEl.replaceWith(holder);
-          return;
-        }
         const here = `${location.pathname ?? "/"}${location.search ?? ""}${location.hash ?? ""}`;
         void startProvider(provider, here);
         return;

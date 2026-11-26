@@ -161,7 +161,7 @@ _postgresTool:    "postgres-" + strings.SliceRunes(hex.Encode(sha256.Sum256(_pos
 	}
 }
 
-#Version: "0.35.0"
+#Version: "0.36.0"
 
 #Tools: {
 	...
@@ -234,16 +234,16 @@ _postgresTool:    "postgres-" + strings.SliceRunes(hex.Encode(sha256.Sum256(_pos
 #Images:  impl.#Images
 
 published: impl.#Published & {
-	activepieces: "bonitao/mecha-activepieces:0.35.0@sha256:f62b4387de087b5bfc4369816ae1cf67cb8509ff360e5cf1f1f10a4d4353e0a5"
-	airlock:      "bonitao/mecha-airlock:0.35.0@sha256:24010107f8dab3b373bb84e890938af62613c6fcd362d684aa27b7fa2dfa766f"
-	auth:         "bonitao/mecha-auth:0.35.0@sha256:ffbef2572dae57f22159216d6dea97840dfdf8bc2127cd4644083307e0fb12e8"
-	clock:        "bonitao/mecha-clock:0.35.0@sha256:9d8cdaca612d880a4de4ab3176f80a1e7acdb38b10295f9aa5990217dcb3317f"
-	compute:      "bonitao/mecha-compute:0.35.0@sha256:311cdaf8a194a6058bdef225757a9b9fe0ac77d1de186624088221d39b4df3bc"
-	conduit:      "bonitao/mecha-conduit:0.35.0@sha256:a643922ed823b329436fb7c49e0ff495a2c3d7060ea583fb8e0d6ab841553f75"
-	database:     "bonitao/mecha-database:0.35.0@sha256:848b00d3e43564b2c17a535a2afbf8699ee0221a5f4cc8f92a1a265cd57a2a55"
-	extensions:   "bonitao/mecha-extensions:0.35.0@sha256:d3fe4b3869ded07a410579c2928f951bb42c3bdc14ada1122b5cf0a7d7c11c9f"
-	mesh:         "bonitao/mecha-mesh:0.35.0@sha256:cc5a4657406eed9ef03d8c7a670fae5588851bca71767aad76b0aac077275a89"
-	ticker:       "bonitao/mecha-ticker:0.35.0@sha256:69f8dca787537bbf2d08a7b6ab42be6b786bebf744725f0b900c952d4991d71d"
+	activepieces: "bonitao/mecha-activepieces:0.36.0@sha256:219c4b0c8569aae78f24e986747ddae2ff850d9361c6bada554c7a4fb6098544"
+	airlock:      "bonitao/mecha-airlock:0.36.0@sha256:b08366f3265b97f1e9aa349df65a92ecf76642d6768ce5159a3d8ba546e3e601"
+	auth:         "bonitao/mecha-auth:0.36.0@sha256:4dbe55c258be0ad75c6864a2299509d440cc02578f54da019a08703e180bff7d"
+	clock:        "bonitao/mecha-clock:0.36.0@sha256:9d8cdaca612d880a4de4ab3176f80a1e7acdb38b10295f9aa5990217dcb3317f"
+	compute:      "bonitao/mecha-compute:0.36.0@sha256:8e67a4d5b5622ef3f842395744de497b6a199a9c48f03ad2ceacea2e098e3d05"
+	conduit:      "bonitao/mecha-conduit:0.36.0@sha256:71611df6a809eb363b27a0076754e4a6cb84a900f3891a633649edf99d4bd25d"
+	database:     "bonitao/mecha-database:0.36.0@sha256:587d8894546245ae5233ceb980794f3966c147c195b07819b6495df89bcb8d8b"
+	extensions:   "bonitao/mecha-extensions:0.36.0@sha256:d3fe4b3869ded07a410579c2928f951bb42c3bdc14ada1122b5cf0a7d7c11c9f"
+	mesh:         "bonitao/mecha-mesh:0.36.0@sha256:cc5a4657406eed9ef03d8c7a670fae5588851bca71767aad76b0aac077275a89"
+	ticker:       "bonitao/mecha-ticker:0.36.0@sha256:53a3221cfa8d8b9f311b42e550976ffe7c3cc877c84c7689e677d5790566a8f9"
 }
 
 #ActivepiecesContainer: impl.#ActivepiecesContainer

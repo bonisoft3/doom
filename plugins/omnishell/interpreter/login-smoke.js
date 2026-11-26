@@ -420,6 +420,18 @@ const GUEST_YAML = CONFIG_YAML
   .replace("  required: true\n", "  required: false\n")
   .replace("tables: []", "tables: [note]\nread: [note]");
 
+// A tag whose consent asks nobody, and the signup it reports (pronto's
+// meta.googleTag.conversions).
+const CONVERSION_YAML = `
+consent:
+  mode: none
+  none: {advertising: denied}
+  policy: {url: "https://smoke.example/privacy", version: "1"}
+  hosts: []
+conversions:
+  signup: AW-1/label
+`;
+
 Deno.test({
   name: "the nav's My device is offered wherever the browser has passkeys",
   sanitizeOps: false,
@@ -1108,8 +1120,10 @@ Deno.test({
       },
       configurable: true,
     });
+    const tagged = [];
+    globalThis.gtag = (...args) => tagged.push(args);
     try {
-      const { mount, Event } = boot();
+      const { mount, Event } = boot({ config: CONFIG_YAML + CONVERSION_YAML });
       const named = [];
       const prevFetch = globalThis.fetch;
       globalThis.fetch = (url, init) => {
@@ -1136,7 +1150,10 @@ Deno.test({
       assert(created.length === 1 && named.join() === "nobody Ada", `the account is made under the name, got ${named}`);
       assert(JSON.parse(localStorage.getItem("pronto-token")).token === "tok-made", "and is the device's");
       assert(!mount.querySelector(".shell-login"), "the gate comes down");
+      const reported = tagged.filter(([command]) => command === "event");
+      assert(JSON.stringify(reported) === JSON.stringify([["event", "conversion", { send_to: "AW-1/label", transaction_id: "u1" }]]), `the account made is one signup, got ${JSON.stringify(reported)}`);
     } finally {
+      delete globalThis.gtag;
       globalThis.PublicKeyCredential = origCred;
       if (origNavCreds !== undefined) {
         Object.defineProperty(globalThis.navigator, "credentials", { value: origNavCreds, configurable: true });
@@ -1392,8 +1409,11 @@ Deno.test({
     const { b64u } = browser;
     Object.defineProperty(globalThis.navigator, "credentials", { value: browser.credentials, configurable: true });
     const people = { [b64u("cred-ana")]: { id: "ana", handle: "Ana-3fa2" }, [b64u("cred-marta")]: { id: "marta", handle: "Marta-c4d8" } };
+    const tagged = [];
+    globalThis.gtag = (...args) => tagged.push(args);
     try {
-      const { document: doc, Event, mount, reloads } = boot({ config: GUEST_YAML });
+      const { document: doc, Event, mount, reloads } = boot({ config: GUEST_YAML + CONVERSION_YAML });
+      const conversions = () => tagged.filter(([command]) => command === "event");
       const registered = [];
       const prevFetch = globalThis.fetch;
       globalThis.fetch = (url, init) => {
@@ -1407,7 +1427,8 @@ Deno.test({
           registered.push(JSON.parse(init.body).name);
           return Promise.resolve(Response.json({ state: "st-reg", rp: { id: "localhost", name: "localhost" }, challenge: "Y2hhbA", user: { id: "dTE", name: "Zed", displayName: "Zed" } }));
         }
-        if (u.endsWith("/auth/register/verify")) return Promise.resolve(Response.json({ token: "tok-zed", user: { id: "zed", handle: "Zed-5e21" }, passkey: { rpId: "localhost", userId: "dTE" } }));
+        // The device's guest, promoted: its id kept.
+        if (u.endsWith("/auth/register/verify")) return Promise.resolve(Response.json({ token: "tok-zed", user: { id: "g1", handle: "Zed-5e21" }, passkey: { rpId: "localhost", userId: "dTE" } }));
         if (u.endsWith("/auth/guest")) return Promise.resolve(Response.json({ token: "tok-guest", user: { id: "g1", handle: "sunlit-fox-01", guest: true } }));
         if (u.includes("/crud/app_user")) return Promise.resolve(Response.json([{ id: "x" }]));
         return prevFetch(url, init);
@@ -1448,6 +1469,7 @@ Deno.test({
       await settle(300);
       assert(doc.querySelector("nav .shell-person .handle")?.textContent === "Marta", "Marta's page, from the autofill");
       assert(JSON.parse(localStorage.getItem("pronto-device-accounts")).map((a) => a.id).join() === "marta,ana", "Marta first now");
+      assert(conversions().length === 0, `a returning sign-in is no signup, got ${JSON.stringify(conversions())}`);
 
       // A new name in the field makes a passkey under it, the autofill let go.
       click(doc.querySelector("nav .shell-person"));
@@ -1461,6 +1483,7 @@ Deno.test({
       assert(browser.released === released + 1, "the autofill let go before the passkey is made");
       assert(registered.join() === "Zed" && browser.created.length === 1, `made under the name, got ${registered}`);
       assert(doc.querySelector("nav .shell-person .handle")?.textContent === "Zed", "Zed's page, in place");
+      assert(JSON.stringify(conversions()) === JSON.stringify([["event", "conversion", { send_to: "AW-1/label", transaction_id: "g1" }]]), `the guest made a person is one signup, got ${JSON.stringify(conversions())}`);
 
       // Regression: an autofill that failed fell through to adopt no session,
       // and the shell threw. The reader's no is quiet; any other failure is
@@ -1479,6 +1502,7 @@ Deno.test({
         click(doc.querySelector("nav .shell-signin"));
       }
     } finally {
+      delete globalThis.gtag;
       globalThis.PublicKeyCredential = origCred;
       if (origNavCreds !== undefined) Object.defineProperty(globalThis.navigator, "credentials", { value: origNavCreds, configurable: true });
     }
@@ -1578,13 +1602,37 @@ Deno.test({
   },
 });
 
+Deno.test("the nav's Sign in puts Passkey ahead of More options (email) while keeping primary providers first", async () => {
+  const { document } = parseHTML("<!doctype html><html><body><nav></nav></body></html>");
+  const { signinBox, localizeStrip } = await import("./chrome.js");
+  for (const [providers, expected] of [
+    [["google", "email"], ["google", "accounts", "email"]],
+    [["email"], ["accounts", "email"]],
+  ]) {
+    const cfg = { routes: [], auth: { service: "/auth", providers } };
+    const nav = document.createElement("nav");
+    nav.append(signinBox(document, cfg));
+    localizeStrip(nav, cfg, { here: "/deck", messages: {}, locale: "en" });
+    const order = [...nav.querySelectorAll(".shell-signin-ways > *")].map((el) => el.dataset.provider ?? el.dataset.authAction);
+    if (order.join("|") !== expected.join("|")) {
+      throw new Error(`smoke failed: expected ${expected.join("|")}, got ${order.join("|")}`);
+    }
+    const more = nav.querySelector('.shell-provider[data-provider="email"]');
+    if (more?.textContent !== "More options" || more.getAttribute("aria-label") !== "More options") {
+      throw new Error(`smoke failed: expected More options, got ${more?.textContent} / ${more?.getAttribute("aria-label")}`);
+    }
+  }
+});
+
 Deno.test({
-  name: "a provider signing in by its own button is framed from the auth service once the panel opens, and its script never runs in the terminal",
+  name: "a credential provider keeps its styled link and overlays FedCM when IdentityCredential is available, and falls back to redirect without it",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
     const origCred = globalThis.PublicKeyCredential;
+    const origIdentity = globalThis.IdentityCredential;
     globalThis.PublicKeyCredential = class {};
+    globalThis.IdentityCredential = class {};
     try {
       const { document: doc, Event, mount } = boot({ config: GUEST_YAML.replace("  service: /auth\n", "  service: /auth\n  providers: [google]\n") });
       const prevFetch = globalThis.fetch;
@@ -1594,19 +1642,41 @@ Deno.test({
       createShell({ config: "./shell.yaml", mount });
       await settle(300);
       const assert = check(mount);
-      const holder = doc.querySelector('nav .shell-provider-button[data-provider="google"]');
-      assert(holder, "Google's place in the panel is its button's, not a redirect link");
-      assert(!doc.querySelector('nav a.shell-provider[data-provider="google"]'), "and no redirect link stands beside it");
-      assert(!holder.querySelector("iframe"), "a visitor who has not opened the panel loads none of Google's");
+      const wrap = doc.querySelector('nav .shell-provider-wrap[data-provider="google"]');
+      const link = wrap?.querySelector('a.shell-provider[data-provider="google"]');
+      assert(wrap && link, "Google keeps its styled link inside a wrap without rendering flips");
+      assert(!doc.querySelector("nav .shell-provider-button"), "no GIS button holder replaces the link");
+      assert(!wrap.querySelector("iframe"), "a visitor who has not opened the panel loads no FedCM frame");
       doc.querySelector("nav .shell-signin").dispatchEvent(new Event("click", { bubbles: true }));
-      const frame = holder.querySelector("iframe.shell-provider-frame");
-      // Google's script assigns markup no Trusted Types policy vouches for, so
-      // it runs in the auth service's page, framed, never in the terminal's.
-      assert(frame?.getAttribute("src")?.startsWith("/auth/oidc/google/button"), `opening the panel frames the auth service's button page, got ${frame?.getAttribute("src")}`);
+      const frame = wrap.querySelector("iframe.shell-provider-active");
+      assert(frame?.getAttribute("src")?.startsWith("/auth/oidc/google/button?prompt="), `opening the panel mounts the active+prompt FedCM frame, got ${frame?.getAttribute("src")}`);
       assert(frame.getAttribute("allow") === "identity-credentials-get", "which may ask FedCM");
+      assert(frame.hasAttribute("data-pending"), "and waits for ready before intercepting clicks");
       assert(!doc.querySelector('script[src*="accounts.google.com"]'), "and the terminal loads no Google script itself");
+      doc.querySelector("nav .shell-signin-close").dispatchEvent(new Event("click", { bubbles: true }));
+      assert(!wrap.querySelector("iframe"), "closing the panel removes the FedCM frame");
+    } finally {
+      globalThis.IdentityCredential = origIdentity;
+    }
+
+    // Without IdentityCredential (e.g. Safari/Firefox), no FedCM frame mounts and the styled link stays plain.
+    delete globalThis.IdentityCredential;
+    try {
+      const { document: doc, Event, mount } = boot({ config: GUEST_YAML.replace("  service: /auth\n", "  service: /auth\n  providers: [google]\n") });
+      const prevFetch = globalThis.fetch;
+      globalThis.fetch = (url, init) =>
+        String(url).endsWith("/auth/oidc") ? Promise.resolve(Response.json({ providers: ["google"], credential: { google: "client-123" } })) : prevFetch(url, init);
+      const { createShell } = await import("./shell.js");
+      createShell({ config: "./shell.yaml", mount });
+      await settle(300);
+      const assert = check(mount);
+      doc.querySelector("nav .shell-signin").dispatchEvent(new Event("click", { bubbles: true }));
+      assert(!doc.querySelector("nav .shell-provider-wrap"), "without FedCM no overlay wrap is added");
+      assert(doc.querySelector('nav a.shell-provider[data-provider="google"]'), "the styled redirect link stands directly");
+      assert(!doc.querySelector("nav iframe.shell-provider-active"), "no FedCM frame mounts");
     } finally {
       globalThis.PublicKeyCredential = origCred;
+      globalThis.IdentityCredential = origIdentity;
     }
   },
 });
@@ -1674,7 +1744,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: "an app's own control for a provider signing in by its own button gives way to that button when pressed",
+  name: "an app's own control for a credential provider redirects cleanly without swapping into an iframe",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
@@ -1682,11 +1752,9 @@ Deno.test({
     globalThis.PublicKeyCredential = class {};
     const SCREEN = `<section class="screen" data-screen="home"><button type="button" id="btn-auth-google" data-auth-provider="google">Google</button></section>`;
     try {
-      const { document: doc, Event, mount } = boot({ config: GUEST_YAML.replace("  service: /auth\n", "  service: /auth\n  providers: [google]\n") });
+      const { Event, mount } = boot({ config: GUEST_YAML.replace("  service: /auth\n", "  service: /auth\n  providers: [google]\n") });
       const prevFetch = globalThis.fetch;
-      const asked = [];
       globalThis.fetch = (url, init) => {
-        asked.push(`${init?.method ?? "GET"} ${url}`);
         if (String(url).endsWith("/auth/oidc")) return Promise.resolve(Response.json({ providers: ["google"], credential: { google: "client-123" } }));
         return String(url).endsWith(".html") ? Promise.resolve(new Response(SCREEN)) : prevFetch(url, init);
       };
@@ -1694,12 +1762,9 @@ Deno.test({
       createShell({ config: "./shell.yaml", mount });
       await settle(300);
       const assert = check(mount);
-      // Regression: the control's press was refused out of sight, and the
-      // person saw nothing happen.
       mount.querySelector("#btn-auth-google").dispatchEvent(new Event("click", { bubbles: true }));
-      const frame = mount.querySelector('.shell-provider-button[data-provider="google"] > iframe.shell-provider-frame');
-      assert(frame?.getAttribute("src")?.startsWith("/auth/oidc/google/button"), `the control gives way to Google's button, got ${frame?.getAttribute("src")}`);
-      assert(!asked.some((a) => a.includes("/oidc/google/start")), `and no redirect is begun, asked ${asked}`);
+      assert(!mount.querySelector("iframe.shell-provider-frame, iframe.shell-provider-active"), "app control does not swap into a Google iframe");
+      assert(String(globalThis.location.href).endsWith("/auth/oidc/google/start?return=%2F%3Fpage%3D2"), `clicking starts the OIDC redirect, got ${globalThis.location.href}`);
     } finally {
       globalThis.PublicKeyCredential = origCred;
     }
@@ -1975,5 +2040,32 @@ Deno.test("a late guest recovery cannot overwrite a newer stored sign-in and ado
       try { await adoptDeviceSession({ auth: { service: "/auth" } }); } catch (error) { failure = error; }
       assert(failure?.message === "503 POST /auth/session/adopt", `wrong adoption failure: ${failure}`);
     }
+  }
+});
+
+Deno.test("a provider's return reports signup when it promoted the device's guest, and not when it reached an account already made", async () => {
+  const { adoptDeviceSession } = await import("./signin.js");
+  const { startConversions } = await import("./conversions.js");
+  const send_to = "AW-1/label";
+  for (const [answered, expected] of [
+    [{ token: "p", user: { id: "g1", handle: "davi-0001" } }, [["event", "conversion", { send_to, transaction_id: "g1" }]]],
+    [{ token: "p", user: { id: "u2", handle: "ana-0002" } }, []],
+  ]) {
+    const { mount } = boot({ cookie: "mecha_session_hint=1" });
+    const assert = check(mount);
+    localStorage.setItem("pronto-token", JSON.stringify({ token: "g", user: { id: "g1", guest: true }, committed: true }));
+    let asked = 0;
+    globalThis.fetch = (url) => {
+      if (String(url).endsWith("/session")) return Promise.resolve(Response.json(answered, { status: asked++ === 0 ? 200 : 500 }));
+      if (String(url).includes("/crud/app_user")) return Promise.resolve(Response.json([{ id: answered.user.id }]));
+      throw new Error(`unexpected fetch ${url}`);
+    };
+    const told = [];
+    const conversions = startConversions({ conversions: { signup: send_to }, gtag: (...args) => told.push(args), storage: sessionStorage });
+    await adoptDeviceSession({ auth: { service: "/auth" } }, conversions.signedIn);
+    // The next boot holds the person, whose account lives: nothing is asked.
+    assert(await adoptDeviceSession({ auth: { service: "/auth" } }, conversions.signedIn) === null, "the next boot keeps the person");
+    assert(asked === 1, `the session was asked ${asked} times`);
+    assert(JSON.stringify(told) === JSON.stringify(expected), `reported ${JSON.stringify(told)}`);
   }
 });
